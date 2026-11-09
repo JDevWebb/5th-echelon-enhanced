@@ -2154,6 +2154,77 @@ impl Misc for MyMisc {
         Ok(Response::new(misc::FairPlayCheckResponse {}))
     }
 
+    /// A crash or freeze of the player's game, from its log at its next start (the add-on's
+    /// crash_report.rs): a session event (`crash`) for the admin UI's Crashes page. Ten an hour
+    /// at most: a game sends a run's last five.
+    async fn crash(&self, request: Request<misc::CrashRequest>) -> Result<Response<misc::CrashResponse>, Status> {
+        let user_id = caller(&request)?;
+        let r = request.into_inner();
+        if !matches!(r.kind.as_str(), "exception" | "freeze") || r.place.is_empty() {
+            return Err(Status::invalid_argument("Not a crash"));
+        }
+        if !within(&CRASHES, user_id, 10, 3600) {
+            return Ok(Response::new(misc::CrashResponse {}));
+        }
+        let place = printable(&r.place, 120);
+        warn!(self.logger, "Crash from {user_id}: {} at {place}{}", r.kind, if r.fatal { " (fatal)" } else { "" });
+        // The coordinator keeps strings of up to 200 characters and lists of up to 16: the
+        // stack and callers go as their frames, the registers line as its parts.
+        let parts = |text: &str, by: &str| {
+            text.split(by)
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .take(16)
+                .map(|p| printable(p, 190))
+                .collect::<Vec<_>>()
+        };
+        crate::session_events::note(
+            crate::session_events::Who::Id(user_id),
+            "crash",
+            serde_json::json!({
+                "kind": r.kind,
+                "at": r.at,
+                "code": printable(&r.code, 120),
+                "place": place,
+                "stack": parts(&r.stack, ", "),
+                "registers": parts(&r.registers, "; "),
+                "callers": parts(&r.callers, ", "),
+                "doing": printable(&r.doing, 190),
+                "fatal": r.fatal,
+                "release": printable(&r.release, 32),
+            }),
+        );
+        Ok(Response::new(misc::CrashResponse {}))
+    }
+
+    /// What the add-on's crash fixes did: which went in, and how often each kept the game from
+    /// crashing (a session event, `crash_fixes`). Once a minute at most.
+    async fn crash_fixes(&self, request: Request<misc::CrashFixesRequest>) -> Result<Response<misc::CrashFixesResponse>, Status> {
+        let user_id = caller(&request)?;
+        let r = request.into_inner();
+        if !within(&CRASH_FIXES, user_id, 1, 60) {
+            return Ok(Response::new(misc::CrashFixesResponse {}));
+        }
+        // Lists of names (the coordinator keeps lists of plain values, 16 at most).
+        let fixes = r.fixes.iter().take(16);
+        let installed: Vec<String> = fixes.clone().filter(|f| f.installed).map(|f| printable(&f.name, 40)).collect();
+        let missing: Vec<String> = fixes.clone().filter(|f| !f.installed).map(|f| printable(&f.name, 40)).collect();
+        let saves: Vec<String> = fixes.filter(|f| f.saves > 0).map(|f| format!("{}:{}", printable(&f.name, 40), f.saves)).collect();
+        crate::session_events::note(
+            crate::session_events::Who::Id(user_id),
+            "crash_fixes",
+            serde_json::json!({
+                "first": r.first,
+                "exe": printable(&r.exe, 40),
+                "release": printable(&r.release, 32),
+                "installed": installed,
+                "missing": missing,
+                "saves": saves,
+            }),
+        );
+        Ok(Response::new(misc::CrashFixesResponse {}))
+    }
+
     /// Who the player can report: in their match now, or in one in the last 30 minutes (F5).
     async fn match_players(&self, request: Request<misc::MatchPlayersRequest>) -> Result<Response<misc::MatchPlayersResponse>, Status> {
         let user_id = caller(&request)?;
@@ -2801,4 +2872,27 @@ mod tests {
         // A player's name the word list flags, which the admins checked.
         assert!(check_username("Bedunga").is_ok());
     }
+}
+
+type Window = std::sync::LazyLock<std::sync::Mutex<HashMap<u32, (std::time::Instant, u32)>>>;
+/// Crashes and crash-fix counts per player: when the window began, and how many in it.
+static CRASHES: Window = std::sync::LazyLock::new(Default::default);
+static CRASH_FIXES: Window = std::sync::LazyLock::new(Default::default);
+
+/// Whether one more from `user_id` fits in `most` per `secs` seconds (and counts it).
+fn within(window: &Window, user_id: u32, most: u32, secs: u64) -> bool {
+    let span = std::time::Duration::from_secs(secs);
+    let mut w = window.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if w.len() >= 50_000 {
+        w.retain(|_, (since, _)| since.elapsed() < span);
+    }
+    let entry = w.entry(user_id).or_insert((std::time::Instant::now(), 0));
+    if entry.0.elapsed() >= span {
+        *entry = (std::time::Instant::now(), 0);
+    }
+    if entry.1 >= most {
+        return false;
+    }
+    entry.1 += 1;
+    true
 }

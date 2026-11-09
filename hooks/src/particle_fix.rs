@@ -76,5 +76,6 @@ pub unsafe fn guard_particle_fills() {
     if !crate::writemem(fill_slot as *mut u8, &guard.to_le_bytes()) {
         return;
     }
+    crate::fix_stats::installed("particle-fix", &[&SKIPPED]);
     info!("particle-fix: particle fills ({fill:#010x}) now check their vertex stream (streams {streams:#010x})");
 }

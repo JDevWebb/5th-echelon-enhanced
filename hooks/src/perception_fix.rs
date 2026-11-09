@@ -83,6 +83,7 @@ pub unsafe fn guard_perception() {
     if !crate::writemem(hook as *mut u8, &patch) {
         return;
     }
+    crate::fix_stats::installed("perception-fix", &[&SKIPPED]);
     info!(
         "perception-fix: the AI's zone test @ {hook:#010x} answers no for a player without a character (stub {:#010x}, no {skip:#010x})",
         stub as u32

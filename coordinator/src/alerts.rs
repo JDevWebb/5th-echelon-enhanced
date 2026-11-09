@@ -13,7 +13,9 @@
 //!   course to go over;
 //! * a server whose update failed or was rolled back, and a halted rollout.
 //! * a server whose program doesn't match the signed release it says it runs (its updater
-//!   checks before each start).
+//!   checks before each start);
+//! * a crash in players' games not yet marked on the Crashes page that hit three or more
+//!   players in a day, or one marked fixed seen again from its fix's release on (crashes.rs).
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -236,6 +238,8 @@ impl Coordinator {
                 format!("The rollout of {} is halted{note}", rollout.target.as_deref().unwrap_or("?")),
             ));
         }
+        // Players' crashes (crashes.rs): a new one hitting several players, or a fixed one back.
+        found.extend(self.crash_conditions().await?);
         Ok(found)
     }
 

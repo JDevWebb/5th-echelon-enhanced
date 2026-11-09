@@ -100,6 +100,7 @@ pub unsafe fn guard_load_order() {
         }
         stubs.push(stub as u32);
     }
+    crate::fix_stats::installed("load-order-fix", &[&PAST_END]);
     info!(
         "load-order-fix: a package's load-order check past its table's end is fine, not a crash (@ {:#010x}, {:#010x}; stubs {stubs:#010x?})",
         s.first, s.second

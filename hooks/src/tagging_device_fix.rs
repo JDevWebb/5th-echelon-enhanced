@@ -84,6 +84,7 @@ pub unsafe fn guard_tagging_devices() {
     if !crate::writemem(hook as *mut u8, &patch) {
         return;
     }
+    crate::fix_stats::installed("tagging-device-fix", &[&SKIPPED]);
     info!(
         "tagging-device-fix: a destroyed tagging device's reset @ {hook:#010x} no longer uses the part that's gone (stub {:#010x}, end {skip:#010x})",
         stub as u32

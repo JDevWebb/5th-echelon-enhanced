@@ -70,6 +70,8 @@ static LOCK_KNOWN: OnceLock<bool> = OnceLock::new();
 /// Whether the tick is hooked here: `follow_unblock` (the member's stale follow task) then runs from
 /// this tick instead of hooking the same function a second time.
 static HOOKED: AtomicBool = AtomicBool::new(false);
+/// Host migrations ended because they never finished (for fix_stats).
+static ENDED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// See [`HOOKED`].
 pub fn tick_hooked() -> bool {
@@ -217,6 +219,7 @@ fn tick(this: *mut u8, seconds: f32) {
         std::ptr::write_unaligned((this as usize + REASON) as *mut u32, 0);
         std::ptr::write_unaligned((this as usize + PHASE) as *mut u32, 0);
         let done = leave(game, this);
+        ENDED.fetch_add(1, Ordering::Relaxed);
         warn!(
             "migration-fix: the host migration ({}) hadn't finished after {} s (its task's state {state}): spinner closed, {done}",
             what(reason),
@@ -266,6 +269,7 @@ pub unsafe fn end_stuck_migrations() {
         Ok(()) => {
             let _ = TICK_AT.set(at);
             HOOKED.store(true, Ordering::Relaxed);
+            crate::fix_stats::installed("migration-fix", &[&ENDED]);
             info!(
                 "migration-fix: a host migration still running after {} s leaves the match (tick @ {at:#010x})",
                 GIVE_UP_AFTER.as_secs()

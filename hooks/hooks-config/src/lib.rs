@@ -11,6 +11,7 @@ use tracing::instrument;
 use url::Url;
 
 pub mod clock;
+pub mod crash_log;
 pub mod diagnostics;
 pub mod fusion_fix;
 pub mod game_files;

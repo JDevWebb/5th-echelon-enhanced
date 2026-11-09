@@ -189,7 +189,10 @@ pub unsafe fn fix_ticket_observers() {
     RDATA_END.store(image.rdata_va + image.rdata.len(), Ordering::Relaxed);
     match sites.set_state {
         Ok(target) => match SetStateHook.initialize(std::mem::transmute(target), set_state).and_then(|h| h.enable()) {
-            Ok(()) => info!("storm-fix: a ticket's state change drops dead observers first (@ {target:#010x})"),
+            Ok(()) => {
+                crate::fix_stats::installed("storm-fix", &[&DROPPED, &EXTRA]);
+                info!("storm-fix: a ticket's state change drops dead observers first (@ {target:#010x})");
+            }
             Err(err) => warn!("storm-fix: the state change's detour failed: {err:?}"),
         },
         Err(what) => warn!("storm-fix: {what} -> not guarded"),

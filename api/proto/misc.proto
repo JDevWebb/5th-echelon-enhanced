@@ -44,7 +44,54 @@ service Misc {
     // format, gzipped, as the file is). The server keeps it a week for its admins, who can
     // have it sent to the network's admin UI to watch.
     rpc Recording(RecordingRequest) returns (RecordingResponse);
+    // A crash or freeze of the player's game, from its log when the game starts again (the
+    // add-on's crash handler wrote it): a session event for the admin UI's Crashes page. Every
+    // player's, with the diagnostics agreement (Settings › Feedback turns it off). 0.5.0.
+    rpc Crash(CrashRequest) returns (CrashResponse);
+    // What the add-on's crash fixes did in this run: which went in, and how often each kept
+    // the game from crashing since the last time (the Crashes page's fixes in the field). 0.5.0.
+    rpc CrashFixes(CrashFixesRequest) returns (CrashFixesResponse);
 }
+
+message CrashRequest {
+    // "exception" or "freeze".
+    string kind = 1;
+    // When, Unix seconds (the player's PC).
+    int64 at = 2;
+    // "0xC0000005 access violation (reading 0x00000538)", or "no frame for 11 s".
+    string code = 3;
+    // Where: "Blacklist_DX11_game.exe+0x6f205a" (a freeze: its first frame in the game's code).
+    string place = 4;
+    // The code addresses on the stack, the registers line, the callers by frame pointers and
+    // what the game was doing, as the log has them (empty from logs before 0.5.0).
+    string stack = 5;
+    string registers = 6;
+    string callers = 7;
+    string doing = 8;
+    // The game didn't carry on after it.
+    bool fatal = 9;
+    // The add-on's release that wrote it ("0.5.0").
+    string release = 10;
+}
+message CrashResponse {}
+
+message CrashFixesRequest {
+    // The run's first: which fixes went in is new (later ones only count).
+    bool first = 1;
+    // "Blacklist_DX11_game.exe" or "Blacklist_game.exe", and the add-on's release.
+    string exe = 2;
+    string release = 3;
+    repeated CrashFix fixes = 4;
+}
+message CrashFix {
+    // "tagging-device-fix".
+    string name = 1;
+    // It found its place in this build and went in.
+    bool installed = 2;
+    // Times it kept the game from crashing since the last request.
+    uint32 saves = 3;
+}
+message CrashFixesResponse {}
 
 message RecordingRequest {
     bytes data = 1;

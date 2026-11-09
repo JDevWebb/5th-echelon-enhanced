@@ -120,6 +120,7 @@ pub unsafe fn guard_disruption() {
         warn!("disruption-fix: the item lookup's guard didn't go in (the tick's is in)");
         return;
     };
+    crate::fix_stats::installed("disruption-fix", &[&LOOKUPS, &TICKS]);
     info!("disruption-fix: the item lookup @ {lookup:#010x} and the nav-disruption tick @ {tick:#010x} cope with no item (stubs {lookup_stub:#010x}, {tick_stub:#010x})");
 
     std::thread::spawn(|| {

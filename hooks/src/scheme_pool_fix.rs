@@ -93,6 +93,7 @@ pub unsafe fn keep_shared_scheme_pool() {
     if !crate::writemem(hook as *mut u8, &patch) {
         return;
     }
+    crate::fix_stats::installed("scheme-pool-fix", &[&KEPT]);
     info!(
         "scheme-pool-fix: pawn teardown @ {hook:#010x} now keeps the shared action-scheme pool (stub {:#010x}, skip {skip:#010x})",
         stub as u32

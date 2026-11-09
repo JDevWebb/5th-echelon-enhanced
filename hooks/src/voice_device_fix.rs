@@ -156,6 +156,7 @@ pub unsafe fn guard_voice_devices() {
         warn!("voice-device-fix: not (fully) in: the game's memory couldn't be written");
         return;
     }
+    crate::fix_stats::installed("voice-device-fix", &[&CLOSED, &CLEARED]);
     info!("voice-device-fix: voice devices close before they're deleted, and the sound-device callback skips dead ones (vtables {playback_vtable:#010x}, {capture_vtable:#010x}; callback slot {callback_slot:#010x})");
 }
 

@@ -18,6 +18,13 @@
 //!   on, report only): each by its name under SYSTEM ("UMDs/lobby.umd"), the first 16 hex
 //!   characters of its SHA-256; `others`: the names of other files there that can change the
 //!   game, joined.
+//! - `crash`: a crash or freeze of the player's game, sent by its add-on at its next start
+//!   (Misc.Crash, 0.5.0): `kind` (`exception`, `freeze`), `at`, `code`, `place`, `stack` and
+//!   `callers` (lists of code addresses), `registers` (the registers line's parts), `doing`,
+//!   `fatal`, `release`. The coordinator's Crashes page groups them by `place`.
+//! - `crash_fixes`: what the add-on's crash fixes did (Misc.CrashFixes, 0.5.0): `first` (the
+//!   run's first, which says which went in), `exe`, `release`, `installed` and `missing`
+//!   (names), `saves` (`name:times` since the last).
 //! - `signin_refused`: `reason` (`outdated`, `too_many`: too many failed sign-ins,
 //!   `too_many_signins`: too many sign-ins from the address, failed or not, `wrong_password`,
 //!   `banned`, `no_current_client`, `name_not_allowed`), `via` (`game` or `api`), `client` when known.

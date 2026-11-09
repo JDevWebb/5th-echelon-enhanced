@@ -549,6 +549,7 @@ pub unsafe fn serve_reads_off_the_sequence() {
             return;
         }
     }
+    crate::fix_stats::installed("umd-read-fix", &[&SERVED]);
     info!(
         "umd-read-fix: linear package reads (vtable {:#010x}, sync {:#010x}) now take what their UMD read sequence can't serve from the UMD files",
         site.vtable, site.sync

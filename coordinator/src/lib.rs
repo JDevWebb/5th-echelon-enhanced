@@ -44,6 +44,7 @@ pub mod alerts;
 pub mod chat;
 pub mod clients;
 pub mod content;
+pub mod crashes;
 pub mod game_names;
 pub mod hardware;
 mod host_check;

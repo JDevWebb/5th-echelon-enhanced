@@ -195,6 +195,16 @@ Above it, **Problems** lists what went wrong, worst first in each level:
 
 Servers record these as they happen and send them to the coordinator every few seconds. They keep them until the coordinator has them, so an outage loses none, and repeat events (an outdated client retrying its sign-in every few seconds) come as one, with a count. The coordinator keeps them 30 days. The relay sees only relayed players' traffic, so a dropout between two players connected directly shows only as their leaving.
 
+### Crashes
+
+**Crashes** lists every player's crashes and freezes from the last day, 7 or 30 days, grouped by where in the code they happened (`Blacklist_DX11_game.exe+0x6f205a`; a freeze by its first frame in the game's code), most players first. Games from 0.5.0 on send the previous run's crashes when they next start, so a crash that closed the game is seen too, and players who never send a report count (the same agreement as the diagnostics: launcher **Settings › Feedback**; the lines are redacted on their PC). Each group says how many players it hit, how often, how often it ended the game, which releases and servers, and opens to the latest one's details: what the game was doing (in a match or not, the session, the mode and map, how long after the start and its last save), the registers and the code bytes where it happened (what each register points to, so a null or freed pointer shows at once), its callers found by the saved frame pointers, the addresses on the stack, and the reports the same players sent within three hours.
+
+**Mark** a group **fixed in** a release (a crash from that release or later then shows **seen again**: the fix doesn't cover it), **known** (nothing to do: an audio driver's) or **watching**. **To look at** shows the groups not marked, watched, or back after a fix. Marks are in the audit log; the crashes 0.5.0 fixes come marked.
+
+**Crash fixes in players' games:** each 0.5.0 game says which of the add-on's crash fixes went in (a minute after it starts), and how often each kept it going (every two minutes, when that changed). The table has each fix's count, the players it helped and the runs counted, and the builds (`Blacklist_DX11_game.exe 0.5.0`) where it didn't go in, which is how a game update that moves the code shows up.
+
+Players' rows on **Sessions** show both as marks too.
+
 ### Live
 
 **Live** shows every room open now on every server, refreshed every 10 seconds: each match's map and game mode, public or private, its host, every player in it (with their ping to the server; blue when the relay carries them, red when their game isn't registered for online play), and how long it's been open, then the parties. Players online but in no room are listed under their server as in the menus. **Timeline** opens the match's page. Servers send these with their pulse (0.4.3 servers; older ones show nobody's rooms).
@@ -224,6 +234,7 @@ The coordinator checks every minute. An alert opens when its condition starts, u
 | Sign-ins refused | 30 or more in 10 minutes |
 | Traffic allowance | 80% or 100% of the month's allowance, or on course to pass it |
 | Update | A server's update failed or was rolled back, or a rollout halted |
+| Crash | A crash or freeze in players' games, not marked on **Crashes**, that hit 3 or more players in the last day; or one marked fixed seen again in its fix's release or later |
 
 Open alerts show on the Overview and as a badge on **Alerts**. To have them posted to a chat, paste a Discord or Slack incoming webhook under **Alerts**: it must be https and reach a public address. Changing it asks for your second factor, and **Send a test** checks it. Players' reports can go there too (see [Player reports](#player-reports)).
 

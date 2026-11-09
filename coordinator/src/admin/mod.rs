@@ -21,6 +21,7 @@
 //! Caddy); otherwise the connection's, located with DB-IP.
 
 pub mod auth;
+mod crashes;
 mod leaderboards;
 pub mod live;
 mod moderation;
@@ -241,6 +242,7 @@ pub fn router(c: Shared) -> Router {
         .merge(support::routes())
         .merge(moderation::routes())
         .merge(sessions::routes())
+        .merge(crashes::routes())
         .merge(recordings::routes())
         .merge(leaderboards::routes());
     Router::new()

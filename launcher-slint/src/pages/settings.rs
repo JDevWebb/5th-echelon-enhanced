@@ -738,7 +738,7 @@ impl SettingsPage {
     fn feedback(&mut self, v: &Value, r: &mut Rows) {
         if v.get("game").is_some_and(|g| !g.is_null()) {
             r.card("While you play");
-            r.add(note("The game sends the server it's signed in to its warnings, errors and network events as they happen, and what it's doing (the game session it's in, its checkpoint saves, which of 5th Echelon's fixes went in and what they did), so the server's admins can see why a join, a connection or a mission failed. Your PC's name, your user folder and your internet address are hidden first."));
+            r.add(note("The game sends the server it's signed in to its warnings, errors and network events as they happen, and what it's doing (the game session it's in, its checkpoint saves, which of 5th Echelon's fixes went in and what they did), so the server's admins can see why a join, a connection or a mission failed. If the game crashed or froze, it says where in the game's code (and what it was doing) when it next starts, so crashes can be fixed even when nobody sends a report. Your PC's name, your user folder and your internet address are hidden first."));
             r.add(switch("send_diagnostics", "Send the game's diagnostics to the server", bo(v, "send_diagnostics")));
             r.add(note("With it on, when the server sees a problem in your game (a join that failed, your connection dropping, the game restarting in a match), it can also ask for the 15 minutes of the game's log before it, at most once an hour (never the whole log), private details hidden the same way."));
         }

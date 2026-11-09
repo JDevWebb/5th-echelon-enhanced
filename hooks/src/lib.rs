@@ -39,11 +39,13 @@ mod code_cave;
 mod code_check;
 mod community;
 mod crash;
+mod crash_report;
 mod dataversion;
 mod diagnostics;
 mod disruption_fix;
 mod dll_utils;
 mod file_check;
+mod fix_stats;
 mod follow_unblock;
 mod game_state;
 mod hooks;
@@ -383,6 +385,8 @@ fn init(hmodule: Option<HMODULE>) {
     };
     reload_handle.reload(tracing_subscriber::EnvFilter::default().add_directive(level.into())).unwrap();
     diagnostics::start(config);
+    crash_report::start(config);
+    fix_stats::start(config);
 
     let addr = addresses::get();
 

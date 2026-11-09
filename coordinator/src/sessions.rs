@@ -68,6 +68,8 @@ const KINDS: &[&str] = &[
     "player_report",
     "relay_address_mismatch",
     "game_files",
+    "crash",
+    "crash_fixes",
 ];
 
 /// How long after a relay drop a player leaving their match counts as dropping out, and
@@ -1000,6 +1002,33 @@ fn describe(e: &Event) -> String {
                 ""
             }
         ),
+        "crash" => format!(
+            "Their game {} at {}{}{} (sent at its next start; the Crashes page groups them)",
+            if e.str("kind") == "freeze" { "froze" } else { "crashed" },
+            e.str("place"),
+            Some(e.str("code")).filter(|c| !c.is_empty()).map(|c| format!(": {c}")).unwrap_or_default(),
+            if e.detail["fatal"] == true { ", and closed" } else { ", and carried on" }
+        ),
+        "crash_fixes" => {
+            let names = |key: &str| {
+                e.detail[key]
+                    .as_array()
+                    .map(|l| l.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+                    .unwrap_or_default()
+            };
+            let (saved, missing) = (names("saves"), names("missing"));
+            let mut said = Vec::new();
+            if !saved.is_empty() {
+                said.push(format!("crash fixes kept the game going: {}", saved.join(", ").replace(':', " ")));
+            }
+            if !missing.is_empty() {
+                said.push(format!("didn't go in on {}: {}", e.str("exe"), missing.join(", ")));
+            }
+            if said.is_empty() {
+                said.push(format!("{} crash fixes in", names("installed").len()));
+            }
+            said.join("; ")
+        }
         "relay_gaps" => format!(
             "Their traffic through the relay went silent {} times (longest {:.1} s), {} with a burst after: held packets let go at once, as a lag switch does",
             e.detail["gaps"].as_i64().unwrap_or(0),
@@ -1223,6 +1252,9 @@ fn mark_level(e: &Event) -> Option<&'static str> {
         },
         "relay_drop" if e.detail["player_quiet"] == true => Some("warn"),
         "login_stalled" => Some("warn"),
+        "crash" if e.detail["fatal"] == true => Some("bad"),
+        "crash" => Some("warn"),
+        "crash_fixes" if e.detail["missing"].as_array().is_some_and(|m| !m.is_empty()) => Some("warn"),
         "search" if other_data(e).is_some() => Some("warn"),
         "player_report" => Some("warn"),
         // F4: the host changed the match's settings, or removed someone, during the match.

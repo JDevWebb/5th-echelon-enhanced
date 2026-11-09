@@ -287,6 +287,29 @@ pub fn fair_play_check(check: &str, detail: &str, value: f64, wine: bool) {
     }
 }
 
+/// Whether the game is signed in to its server (a token to call with).
+pub fn has_token() -> bool {
+    TOKEN.lock().unwrap().is_some()
+}
+
+/// Sends the server a crash or freeze from the last run's log (crash_report.rs).
+pub fn crash(request: server_api::misc::CrashRequest) -> Result<(), Error> {
+    run(signed_in(|| async {
+        let mut client = connect!(MiscClient);
+        client.crash(tonic::Request::new(request.clone())).await?;
+        Ok(())
+    }))
+}
+
+/// Sends the server what the crash fixes did (fix_stats.rs).
+pub fn crash_fixes(request: server_api::misc::CrashFixesRequest) -> Result<(), Error> {
+    run(signed_in(|| async {
+        let mut client = connect!(MiscClient);
+        client.crash_fixes(tonic::Request::new(request.clone())).await?;
+        Ok(())
+    }))
+}
+
 /// Who we can report: in our match now, or in one in the last 30 minutes (F5).
 pub fn match_players() -> Result<Vec<server_api::misc::MatchPlayer>, Error> {
     run(signed_in(|| async {

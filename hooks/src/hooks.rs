@@ -782,6 +782,21 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
     if config.disable_crash_fixes {
         tracing::info!("crash fixes: off (disable_crash_fixes)");
     } else {
+        // Each says when it goes in (fix_stats.rs): one that doesn't shows as missing.
+        crate::fix_stats::expect(&[
+            "scheme-pool-fix",
+            "particle-fix",
+            "storm-fix",
+            "voice-device-fix",
+            "tagging-device-fix",
+            "perception-fix",
+            "disruption-fix",
+            "load-order-fix",
+            "migration-fix",
+        ]);
+        if !config.disable_umd_read_fix {
+            crate::fix_stats::expect(&["umd-read-fix"]);
+        }
         crate::scheme_pool_fix::keep_shared_scheme_pool();
         crate::particle_fix::guard_particle_fills();
         crate::storm_fix::fix_ticket_observers();

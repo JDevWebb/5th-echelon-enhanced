@@ -3146,6 +3146,87 @@ async fn session_events_are_taken_once_and_shown_with_their_problems() {
 }
 
 #[tokio::test]
+async fn crashes_are_grouped_marked_and_alerted() {
+    let t = start("crashes").await;
+    let r = admin_router(&t);
+    let a = t.join("server-a").await;
+    let now = identity::now();
+    let crash = |id: i64, player: i64, name: &str, place: &str, release: &str, fatal: bool| {
+        json!({ "id": id, "at": now - 600 + id, "last_at": now - 600 + id, "player": player, "name": name, "kind": "crash", "count": 1,
+            "detail": { "kind": "exception", "at": now - 600, "code": "0xC0000005 access violation (reading 0x00000538)", "place": place,
+                "stack": ["Blacklist_DX11_game.exe+0xa94680", "Blacklist_DX11_game.exe+0x9881ec"], "registers": ["eax=00000000 ecx=1234abcd", "code at eip: 8b 80"],
+                "callers": [], "doing": "in a match", "fatal": fatal, "release": release } })
+    };
+    let new_one = "Blacklist_DX11_game.exe+0x123456";
+    let fixed = "Blacklist_DX11_game.exe+0x6f205a";
+    let events = json!({ "events": [
+        crash(1, 11, "Viper", new_one, "0.5.0", true),
+        crash(2, 12, "Gex", new_one, "0.5.0", false),
+        crash(3, 13, "Cloud", new_one, "0.5.0", true),
+        crash(4, 11, "Viper", fixed, "0.4.7", true),
+        { "id": 5, "at": now - 100, "last_at": now - 100, "player": 11, "name": "Viper", "kind": "crash_fixes", "count": 1,
+          "detail": { "first": true, "exe": "Blacklist_DX11_game.exe", "release": "0.5.0",
+            "installed": ["perception-fix"], "missing": ["storm-fix"], "saves": ["perception-fix:2"] } },
+    ] });
+    let (status, v) = t.call("POST", "/v1/events", Some(&a), Some(events)).await;
+    assert_eq!((status, v["kept"].as_i64()), (StatusCode::OK, Some(5)), "{v}");
+
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    let (status, v) = admin_call(&r, "GET", "/api/crashes?days=7", &cookie, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!((v["crashes"].as_i64(), v["fatal"].as_i64(), v["players"].as_i64()), (Some(4), Some(3), Some(3)), "{v}");
+    let groups = v["groups"].as_array().unwrap();
+    assert_eq!(groups[0]["signature"], new_one, "most players first");
+    assert_eq!((groups[0]["players"].as_i64(), groups[0]["mark"].is_null()), (Some(3), true));
+    let old = groups.iter().find(|g| g["signature"] == fixed).unwrap();
+    assert_eq!(old["mark"]["status"], "fixed", "seeded");
+    assert_eq!(old["seen_since_fix"], json!([]), "0.4.7 is before the fix");
+    assert_eq!(old["latest"]["registers"], "eax=00000000 ecx=1234abcd; code at eip: 8b 80", "the parts joined again");
+    assert_eq!(old["latest"]["stack"], "Blacklist_DX11_game.exe+0xa94680, Blacklist_DX11_game.exe+0x9881ec");
+    let perception = v["fixes"].as_array().unwrap().iter().find(|f| f["name"] == "perception-fix").unwrap();
+    assert_eq!((perception["saves"].as_i64(), perception["players"].as_i64()), (Some(2), Some(1)));
+    let storm = v["fixes"].as_array().unwrap().iter().find(|f| f["name"] == "storm-fix").unwrap();
+    assert_eq!(storm["missing"]["Blacklist_DX11_game.exe 0.5.0"].as_i64(), Some(1));
+
+    // Three players in a day, not marked: an alert. Marked: it goes.
+    t.c.check_alerts().await.unwrap();
+    let open: Vec<(String, String)> = sqlx::query_as("SELECT kind, server_id FROM alerts WHERE resolved_at IS NULL")
+        .fetch_all(&t.c.pool)
+        .await
+        .unwrap();
+    assert!(open.contains(&("crash".into(), new_one.into())), "{open:?}");
+    let mark = json!({ "signature": new_one, "status": "fixed", "fixed_in": "0.5.1", "note": "found it" });
+    assert_eq!(admin_call(&r, "PUT", "/api/crashes/mark", &cookie, Some(mark)).await.0, StatusCode::OK);
+    t.c.check_alerts().await.unwrap();
+    let open: Vec<(String, String)> = sqlx::query_as("SELECT kind, server_id FROM alerts WHERE resolved_at IS NULL")
+        .fetch_all(&t.c.pool)
+        .await
+        .unwrap();
+    assert!(!open.iter().any(|(k, _)| k == "crash"), "{open:?}");
+    // A fixed one seen on its fix's release: back, an alert again.
+    let back = json!({ "events": [crash(6, 14, "Tama", fixed, "0.5.0", true)] });
+    assert_eq!(t.call("POST", "/v1/events", Some(&a), Some(back)).await.0, StatusCode::OK);
+    t.c.check_alerts().await.unwrap();
+    let level: Option<String> = sqlx::query_scalar("SELECT level FROM alerts WHERE resolved_at IS NULL AND kind = 'crash' AND server_id = ?")
+        .bind(fixed)
+        .fetch_optional(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(level.as_deref(), Some("bad"));
+    let (_, v) = admin_call(&r, "GET", "/api/crashes", &cookie, None).await;
+    let old = v["groups"].as_array().unwrap().iter().find(|g| g["signature"] == fixed).unwrap();
+    assert_eq!(old["seen_since_fix"], json!(["0.5.0"]));
+
+    let bad = json!({ "signature": new_one, "status": "fixed" });
+    assert_eq!(
+        admin_call(&r, "PUT", "/api/crashes/mark", &cookie, Some(bad)).await.0,
+        StatusCode::BAD_REQUEST,
+        "fixed needs its release"
+    );
+    assert_eq!(admin_call(&r, "GET", "/api/crashes", "", None).await.0, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn the_map_lists_who_is_online_from_the_last_pulse_only() {
     let t = start("online-now").await;
     let r = admin_router(&t);
@@ -3624,6 +3705,7 @@ async fn every_admin_page_answers_a_signed_in_admin_and_no_one_else() {
         "/api/alerts",
         "/api/updates",
         "/api/sessions",
+        "/api/crashes?days=30",
         "/api/leaderboards",
         "/api/players",
         "/api/reports",

@@ -77,7 +77,7 @@ import { fmt, serverName } from '../lib/fmt.js';
 import { live } from '../lib/live.js';
 import { toast } from '../lib/ui.js';
 
-const KINDS = { offline: 'Offline', cpu: 'CPU', memory: 'Memory', disk: 'Disk', signins: 'Refused sign-ins', allowance: 'Traffic allowance', update: 'Update', rollout: 'Rollout' };
+const KINDS = { offline: 'Offline', cpu: 'CPU', memory: 'Memory', disk: 'Disk', signins: 'Refused sign-ins', allowance: 'Traffic allowance', update: 'Update', rollout: 'Rollout', crash: 'Crash' };
 onMounted(() => ensureOverview().catch(() => {}));
 const names = computed(() => new Map((live.overview?.servers || []).map(sv => [sv.id, serverName(sv)])));
 const { data, error, reload } = useLoad(() => api('GET', '/alerts'), () => null, { refresh: false });
