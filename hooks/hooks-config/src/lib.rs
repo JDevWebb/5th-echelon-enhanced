@@ -611,13 +611,51 @@ pub const COMMUNITY_DOMAIN: &str = "scbl.jdevwebb.net";
 
 impl Config {
     /// Whether the game plays on the community network: its API server is [`COMMUNITY_DOMAIN`]
-    /// or a name under it.
+    /// or a name under it, over HTTPS (the network serves its API on nothing else).
     pub fn on_community_network(&self) -> bool {
-        self.api_server
-            .host_str()
-            .map(|h| h.trim_end_matches('.').to_ascii_lowercase())
-            .is_some_and(|h| h == COMMUNITY_DOMAIN || h.ends_with(&format!(".{COMMUNITY_DOMAIN}")))
+        self.api_server.scheme() == "https"
+            && self
+                .api_server
+                .host_str()
+                .map(|h| h.trim_end_matches('.').to_ascii_lowercase())
+                .is_some_and(|h| h == COMMUNITY_DOMAIN || h.ends_with(&format!(".{COMMUNITY_DOMAIN}")))
     }
+}
+
+/// Whether calls to the API at `url` would cross the internet unencrypted: plain `http://` to a
+/// host that isn't on this PC or the local network (an address that's loopback, private, shared
+/// or link-local, or a name like `localhost`, a single label or one under `.local`, `.lan`,
+/// `.home.arpa` or `.internal`). The password and the sign-in token go in the clear there. A LAN
+/// server on plain HTTP is fine.
+pub fn api_in_clear(url: &Url) -> bool {
+    if url.scheme() != "http" {
+        return false;
+    }
+    let local_ip = |ip: std::net::IpAddr| match ip {
+        std::net::IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified() || (a == 100 && (64..128).contains(&b))
+        }
+        std::net::IpAddr::V6(v6) => {
+            let first = v6.segments()[0];
+            v6.is_loopback() || v6.is_unspecified() || first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80
+        }
+    };
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) => !local_ip(ip.into()),
+        Some(url::Host::Ipv6(ip)) => !local_ip(ip.into()),
+        Some(url::Host::Domain(name)) => {
+            let name = name.trim_end_matches('.').to_ascii_lowercase();
+            let local = name == "localhost"
+                || !name.contains('.')
+                || [".localhost", ".local", ".lan", ".home.arpa", ".internal"].iter().any(|end| name.ends_with(end));
+            !local
+        }
+        None => false,
+    }
+}
+
+impl Config {
 
     /// Fair play's watching and recording, on: always on the community network, where they're
     /// part of playing (the user, 2026-11-07: its `WitnessReports`, `ReplayRecording`,
@@ -1490,6 +1528,34 @@ mod tests {
         assert!(!cfg.witness_reports_on() && !cfg.replay_recording_on() && !cfg.replay_upload_on() && !cfg.net_capture_on());
         cfg.api_server = "https://notscbl.jdevwebb.net.evil.example/".parse().unwrap();
         assert!(!cfg.on_community_network(), "only the name or under it");
+        cfg.api_server = "http://scbl.jdevwebb.net".parse().unwrap();
+        assert!(!cfg.on_community_network(), "only over HTTPS");
+    }
+
+    #[test]
+    fn the_api_in_the_clear_is_plain_http_past_the_local_network() {
+        let clear = |url: &str| super::api_in_clear(&url.parse().unwrap());
+        assert!(clear("http://play.mygroup.org:50051/"));
+        assert!(clear("http://203.0.113.5:50051"));
+        assert!(clear("http://[2001:db8::1]:50051"));
+        assert!(!clear("https://play.mygroup.org/"));
+        for local in [
+            "http://127.0.0.1:50051",
+            "http://192.168.1.20:50051",
+            "http://10.0.0.2",
+            "http://172.16.4.4",
+            "http://100.100.1.1",
+            "http://169.254.3.3",
+            "http://[::1]:50051",
+            "http://[fd00::5]",
+            "http://localhost:50051",
+            "http://gamebox:50051",
+            "http://server.lan",
+            "http://pc.local.",
+            "http://nas.home.arpa",
+        ] {
+            assert!(!clear(local), "{local}");
+        }
     }
 
     #[test]

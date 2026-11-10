@@ -113,6 +113,15 @@ async fn create_channel() -> std::result::Result<tonic::transport::Channel, Erro
                                                                                       // HTTPS when the server has it (the launcher sets the URL from what the server reports).
     if url.scheme() == "https" {
         endpoint = endpoint.tls_config(tonic::transport::ClientTlsConfig::new().with_webpki_roots())?;
+    } else if crate::config::api_in_clear(url) {
+        // Kept working (a server of the player's own may have no certificate), but said plainly.
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            tracing::warn!(
+                "The API server {} is plain HTTP outside the local network: the password and sign-in token cross the internet unencrypted. Ask its owner for HTTPS.",
+                url.host_str().unwrap_or_default()
+            )
+        });
     }
     let channel = endpoint
         .connect_timeout(std::time::Duration::from_secs(1))
