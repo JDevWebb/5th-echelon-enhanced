@@ -44,11 +44,6 @@ pub fn note_ubisoft_connect(game_dir: &Path) {
     }
 }
 
-/// Whether a start through Ubisoft Connect worked in `game_dir`.
-pub fn ubisoft_connect_worked(game_dir: &Path) -> bool {
-    game_dir.join(UBISOFT_CONNECT_FILE).is_file()
-}
-
 /// The file's text.
 pub fn write(exe: &str, steam: bool, launcher: bool) -> String {
     format!("exe={exe}\nsteam={steam}\nlauncher={launcher}\n")

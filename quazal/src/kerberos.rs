@@ -1,6 +1,4 @@
 /// Kerberos-related functionality for authentication.
-use std::io::Cursor;
-
 use hmac::digest::Update;
 use hmac::Hmac;
 use hmac::Mac;
@@ -9,7 +7,6 @@ use md5::Md5;
 use sodiumoxide::crypto::secretbox;
 
 use crate::prudp::packet::Rc4;
-use crate::rmc::basic::FromStream;
 use crate::rmc::basic::FromStreamError;
 use crate::rmc::basic::ReadStream;
 use crate::rmc::basic::ToStream;
@@ -114,23 +111,6 @@ impl KerberosTicket {
             key = h.to_vec();
         }
         key
-    }
-
-    /// Creates a `KerberosTicket` from a byte buffer.
-    pub fn from_bytes(buf: &[u8], peer_pid: u32, password: Option<&str>, key: &secretbox::Key) -> Result<Self, FromStreamError> {
-        let off = buf.len() - Md5::output_size();
-        let (buf, _mac) = buf.split_at(off);
-
-        let obf_key = Self::derive_key(peer_pid, password);
-        let buf: Vec<u8> = Rc4::new(&obf_key).zip(buf).map(|(a, b)| a ^ b).collect();
-        let mut rdr = ReadStream::from_reader(Cursor::new(buf));
-
-        let session_key = FromStream::from_stream(&mut rdr)?;
-        let pid = FromStream::from_stream(&mut rdr)?;
-        let internal: Vec<u8> = rdr.read_all()?;
-        let internal = KerberosTicketInternal::open(&internal, key)?;
-
-        Ok(Self { session_key, pid, internal })
     }
 
     /// Converts the ticket to a byte vector.

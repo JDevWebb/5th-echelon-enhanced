@@ -387,10 +387,6 @@ pub fn list_friends_within(limit: std::time::Duration) -> Result<Vec<Friend>, Er
     runtime()?.block_on(async { tokio::time::timeout(limit, async { list_friends_async().await }).await.map_err(|_| Error::NotConnected)? })
 }
 
-pub fn list_friends() -> Result<Vec<Friend>, Error> {
-    run(list_friends_async())
-}
-
 async fn list_friends_async() -> Result<Vec<Friend>, Error> {
     signed_in(|| async {
         let mut client = connect!(FriendsClient);

@@ -14,10 +14,6 @@ use derive_more::Error as DeriveError;
 use derive_more::From;
 use enumflags2::bitflags;
 use enumflags2::BitFlags;
-use hmac::Hmac;
-use hmac::Mac;
-use md5::Digest;
-use md5::Md5;
 use miniz_oxide::deflate::compress_to_vec_zlib;
 use miniz_oxide::inflate::decompress_to_vec_zlib_with_limit;
 use miniz_oxide::inflate::DecompressError;
@@ -320,32 +316,6 @@ impl QPacket {
     #[must_use]
     pub(crate) fn calc_checksum(&self, ctx: &Context) -> u8 {
         calc_checksum_from_data(ctx.key(self.destination.stream_type), &self.to_data_bytes(ctx))
-    }
-
-    /// Calculates the signature of the packet.
-    #[must_use]
-    pub(crate) fn calc_signature(&self, ctx: &Context, payload: &[u8]) -> u32 {
-        match self.packet_type {
-            PacketType::Data => {
-                if payload.is_empty() {
-                    0x1234_5678
-                } else {
-                    let key = Md5::digest(&ctx.access_key);
-                    let mut mac = Hmac::<Md5>::new_from_slice(&key).expect("Key size is constant");
-                    mac.update(payload);
-                    let result = mac.finalize();
-                    let mut rdr = Cursor::new(result.into_bytes());
-                    rdr.read_u32::<LittleEndian>().expect("convert digest to u32")
-                }
-            }
-            PacketType::Syn => todo!(),
-            PacketType::Connect => todo!(),
-            PacketType::Disconnect => todo!(),
-            PacketType::Ping => todo!(),
-            PacketType::User => todo!(),
-            PacketType::Route => todo!(),
-            PacketType::Raw => todo!(),
-        }
     }
 
     /// Converts the packet data to a byte vector.

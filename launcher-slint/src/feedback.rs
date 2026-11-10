@@ -254,16 +254,6 @@ pub fn feedback(state: tauri::State<Feedback>) -> Option<AskView> {
     })
 }
 
-/// The last part of a log that goes with the report (where the trouble usually is), to look at.
-#[allow(dead_code)] // What's sent, file by file: the dialog lists them by name for now.
-pub fn feedback_file(state: tauri::State<Feedback>, index: usize) -> Option<String> {
-    let st = state.lock();
-    let file = st.asking.as_ref()?.files.get(index)?;
-    let start = file.text.len().saturating_sub(64 * 1024);
-    let start = (start..file.text.len()).find(|i| file.text.is_char_boundary(*i)).unwrap_or(0);
-    Some(file.text[start..].to_string())
-}
-
 /// Sends the report as the player filled it in; the upload carries on in the activity bar.
 pub fn feedback_send(app: tauri::AppHandle, state: tauri::State<Feedback>, good: Option<bool>, problems: Vec<String>, comment: String, attach: bool) {
     let mut st = state.lock();

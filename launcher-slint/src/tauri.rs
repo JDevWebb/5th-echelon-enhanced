@@ -90,13 +90,6 @@ impl<T> std::ops::Deref for State<'_, T> {
     }
 }
 
-impl<'a, T> State<'a, T> {
-    #[allow(dead_code)]
-    pub fn inner(&self) -> &'a T {
-        self.0
-    }
-}
-
 pub trait Manager {
     fn state<T: Send + Sync + 'static>(&self) -> State<'_, T>;
     fn get_webview_window(&self, label: &str) -> Option<Window>;

@@ -503,10 +503,6 @@ impl Storage {
             .await?)
     }
 
-    pub fn find_user_by_id(&self, id: u32) -> Result<Option<User>> {
-        run(self.find_user_by_id_async(id))?
-    }
-
     pub async fn find_user_by_id_async(&self, id: u32) -> Result<Option<User>> {
         Ok(sqlx::query_as("SELECT id, username, ubi_id, is_online FROM users WHERE id = ?")
             .bind(id)

@@ -223,7 +223,6 @@ pub fn working(t: impl Into<String>) -> R {
 pub fn rule() -> R {
     R::new("rule")
 }
-#[allow(dead_code)]
 pub fn space() -> R {
     R::new("space")
 }
@@ -279,7 +278,7 @@ impl Rows {
             let (group, carded) = (rows[i].0, rows[i].1);
             let end = rows[i..].iter().position(|(g, ..)| *g != group).map_or(rows.len(), |n| i + n);
             if !out.is_empty() {
-                out.push(R::new("space"));
+                out.push(space());
             }
             let n = end - i;
             for (k, (_, _, r)) in rows[i..end].iter().enumerate() {
@@ -360,8 +359,4 @@ pub fn json<T: serde::Serialize>(t: &T) -> Value {
 /// A list of (id, label) pairs from JSON `[[id, label], …]`.
 pub fn pairs(v: &[Value]) -> Vec<(String, String)> {
     v.iter().filter_map(|p| Some((p.get(0)?.as_str()?.to_string(), p.get(1)?.as_str()?.to_string()))).collect()
-}
-#[allow(dead_code)]
-pub fn same(list: &[&str]) -> Vec<(String, String)> {
-    list.iter().map(|s| (s.to_string(), s.to_string())).collect()
 }

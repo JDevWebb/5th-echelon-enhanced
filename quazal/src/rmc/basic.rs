@@ -94,24 +94,6 @@ impl<R: ReadBytesExt> ReadStream<R> {
         }
     }
 
-    /// Reads a `u8` length-prefixed byte buffer from the stream.
-    pub fn buf_u8(&mut self) -> std::result::Result<Vec<u8>, FromStreamError> {
-        let l = self.u8()?;
-        self.read_n_bytes(l as usize)
-    }
-
-    /// Reads a `u16` length-prefixed byte buffer from the stream.
-    pub fn buf_u16(&mut self) -> std::result::Result<Vec<u8>, FromStreamError> {
-        let l = self.u16()?;
-        self.read_n_bytes(l as usize)
-    }
-
-    /// Reads a `u32` length-prefixed byte buffer from the stream.
-    pub fn buf_u32(&mut self) -> std::result::Result<Vec<u8>, FromStreamError> {
-        let l = self.u32()?;
-        self.read_n_bytes(l as usize)
-    }
-
     /// Reads a `FromStream` implementor from the stream.
     pub fn read<F>(&mut self) -> std::result::Result<F, FromStreamError>
     where
