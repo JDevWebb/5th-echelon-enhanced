@@ -207,7 +207,7 @@ mod tests {
 
         let json = r#"{"status":"Waiting","unread":1,"messages":[
             {"id":4,"at":10,"from":"player","admin":null,"text":"It drops","files":[{"name":"launcher.log","size":9}]},
-            {"id":7,"at":20,"from":"admin","admin":"Jason","text":"Send the game's log\u001b[31m please"},
+            {"id":7,"at":20,"from":"admin","admin":"Sam","text":"Send the game's log\u001b[31m please"},
             {"nonsense":true}]}"#;
         let t = parse_thread(json).unwrap();
         assert_eq!((t.status.as_deref(), t.unread, t.messages.len(), t.last_answer()), (Some("waiting"), 1, 2, 7));

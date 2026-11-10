@@ -639,7 +639,7 @@ mod tests {
         #[cfg(not(feature = "test-community"))]
         assert_eq!(community(), COMMUNITY);
         assert!(
-            built_in("https://rh-sgp02.scbl.jdevwebb.net").is_empty(),
+            built_in("https://test.scbl.jdevwebb.net").is_empty(),
             "never the community's servers for another directory"
         );
         assert!(!built_in(COMMUNITY_OLD).is_empty());

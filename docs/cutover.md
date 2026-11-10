@@ -89,14 +89,6 @@ only, TTL 60. Then:
 
 Go ahead only when every step above passed; note what it took and how long.
 
-**The rehearsal of 2026-11-10** (three Vultr machines as eu, na and oceania on 0.4.7 with
-production's databases, then this window's steps with 0.5.0; no standby or DNS move): the
-coordinator's upgrade ran its migrations on production's data in 3 s; each installer run took
-about 10 s; the merge took 2 s (508 accounts as expected, no relationship or upload lost, every
-identity on na linked under its name). It found the order of na and the relays (now steps 4 to
-6), that dropping the alias needs `--coordinator-alias -`, that a run of its own restarts eu's
-game, and that relays weren't offered for up to 6 hours after the upgrade (fixed in 0.5.0). The
-rollback took 19 s, and left copy-links' links on na (now `save-links` and `restore-links`).
 
 ## 2. The update window
 

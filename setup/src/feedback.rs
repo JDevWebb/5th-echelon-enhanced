@@ -550,7 +550,7 @@ mod tests {
             ..Private::default()
         };
         let text = r#"Save game name: "C:\\Users\\msjou\\AppData\\Roaming\\5th-Echelon"
-path="C:\Users\Jason\Documents" and /home/deck/.steam
+path="C:\Users\Kiwi\Documents" and /home/deck/.steam
 gethostbyname: called with "DESKTOP-NASN" by MSJOU
 this PC is 122.58.93.144:13000; advertising 139.99.171.113:40000; LAN 192.168.0.2; version 1.2.3.4.5"#;
         let out = redact(text, &private);
@@ -561,7 +561,7 @@ this PC is 122.58.93.144:13000; advertising 139.99.171.113:40000; LAN 192.168.0.
         assert!(out.contains("122.58.x.x:13000"), "{out}");
         assert!(out.contains("139.99.171.113:40000"), "the server's address stays: {out}");
         assert!(out.contains("192.168.0.2"), "LAN addresses stay: {out}");
-        assert!(!out.contains("msjou") && !out.contains("Jason") && !out.contains("deck"));
+        assert!(!out.contains("msjou") && !out.contains("Kiwi") && !out.contains("deck"));
     }
 
     #[test]

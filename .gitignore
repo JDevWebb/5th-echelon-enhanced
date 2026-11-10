@@ -12,3 +12,7 @@ service*.toml
 /cross
 dist/
 .DS_Store
+
+# Editors and IDEs
+.vscode/
+.idea/

@@ -178,8 +178,8 @@ mod tests {
     #[test]
     fn the_server_in_use_says_so_in_recent() {
         let now = 1_800_000_000;
-        assert_eq!(recent_when("rh-match.example.net", now - 6 * 3600, now, Some("RH-match.example.net")), "in use now");
-        assert!(recent_when("rh-match.example.net", now - 6 * 3600, now, Some("other.example.net")).starts_with("used "));
-        assert!(recent_when("rh-match.example.net", now - 60, now, None).ends_with("just now"));
+        assert_eq!(recent_when("match.example.net", now - 6 * 3600, now, Some("MATCH.example.net")), "in use now");
+        assert!(recent_when("match.example.net", now - 6 * 3600, now, Some("other.example.net")).starts_with("used "));
+        assert!(recent_when("match.example.net", now - 60, now, None).ends_with("just now"));
     }
 }

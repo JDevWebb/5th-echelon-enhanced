@@ -267,7 +267,7 @@ mod tests {
         let step = totp_check(&secret, "081 804", now, 0).unwrap();
         assert_eq!(totp_check(&secret, "081804", now, step), None, "a code works once");
         assert_eq!(totp_check(&secret, "000000", now, 0), None);
-        assert!(totp_uri(&secret, "jason webb", "5th Echelon").starts_with("otpauth://totp/5th%20Echelon:jason%20webb?secret="));
+        assert!(totp_uri(&secret, "kiwi bird", "5th Echelon").starts_with("otpauth://totp/5th%20Echelon:kiwi%20bird?secret="));
         assert!(qr_svg("otpauth://totp/x").contains("<svg"));
     }
 
@@ -279,7 +279,7 @@ mod tests {
         assert!(weak_password("short", "kiwi").is_some());
         assert!(weak_password("kiwi-is-the-best-1", "kiwi").is_some());
         assert!(weak_password("aaaaaaaaaaaaaaaa", "x").is_some());
-        assert!(weak_password("night vision goggles 4", "jason").is_none());
+        assert!(weak_password("night vision goggles 4", "kiwi").is_none());
     }
 
     /// Checks off the runtime give the same answers, and many at once take their turns.

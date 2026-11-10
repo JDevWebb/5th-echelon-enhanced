@@ -1,6 +1,0 @@
-[build]
-#rustflags = [
-#    "-Zremap-cwd-prefix=.",
-#    "--remap-path-prefix=$(PWD)=/",
-#    "-Clink-arg=/PDBALTPATH:%_PDB%",
-#]

@@ -605,7 +605,7 @@ impl std::fmt::Debug for User {
     }
 }
 
-/// The community network's servers (its matchmaking server, relays and the rehearsal's) are this
+/// The community network's servers (its matchmaking server and relays) are this
 /// name or under it.
 pub const COMMUNITY_DOMAIN: &str = "scbl.jdevwebb.net";
 
@@ -1515,7 +1515,7 @@ mod tests {
         cfg.replay_recording = false;
         cfg.replay_upload = false;
         cfg.net_capture = false;
-        cfg.api_server = "https://rh-match.scbl.jdevwebb.net/".parse().unwrap();
+        cfg.api_server = "https://test.scbl.jdevwebb.net/".parse().unwrap();
         assert!(cfg.on_community_network());
         assert!(cfg.witness_reports_on() && cfg.replay_recording_on() && cfg.replay_upload_on() && cfg.net_capture_on());
         cfg.api_server = "https://scbl.jdevwebb.net".parse().unwrap();

@@ -1151,7 +1151,7 @@ impl Path {
 pub fn path_detail(guest: &str, host: &str) -> Option<serde_json::Value> {
     // Both here, or else the remote path: a guest here joining a host at a relay elsewhere lost
     // the host's half (ping, distance, which relay) when the local one was taken (the gamebox,
-    // 2026-11-06: gbox3 at the matchmaking server's helper joining gbox2 at rh-de01).
+    // 2026-11-06: gbox3 at the matchmaking server's helper joining gbox2 at another relay).
     let local = TABLE.get().and_then(|t| t.lock().ok()?.path(guest, host)).filter(|p| p.ips.is_some());
     // On the network's matchmaking server, either of them may be with a relay elsewhere.
     let (path, relays) = match local {
