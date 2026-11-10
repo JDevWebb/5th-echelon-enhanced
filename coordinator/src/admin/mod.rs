@@ -2041,9 +2041,9 @@ struct ReportAlerts {
 }
 
 /// Which new player reports go to the webhook: off, problems (rated bad or with problems
-/// ticked) or all.
+/// ticked) or all. It decides what leaves the network, so it wants a second factor lately.
 async fn set_report_alerts(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Json(req): Json<ReportAlerts>) -> Response {
-    let s = match c.full(&headers, &client).await {
+    let s = match c.recent(&headers, &client).await {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -2107,7 +2107,7 @@ async fn update_action(
     Path(action): Path<String>,
     body: Option<Json<UpdateAction>>,
 ) -> Response {
-    let sensitive = matches!(action.as_str(), "rollback" | "release" | "promote" | "now");
+    let sensitive = matches!(action.as_str(), "rollback" | "release" | "promote" | "now" | "halt" | "pin" | "pause");
     let s = match if sensitive {
         c.recent(&headers, &client).await
     } else {

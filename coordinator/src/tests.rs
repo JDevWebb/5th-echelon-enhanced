@@ -2927,12 +2927,15 @@ async fn admins_read_resolve_and_delete_reports() {
     // Which reports go to the webhook.
     let (_, v) = admin_call(&r, "GET", "/api/alerts", &cookie, None).await;
     assert_eq!(v["report_alerts"], "problems");
+    // What leaves the network: a second factor lately.
+    let (status, v) = admin_call(&r, "PUT", "/api/alerts/reports", &cookie, Some(json!({ "mode": "all" }))).await;
+    assert_eq!((status, v["reverify"].as_bool()), (StatusCode::FORBIDDEN, Some(true)));
     assert_eq!(
-        admin_call(&r, "PUT", "/api/alerts/reports", &cookie, Some(json!({ "mode": "all" }))).await.0,
+        admin_call(&r, "PUT", "/api/alerts/reports", &fresh, Some(json!({ "mode": "all" }))).await.0,
         StatusCode::OK
     );
     assert_eq!(
-        admin_call(&r, "PUT", "/api/alerts/reports", &cookie, Some(json!({ "mode": "loud" }))).await.0,
+        admin_call(&r, "PUT", "/api/alerts/reports", &fresh, Some(json!({ "mode": "loud" }))).await.0,
         StatusCode::BAD_REQUEST
     );
     let (_, v) = admin_call(&r, "GET", "/api/alerts", &cookie, None).await;
@@ -3996,6 +3999,12 @@ async fn admins_change_the_networks_settings_and_each_change_is_audited() {
     sqlx::query("UPDATE admin_sessions SET verified_at = verified_at - 601").execute(&t.c.pool).await.unwrap();
     let (status, v, _) = admin_send(&r, "DELETE", "/api/servers/server-a", &cookie, None).await;
     assert_eq!((status, v["reverify"].as_bool()), (StatusCode::FORBIDDEN, Some(true)), "{v}");
+    // So does stopping the rollout (pausing, pinning, halting); resuming and unpinning don't.
+    for action in ["pause", "pin", "halt"] {
+        let (status, v, _) = admin_send(&r, "POST", &format!("/api/updates/{action}"), &cookie, Some(json!({}))).await;
+        assert_eq!((status, v["reverify"].as_bool()), (StatusCode::FORBIDDEN, Some(true)), "{action}: {v}");
+    }
+    assert_eq!(admin_send(&r, "POST", "/api/updates/resume", &cookie, Some(json!({}))).await.0, StatusCode::OK);
 
     let (_, v, _) = admin_send(&r, "GET", "/api/audit", &cookie, None).await;
     let events: Vec<&str> = v["events"].as_array().unwrap().iter().map(|e| e["event"].as_str().unwrap()).collect();

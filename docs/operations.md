@@ -330,7 +330,8 @@ The admin UI is served by the coordinator on its own port (127.0.0.2:8701, a loo
 **Sensitive changes ask for a second factor again** if the last was more than 10 minutes ago:
 - adding or resetting admins;
 - sign-in restrictions;
-- rollbacks;
+- rollbacks, and pausing, pinning or halting the rollout;
+- the alert webhook, and which player reports go to it;
 - removing servers;
 - banning, renaming or deleting a player, and resetting their password;
 - removing a person's stats.
