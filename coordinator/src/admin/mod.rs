@@ -534,7 +534,18 @@ impl Coordinator {
         Ok(token)
     }
 
+    /// The request's session, if it's still good; it was seen now (the idle time starts again).
     async fn session(&self, headers: &HeaderMap, client: &Client) -> sqlx::Result<Option<Session>> {
+        self.session_seen(headers, client, true).await
+    }
+
+    /// The session as [`Self::session`] checks it, but not seen: the live connection checks
+    /// its session now and then, and an open tab mustn't keep it from idling out.
+    async fn session_unseen(&self, headers: &HeaderMap, client: &Client) -> sqlx::Result<Option<Session>> {
+        self.session_seen(headers, client, false).await
+    }
+
+    async fn session_seen(&self, headers: &HeaderMap, client: &Client, seen: bool) -> sqlx::Result<Option<Session>> {
         let Some(token) = cookie(headers, cfg(self).cookie_name()) else { return Ok(None) };
         let row: Option<(String, i64, String, String, i64, i64, i64, String, i64)> = sqlx::query_as(
             "SELECT s.token_hash, s.admin_id, a.username, s.stage, s.verified_at, s.created_at, s.last_seen, s.country, a.disabled
@@ -552,11 +563,13 @@ impl Coordinator {
             sqlx::query("DELETE FROM admin_sessions WHERE token_hash = ?").bind(&token_hash).execute(&self.pool).await?;
             return Ok(None);
         }
-        sqlx::query("UPDATE admin_sessions SET last_seen = ? WHERE token_hash = ?")
-            .bind(now)
-            .bind(&token_hash)
-            .execute(&self.pool)
-            .await?;
+        if seen {
+            sqlx::query("UPDATE admin_sessions SET last_seen = ? WHERE token_hash = ?")
+                .bind(now)
+                .bind(&token_hash)
+                .execute(&self.pool)
+                .await?;
+        }
         Ok(Some(Session {
             token_hash,
             admin_id,

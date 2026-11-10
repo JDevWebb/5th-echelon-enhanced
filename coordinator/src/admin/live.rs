@@ -472,8 +472,10 @@ async fn serve(c: Arc<Coordinator>, mut socket: WebSocket, headers: HeaderMap, c
                 }
             }
             _ = recheck.tick() => {
-                // Signed out, expired, disabled, or moved country: the socket ends with it.
-                let still = matches!(c.session(&headers, &client).await, Ok(Some(s)) if s.stage == "full");
+                // Signed out, expired (idle too: checking doesn't count as being seen, or an
+                // open tab kept the session for good), disabled, or moved country: the socket
+                // ends with it.
+                let still = matches!(c.session_unseen(&headers, &client).await, Ok(Some(s)) if s.stage == "full");
                 let allowed = c.restrictions().await.map(|r| r.allows(client.ip, &client.country)).unwrap_or(false);
                 if !still || !allowed {
                     let _ = send(&mut socket, json!({ "type": "bye", "reason": if still { "not allowed from here" } else { "signed out" } })).await;
