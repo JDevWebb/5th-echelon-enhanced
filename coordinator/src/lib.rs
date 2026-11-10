@@ -1109,6 +1109,13 @@ impl Coordinator {
             .collect()
     }
 
+    /// Whether `server` says `global_id` is online on it now.
+    fn online_here(&self, global_id: &str, server: &str) -> bool {
+        let now = identity::now();
+        let presence = self.presence.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        presence.get(global_id).and_then(|on| on.get(server)).is_some_and(|seen| now - seen.at <= ONLINE_FOR)
+    }
+
     /// Whether a server that said `a` and `b` are friends has seen both of them online (a
     /// friendship from before servers were recorded: any server). A member can make up a
     /// friendship between any two players linked on it; this at least needs it to say both
@@ -1300,14 +1307,32 @@ impl Coordinator {
                 let (from, to) = (text("from"), text("to"));
                 self.require_linked(server, &[&from, &to]).await?;
                 let blocked = change["blocked"].as_bool().unwrap_or(false);
+                // A block is cleared only by the server that set it, or by one the blocking
+                // player is playing on now: another member where both are linked can't lift
+                // it to force a friendship. Setting it again keeps where it was set first.
+                if !blocked {
+                    let set: Option<(i64, Option<String>)> = sqlx::query_as("SELECT blocked, origin FROM blocks WHERE from_id = ? AND to_id = ?")
+                        .bind(&from)
+                        .bind(&to)
+                        .fetch_optional(&self.pool)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if let Some((1, origin)) = set {
+                        if origin.as_deref() != Some(server) && !self.online_here(&from, server) {
+                            return Err("the block was set on another server: it's lifted there, or here while the player who set it is online".into());
+                        }
+                    }
+                }
                 sqlx::query(
-                    "INSERT INTO blocks (from_id, to_id, blocked, updated) VALUES (?, ?, ?, ?)
-                     ON CONFLICT(from_id, to_id) DO UPDATE SET blocked = excluded.blocked, updated = excluded.updated",
+                    "INSERT INTO blocks (from_id, to_id, blocked, updated, origin) VALUES (?, ?, ?, ?, ?)
+                     ON CONFLICT(from_id, to_id) DO UPDATE SET blocked = excluded.blocked, updated = excluded.updated,
+                       origin = CASE WHEN excluded.blocked = 1 AND blocks.blocked = 1 THEN blocks.origin ELSE excluded.origin END",
                 )
                 .bind(&from)
                 .bind(&to)
                 .bind(i64::from(blocked))
                 .bind(now)
+                .bind(blocked.then_some(server))
                 .execute(&self.pool)
                 .await
                 .map_err(|e| e.to_string())?;

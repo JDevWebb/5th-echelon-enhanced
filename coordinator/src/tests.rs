@@ -758,6 +758,47 @@ async fn friends_made_on_one_server_reach_another() {
     assert!(r[0]["error"].as_str().unwrap().contains("blocked"));
 }
 
+/// A block is lifted only by the server that set it, or by one the blocking player is online on:
+/// another member where both are linked can't lift it and then make them friends.
+#[tokio::test]
+async fn only_the_server_that_set_a_block_or_the_players_own_lifts_it() {
+    let t = start("block-origin").await;
+    let (a, b) = (t.join("server-a").await, t.join("server-b").await);
+    let (kiwi, tank) = (identity::Identity::generate(), identity::Identity::generate());
+    for (secret, host) in [(&a, "server-a"), (&b, "server-b")] {
+        let r = t.changes(secret, json!([link(&kiwi, host, "Kiwi"), link(&tank, host, "Tank")])).await;
+        assert!(r.iter().all(|r| r.get("error").is_none()), "{r:?}");
+    }
+    let block = |blocked: bool| json!([{ "op": "block", "from": tank.global_id(), "to": kiwi.global_id(), "blocked": blocked }]);
+    let befriend = json!([{ "op": "friends", "a": kiwi.global_id(), "b": tank.global_id(), "friends": true }]);
+    let blocked = || async { rel(&t.relations(&a, &kiwi.global_id()).await.1, &tank)["blocked_by"] == json!(true) };
+    // Tank blocks Kiwi on A. B can't lift it, nor make them friends past it.
+    assert!(t.changes(&a, block(true)).await[0].get("error").is_none());
+    assert!(t.changes(&b, block(false)).await[0]["error"].as_str().unwrap().contains("another server"));
+    assert!(t.changes(&b, befriend.clone()).await[0]["error"].as_str().unwrap().contains("blocked"));
+    assert!(blocked().await);
+    // Setting it again on B doesn't make it B's.
+    assert!(t.changes(&b, block(true)).await[0].get("error").is_none());
+    assert!(t.changes(&b, block(false)).await[0].get("error").is_some());
+    assert!(blocked().await);
+    // A lifts it.
+    assert!(t.changes(&a, block(false)).await[0].get("error").is_none());
+    assert!(!blocked().await);
+    // Set on B now: lifted on A while Tank plays there.
+    assert!(t.changes(&b, block(true)).await[0].get("error").is_none());
+    assert!(t.changes(&a, block(false)).await[0].get("error").is_some());
+    assert_eq!(t.call("POST", "/v1/heartbeat", Some(&a), Some(beat("server-a", &[&tank]))).await.0, StatusCode::OK);
+    assert!(t.changes(&a, block(false)).await[0].get("error").is_none());
+    assert!(!blocked().await);
+    // A block from before servers were recorded: lifted only where Tank is online (A, not B).
+    assert!(t.changes(&b, block(true)).await[0].get("error").is_none());
+    sqlx::query("UPDATE blocks SET origin = NULL").execute(&t.c.pool).await.unwrap();
+    assert!(t.changes(&b, block(false)).await[0].get("error").is_some());
+    assert!(t.changes(&a, block(false)).await[0].get("error").is_none());
+    assert!(!blocked().await);
+    assert!(t.changes(&b, befriend).await[0].get("error").is_none());
+}
+
 #[tokio::test]
 async fn friends_see_which_other_server_a_friend_is_on() {
     let t = start("presence").await;
