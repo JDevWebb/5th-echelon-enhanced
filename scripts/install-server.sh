@@ -939,10 +939,20 @@ take() {
   timeout 600 "${as_owner[@]}" cat -- "$tmp/copy.db" > "$out" || return 1
   rm -rf "$tmp"
 }
-# Whether FILE is a whole SQLite database.
+# Whether FILE is a whole SQLite database. SQLite reads it as nobody, from a copy of its own,
+# with none of this script's environment (the keys are in it), for ten minutes at most: a
+# database the game server's user made (or one from the bucket) is never parsed as root, nor
+# can it hold the backups up for good.
 sound() {
   [ -s "$1" ] && [ "$(head -c 15 "$1")" = "SQLite format 3" ] || return 1
-  [ "$(sqlite3 -init /dev/null "file:$1?immutable=1" 'PRAGMA integrity_check' 2>/dev/null)" = ok ]
+  local d ok=""
+  d="$(mktemp -d)" || return 1
+  if install -m 600 -o nobody -- "$1" "$d/check.db" && chown nobody "$d"; then
+    ok="$(cd / && timeout 600 env -i PATH=/usr/bin:/bin setpriv --reuid=nobody --regid="$(id -g nobody)" --clear-groups \
+      sqlite3 -init /dev/null "file:$d/check.db?immutable=1" 'PRAGMA integrity_check' 2>/dev/null)"
+  fi
+  rm -rf "$d"
+  [ "$ok" = ok ]
 }
 # The coordinator's join token and reports, to R2 (where it runs).
 copy_files() {
