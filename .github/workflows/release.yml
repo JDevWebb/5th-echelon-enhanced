@@ -28,11 +28,15 @@ jobs:
   version:
     name: Tag matches release.toml
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.v.outputs.version }}
       prerelease: ${{ steps.v.outputs.prerelease }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes: the token stays out of .git/config.
+          persist-credentials: false
       - id: v
         run: |
           tag="${GITHUB_REF_NAME#v}"
@@ -54,8 +58,12 @@ jobs:
     name: Windows builds
     needs: version
     runs-on: windows-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes: the token stays out of .git/config.
+          persist-credentials: false
       # protoc for the API's generated code: a pinned release, checked against its SHA-256
       # (arduino/setup-protoc has no release on Node.js 24).
       - name: Install protoc
@@ -92,8 +100,12 @@ jobs:
     needs: windows
     # An older glibc, so the binaries run on Debian 12, SteamOS and newer.
     runs-on: ubuntu-22.04
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes: the token stays out of .git/config.
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: windows
@@ -124,12 +136,16 @@ jobs:
     name: Publish the release
     needs: [version, windows, linux]
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     permissions:
       contents: write
       id-token: write
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes: the token stays out of .git/config.
+          persist-credentials: false
       # By name: the server image's job leaves a Docker build record among the
       # artifacts too, which isn't a download and can't be fetched like one.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -232,6 +248,7 @@ jobs:
     name: Server image
     needs: version
     runs-on: ubuntu-22.04
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
@@ -239,6 +256,9 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes: the token stays out of .git/config.
+          persist-credentials: false
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io

@@ -27,8 +27,12 @@ jobs:
   linux:
     name: Tests, test players and Linux builds
     runs-on: ubuntu-22.04
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes: the token stays out of .git/config.
+          persist-credentials: false
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler
       - name: Install the toolchain (rust-toolchain.toml)
@@ -85,8 +89,12 @@ jobs:
   windows:
     name: Windows builds
     runs-on: windows-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes: the token stays out of .git/config.
+          persist-credentials: false
       # protoc for the API's generated code: a pinned release, checked against its SHA-256
       # (arduino/setup-protoc has no release on Node.js 24).
       - name: Install protoc
