@@ -74,6 +74,8 @@ const RECENT: i64 = 10 * 60;
 /// A setup link works this long.
 pub const SETUP_FOR: i64 = 24 * 3600;
 const CHALLENGE_FOR: i64 = 5 * 60;
+/// Passkey sign-in challenges for nobody signed in, open at once at most.
+const OPEN_CHALLENGES: i64 = 1000;
 /// Failed sign-ins from one address (an IPv6 /64) before that address is locked out of the
 /// account for a while; others aren't held up by a stranger's guesses.
 const FAILURES_BEFORE_LOCK: i64 = 5;
@@ -1047,6 +1049,21 @@ async fn passkey_login_begin(State(c): State<Shared>, Extension(client): Extensi
             .collect(),
         None => vec![],
     };
+    // Anyone may ask for a challenge, and each is a row for five minutes: so many at once
+    // from nobody signed in are refused (an admin part-way through signing in still gets one).
+    if admin_id.is_none() {
+        let open: i64 = match sqlx::query_scalar("SELECT COUNT(*) FROM webauthn_challenges WHERE admin_id IS NULL AND expires_at >= ?")
+            .bind(identity::now())
+            .fetch_one(&c.pool)
+            .await
+        {
+            Ok(n) => n,
+            Err(e) => return internal(e),
+        };
+        if open >= OPEN_CHALLENGES {
+            return busy();
+        }
+    }
     match c.new_challenge(admin_id, "login").await {
         Ok((id, challenge)) => ok(json!({
             "challenge_id": id,

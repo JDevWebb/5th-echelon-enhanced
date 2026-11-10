@@ -4813,6 +4813,25 @@ async fn wrong_codes_count_for_the_account_across_sign_ins() {
     assert_eq!(failures, 0, "the last wrong code came from here: the admin's own slip");
 }
 
+/// Passkey challenges for nobody signed in are capped; a signed-in admin's still come.
+#[tokio::test]
+async fn open_passkey_challenges_are_capped() {
+    let t = start("admin-challenge-cap").await;
+    let r = admin_router_at(&t, [192, 0, 2, 42]);
+    assert_eq!(admin_send(&r, "POST", "/api/login/passkey/begin", "", None).await.0, StatusCode::OK);
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000)
+         INSERT INTO webauthn_challenges (id, admin_id, kind, challenge, expires_at) SELECT 'cap' || i, NULL, 'login', 'x', ? FROM n",
+    )
+    .bind(identity::now() + 300)
+    .execute(&t.c.pool)
+    .await
+    .unwrap();
+    assert_eq!(admin_send(&r, "POST", "/api/login/passkey/begin", "", None).await.0, StatusCode::SERVICE_UNAVAILABLE);
+    let cookie = admin_cookie(&t, "kiwi", 0).await;
+    assert_eq!(admin_send(&r, "POST", "/api/login/passkey/begin", &cookie, None).await.0, StatusCode::OK);
+}
+
 /// A weak password at a setup link leaves the link usable, but no longer than it was.
 #[tokio::test]
 async fn a_setup_link_keeps_its_expiry_through_weak_passwords() {
