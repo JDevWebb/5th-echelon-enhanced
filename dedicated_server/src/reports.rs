@@ -147,6 +147,10 @@ const PER_DAY: i64 = 5;
 /// Reports waiting for the coordinator, in bytes, past which new ones are refused (the
 /// coordinator away for long, or someone filling the queue).
 const MAX_OUTBOX: i64 = 200 * 1024 * 1024;
+/// One player's reports waiting for the coordinator, in bytes, at most: a few with their logs
+/// (each up to ~8 MB as sent). Beta logs aren't counted a day with the player's own
+/// ([`PER_DAY`]), so without it one player could fill the whole [`MAX_OUTBOX`].
+const MAX_OUTBOX_PER_PLAYER: i64 = 40 * 1024 * 1024;
 /// The most of the server's log sent with a report: a long session's worth (the
 /// coordinator takes up to a megabyte).
 const MAX_SERVER_LOG: usize = 256 * 1024;
@@ -505,6 +509,15 @@ fn printable(text: &str, max: usize) -> String {
     text.chars().filter(|c| !c.is_control() || *c == '\n').take(max).collect()
 }
 
+/// What `gzip` inflates to, in bytes, if it's whole gzip of at most [`MAX_FILE`] bytes:
+/// read through and counted, never held, and given up past that.
+fn inflated_size(gzip: &[u8]) -> Option<u64> {
+    use std::io::Read as _;
+    let mut text = flate2::read::GzDecoder::new(gzip).take(MAX_FILE + 1);
+    let n = std::io::copy(&mut text, &mut std::io::sink()).ok()?;
+    (n <= MAX_FILE).then_some(n)
+}
+
 fn valid_file_name(name: &str) -> bool {
     (1..=64).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
 }
@@ -519,7 +532,7 @@ pub fn body(report: Incoming, player: Value, summary: &Value, server_log: String
     }
     let mut files = Vec::new();
     for (name, gzip, size) in &report.files {
-        if !valid_file_name(name) || *size > MAX_FILE || gzip.len() < 18 || gzip[..2] != [0x1f, 0x8b] {
+        if !valid_file_name(name) || *size > MAX_FILE || gzip.len() < 18 || gzip[..2] != [0x1f, 0x8b] || inflated_size(gzip) != Some(*size) {
             return Err(Refused::Invalid("a file isn't a log the launcher sends"));
         }
         files.push(json!({ "name": name, "gzip_base64": sodiumoxide::base64::encode(gzip, sodiumoxide::base64::Variant::Original), "size": size }));
@@ -580,7 +593,10 @@ pub async fn accept(storage: &Storage, user: u32, peer: Option<std::net::IpAddr>
         Err(refused) => return Ok(Err(refused)),
     };
     // Checked again with the insert: the check above is only a quick refusal.
-    if !storage.queue_report(user, &id, &body.to_string(), !auto, PER_DAY, MAX_OUTBOX).await? {
+    if !storage
+        .queue_report(user, &id, &body.to_string(), !auto, PER_DAY, MAX_OUTBOX, MAX_OUTBOX_PER_PLAYER)
+        .await?
+    {
         return Ok(Err(Refused::TooMany));
     }
     Ok(Ok(id))
@@ -626,7 +642,7 @@ mod tests {
     #[test]
     fn reports_are_checked_and_shaped_for_the_coordinator() {
         let log = gzip("2026 INFO attaching");
-        let (id, b) = body(report(vec![("bl-tracing.log".into(), log, 20)]), json!({ "id": 7 }), &json!({}), "line".into()).unwrap();
+        let (id, b) = body(report(vec![("bl-tracing.log".into(), log, 19)]), json!({ "id": 7 }), &json!({}), "line".into()).unwrap();
         assert_eq!(id.len(), 32);
         assert_eq!(b["id"], json!(id));
         assert_eq!(b["problems"], json!(["join", "lag"]), "only the known problems");
@@ -642,6 +658,23 @@ mod tests {
         );
         let not_gzip = report(vec![("a.log".into(), b"plain text, not gzip at all".to_vec(), 1)]);
         assert!(body(not_gzip, json!({}), &json!({}), String::new()).is_err());
+        let wrong_size = report(vec![("a.log".into(), gzip("2026 INFO attaching"), 4)]);
+        assert!(body(wrong_size, json!({}), &json!({}), String::new()).is_err(), "not the size it says");
+        let mut cut = gzip("2026 INFO attaching");
+        cut.truncate(cut.len() - 4);
+        assert!(body(report(vec![("a.log".into(), cut, 19)]), json!({}), &json!({}), String::new()).is_err(), "cut short");
+        // A bomb: a few kilobytes that inflate past the most a file may be.
+        let bomb = {
+            use std::io::Write as _;
+            let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+            e.write_all(&vec![b'a'; MAX_FILE as usize + 1]).unwrap();
+            e.finish().unwrap()
+        };
+        assert!(bomb.len() < 64 * 1024);
+        assert!(
+            body(report(vec![("a.log".into(), bomb, MAX_FILE)]), json!({}), &json!({}), String::new()).is_err(),
+            "too big inflated"
+        );
         let too_many = report((0..9).map(|i| (format!("f{i}.log"), gzip("x"), 1)).collect());
         assert_eq!(body(too_many, json!({}), &json!({}), String::new()).unwrap_err(), Refused::Invalid("too many files"));
     }

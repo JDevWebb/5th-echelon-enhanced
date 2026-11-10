@@ -906,23 +906,73 @@ fn refused_for_good(e: &eyre::Report) -> bool {
         .is_some_and(|c| (400..500).contains(&c) && !matches!(c, 404 | 408 | 429))
 }
 
+/// A coordinator's answer about one report that sending another may well change: it was
+/// reached and answered (with a status), but not that it's away or busy (404 before it took
+/// reports, 408, 429, 502-504), which holds for every report alike.
+fn refused_this_one(e: &eyre::Report) -> bool {
+    let text = e.to_string();
+    text.get(..3)
+        .and_then(|c| c.parse::<u16>().ok())
+        .is_some_and(|c| (400..600).contains(&c) && !matches!(c, 404 | 408 | 429 | 502..=504))
+}
+
+/// Times the coordinator answered a waiting report with [`refused_this_one`] before it's
+/// dropped: one it never takes mustn't hold up the rest for its week in the outbox.
+const REPORT_TRIES: u32 = 5;
+
+/// [`refused_this_one`] answers so far, per waiting report (since this server started).
+fn report_refusals() -> std::sync::MutexGuard<'static, std::collections::HashMap<String, u32>> {
+    static REFUSALS: OnceLock<Mutex<std::collections::HashMap<String, u32>>> = std::sync::OnceLock::new();
+    REFUSALS.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Notes another [`refused_this_one`] answer for report `id`: whether it's had its
+/// [`REPORT_TRIES`] (and is forgotten).
+fn refused_again(id: &str) -> bool {
+    let mut refusals = report_refusals();
+    if refusals.len() > 1000 {
+        refusals.clear();
+    }
+    let n = refusals.entry(id.to_string()).or_default();
+    *n += 1;
+    if *n >= REPORT_TRIES {
+        refusals.remove(id);
+        return true;
+    }
+    false
+}
+
 async fn send_reports(storage: &Storage, client: &Coordinator<'_>) -> eyre::Result<()> {
+    let mut deferred = None;
     for _ in 0..5 {
-        let Some((id, body)) = storage.next_report().await? else { return Ok(()) };
+        let Some((id, body)) = storage.next_report().await? else { break };
         let Ok(body) = serde_json::from_str::<serde_json::Value>(&body) else {
             storage.report_sent(&id).await?;
             continue;
         };
         match client.post("/v1/reports", &body).await {
-            Ok(_) => storage.report_sent(&id).await?,
+            Ok(_) => {
+                report_refusals().remove(&id);
+                storage.report_sent(&id).await?;
+            }
             Err(e) if refused_for_good(&e) => {
                 storage.report_sent(&id).await?;
                 return Err(e.wrap_err(format!("the coordinator refused report {id}; dropped")));
             }
+            // This one, not the coordinator (a 500 for its body, a 413 from a proxy before
+            // it): behind the others, and dropped once it has failed its tries.
+            Err(e) if refused_this_one(&e) => {
+                if refused_again(&id) {
+                    storage.report_sent(&id).await?;
+                    return Err(e.wrap_err(format!("the coordinator refused report {id} {REPORT_TRIES} times; dropped")));
+                }
+                storage.defer_report(&id).await?;
+                deferred = Some(e.wrap_err(format!("the coordinator didn't take report {id}; it goes behind the others")));
+            }
             Err(e) => return Err(e),
         }
     }
-    Ok(())
+    deferred.map_or(Ok(()), Err)
 }
 
 /// Sends what players' games uploaded that the coordinator hasn't got (`POST /v1/content`):
@@ -1421,6 +1471,21 @@ async fn pull(logger: &Logger, storage: &Storage, client: &Coordinator<'_>, user
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_report_the_coordinator_wont_take_is_dropped_after_its_tries() {
+        let e = |text: &str| eyre::eyre!("{text}");
+        assert!(super::refused_this_one(&e("500 Internal Server Error: ")));
+        for away in ["502 Bad Gateway: ", "503 Service Unavailable: ", "429 Too Many Requests: ", "error sending request"] {
+            assert!(!super::refused_this_one(&e(away)), "{away}: every report alike, tried again");
+        }
+        let id = "f".repeat(32);
+        for _ in 1..super::REPORT_TRIES {
+            assert!(!super::refused_again(&id));
+        }
+        assert!(super::refused_again(&id), "its last try");
+        assert!(!super::refused_again(&id), "forgotten once dropped");
+    }
 
     #[test]
     fn a_coordinator_vouches_only_for_its_own_names() {

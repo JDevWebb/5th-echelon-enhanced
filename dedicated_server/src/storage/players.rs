@@ -191,21 +191,28 @@ impl Storage {
     /// Queues `user_id`'s report for the coordinator, and notes they sent one (not for the
     /// game's log the server asked for, `counted` false: that's limited apart). Answers false,
     /// queuing nothing, when they've sent `per_day` today (if counted) or the outbox would pass
-    /// `max_outbox` bytes: checked in the same transaction as the insert, so reports sent at
-    /// once can't all pass the check before any is counted.
-    pub async fn queue_report(&self, user_id: u32, id: &str, body: &str, counted: bool, per_day: i64, max_outbox: i64) -> Result<bool> {
+    /// `max_outbox` bytes, or `max_player` of theirs: checked in the same transaction as the
+    /// insert, so reports sent at once can't all pass the check before any is counted.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn queue_report(&self, user_id: u32, id: &str, body: &str, counted: bool, per_day: i64, max_outbox: i64, max_player: i64) -> Result<bool> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let today: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM report_log WHERE user_id = ? AND at > {NOW} - 86400"))
             .bind(user_id)
             .fetch_one(&mut *tx)
             .await?;
         let waiting: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(length(body)), 0) FROM report_outbox").fetch_one(&mut *tx).await?;
-        if (counted && today >= per_day) || waiting + body.len() as i64 > max_outbox {
+        let theirs: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(length(body)), 0) FROM report_outbox WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let size = body.len() as i64;
+        if (counted && today >= per_day) || waiting + size > max_outbox || theirs + size > max_player {
             return Ok(false);
         }
-        sqlx::query(&format!("INSERT INTO report_outbox (id, body, created_at) VALUES (?, ?, {NOW})"))
+        sqlx::query(&format!("INSERT INTO report_outbox (id, body, created_at, user_id) VALUES (?, ?, {NOW}, ?)"))
             .bind(id)
             .bind(body)
+            .bind(user_id)
             .execute(&mut *tx)
             .await?;
         if counted {
@@ -227,6 +234,18 @@ impl Storage {
         Ok(sqlx::query_as("SELECT id, body FROM report_outbox ORDER BY created_at, id LIMIT 1")
             .fetch_optional(&self.pool)
             .await?)
+    }
+
+    /// Puts a waiting report behind the others (the coordinator wouldn't take it just now), so
+    /// it holds none of them up.
+    pub async fn defer_report(&self, id: &str) -> Result<()> {
+        sqlx::query(&format!(
+            "UPDATE report_outbox SET created_at = MAX((SELECT MAX(created_at) FROM report_outbox) + 1, {NOW}) WHERE id = ?"
+        ))
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// The coordinator has the report.
@@ -466,7 +485,11 @@ mod tests {
             let sends: Vec<_> = (0..20)
                 .map(|i| {
                     let storage = &storage;
-                    scope.spawn(move || crate::storage::run(storage.queue_report(a, &format!("{i:032x}"), "{}", true, 5, 1 << 20)).unwrap().unwrap())
+                    scope.spawn(move || {
+                        crate::storage::run(storage.queue_report(a, &format!("{i:032x}"), "{}", true, 5, 1 << 20, 1 << 20))
+                            .unwrap()
+                            .unwrap()
+                    })
                 })
                 .collect();
             sends.into_iter().map(|s| s.join().unwrap()).filter(|queued| *queued).count()
@@ -474,12 +497,35 @@ mod tests {
         assert_eq!(queued, 5);
         // The game's own logs don't count a day, but the outbox's size holds them too.
         let big = "x".repeat(600 * 1024);
-        assert!(crate::storage::run(storage.queue_report(a, &format!("{:032x}", 100), &big, false, 5, 1 << 20))
+        assert!(crate::storage::run(storage.queue_report(a, &format!("{:032x}", 100), &big, false, 5, 1 << 20, 1 << 20))
             .unwrap()
             .unwrap());
-        assert!(!crate::storage::run(storage.queue_report(a, &format!("{:032x}", 101), &big, false, 5, 1 << 20))
+        assert!(!crate::storage::run(storage.queue_report(a, &format!("{:032x}", 101), &big, false, 5, 1 << 20, 1 << 20))
             .unwrap()
             .unwrap());
+        drop(storage);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// One player's waiting reports hold no more than their share of the outbox, and one the
+    /// coordinator won't take goes behind the others.
+    #[test]
+    fn a_players_reports_keep_to_their_share_and_a_stuck_one_waits_its_turn() {
+        let (storage, dir) = temp_storage("report-share");
+        let (a, b) = (player(&storage, "Tester"), player(&storage, "Other"));
+        let big = "x".repeat(600 * 1024);
+        let queue = |user: u32, id: u32| {
+            crate::storage::run(storage.queue_report(user, &format!("{id:032x}"), &big, false, 5, 4 << 20, 1 << 20))
+                .unwrap()
+                .unwrap()
+        };
+        assert!(queue(a, 1));
+        assert!(!queue(a, 2), "past their share");
+        assert!(queue(b, 3), "someone else's are their own");
+        let next = || crate::storage::run(storage.next_report()).unwrap().unwrap().map(|(id, _)| id);
+        assert_eq!(next(), Some(format!("{:032x}", 1)));
+        crate::storage::run(storage.defer_report(&format!("{:032x}", 1))).unwrap().unwrap();
+        assert_eq!(next(), Some(format!("{:032x}", 3)), "the deferred one goes behind");
         drop(storage);
         let _ = std::fs::remove_dir_all(dir);
     }
