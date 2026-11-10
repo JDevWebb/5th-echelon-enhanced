@@ -1704,6 +1704,31 @@ say "New accounts: $( [ "$(value limits open_registration)" = false ] && echo cl
 say "Accounts need a player identity: $( [ "$(value limits require_identity)" = true ] && echo yes || echo no)"
 fi
 
+# The cloud's metadata service (169.254.169.254, and AWS's fd00:ec2::254 over IPv6): it hands
+# out the machine's credentials and setup to whatever asks from it, so the services can't
+# reach it (nor anything else link-local, which nothing of theirs uses), and a fault that
+# makes one fetch an address can't read it. Where this machine's DNS resolver is
+# link-local (GCP and Oracle Cloud without systemd-resolved: the metadata address itself;
+# AWS's 169.254.169.253), the resolver stays reachable: a resolver at the metadata address
+# can't be told apart from it, so then only the IPv6 one is kept out.
+METADATA_DENY="169.254.0.0/16 fd00:ec2::254"
+METADATA_ALLOW=""
+for ns in $(awk '$1 == "nameserver" { print $2 }' /etc/resolv.conf 2>/dev/null); do
+  case "$ns" in
+    169.254.169.254)
+      METADATA_DENY="fd00:ec2::254"
+      warn "this machine's DNS resolver is the cloud's metadata address (169.254.169.254), so the services can't be kept from it: IMDSv2 or the provider's equivalent keeps its credentials from a plain request"
+      ;;
+    169.254.*) METADATA_ALLOW="$METADATA_ALLOW $ns" ;;
+  esac
+done
+METADATA_ALLOW="${METADATA_ALLOW# }"
+# The lines for a unit (an allowed address wins over a denied range).
+metadata_lines() {
+  echo "IPAddressDeny=$METADATA_DENY"
+  [ -z "$METADATA_ALLOW" ] || echo "IPAddressAllow=$METADATA_ALLOW"
+}
+
 # Earlier installs kept the coordinator's data in the game server's folder,
 # and ran it as the game server's user: it moves to a folder of its own, for
 # a user of its own (both stopped by now). Only a plain folder of plain
@@ -1776,6 +1801,8 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=$COORD_DIR
 InaccessiblePaths=-$STATE_DIR
+# Not the cloud's metadata service.
+$(metadata_lines)
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
@@ -1936,8 +1963,10 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=$STATE_DIR $PROGRAM_DIR/data
 InaccessiblePaths=-$COORD_DIR
-# Not the coordinator's loopback address: only Caddy talks to it there.
+# Not the coordinator's loopback address: only Caddy talks to it there. Nor the cloud's
+# metadata service.
 IPAddressDeny=$COORD_ADDR
+$(metadata_lines)
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
