@@ -120,7 +120,15 @@ pub fn suggestion_message(time: i64, area: &str, title: &str, text: &str) -> Str
     format!("5th-echelon/suggestion/v1\n{time}\n{sent}")
 }
 
-/// What a player signs to read their own suggestions back (`GET /v1/suggestions/mine`).
+/// What a player signs to read their own suggestions back (`GET /v1/suggestions/mine`) from
+/// the coordinator at `host`: a signature made for one coordinator can't be replayed at
+/// another, as with [`reports_message`].
+pub fn suggestions_message_for(host: &str, time: i64) -> String {
+    format!("5th-echelon/suggestions/v2\n{}\n{time}", host_key(host))
+}
+
+/// The same signed by launchers before 0.5.0, for no coordinator in particular; still taken
+/// for one release (0.5.0), then only [`suggestions_message_for`].
 pub fn suggestions_message(time: i64) -> String {
     format!("5th-echelon/suggestions/v1\n{time}")
 }
@@ -324,6 +332,10 @@ mod tests {
             assert!(!verify(&me.global_id(), &other, &signature));
         }
         assert_ne!(suggestions_message(1_000), message);
+        // Reading them back is signed for one coordinator.
+        assert_ne!(suggestions_message_for("play.example.net", 1_000), suggestions_message_for("other.example.net", 1_000));
+        assert_eq!(suggestions_message_for("Play.Example.NET", 1_000), suggestions_message_for("play.example.net", 1_000));
+        assert_ne!(suggestions_message_for("play.example.net", 1_000), suggestions_message(1_000));
     }
 
     use super::*;

@@ -193,17 +193,19 @@ pub fn suggestion_body(identity: &identity::Identity, sender: &Sender, area: &st
     body
 }
 
-/// The address of `GET /v1/suggestions/mine`, signed with `identity` at `time`.
+/// The address of `GET /v1/suggestions/mine`, signed with `identity` at `time` for that
+/// coordinator (by its host name: the signature can't be replayed at another).
 pub fn mine_url(coordinator: &str, identity: &identity::Identity, time: i64) -> String {
     let base = format!("{}/v1/suggestions/mine", coordinator.trim().trim_end_matches('/'));
     let mut url = match url::Url::parse(&base) {
         Ok(url) => url,
         Err(_) => return base,
     };
+    let host = url.host_str().unwrap_or_default().to_string();
     url.query_pairs_mut()
         .append_pair("identity", &identity.global_id())
         .append_pair("time", &time.to_string())
-        .append_pair("signature", &identity.sign(&identity::suggestions_message(time)));
+        .append_pair("signature", &identity.sign(&identity::suggestions_message_for(&host, time)));
     url.into()
 }
 
@@ -351,7 +353,16 @@ mod tests {
         let url = mine_url("https://play.example.net/", &me, 1_791_230_000);
         assert!(url.starts_with("https://play.example.net/v1/suggestions/mine?identity="), "{url}");
         let signature = url::Url::parse(&url).unwrap().query_pairs().find(|(k, _)| k == "signature").unwrap().1.into_owned();
-        assert!(identity::verify(&me.global_id(), &identity::suggestions_message(1_791_230_000), &signature));
+        assert!(identity::verify(
+            &me.global_id(),
+            &identity::suggestions_message_for("play.example.net", 1_791_230_000),
+            &signature
+        ));
+        assert!(!identity::verify(
+            &me.global_id(),
+            &identity::suggestions_message_for("other.example.net", 1_791_230_000),
+            &signature
+        ));
     }
 
     #[test]

@@ -2417,7 +2417,11 @@ async fn my_suggestions(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<
     if !c.reads.check(&limit_key(client_ip(peer, &headers))) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many requests");
     }
-    if !identity::is_global_id(&q.identity) || !identity::fresh(q.time, identity::now()) || !identity::verify(&q.identity, &identity::suggestions_message(q.time), &q.signature) {
+    // Signed for this coordinator, by the name it was reached at; or, from launchers before
+    // 0.5.0, for none in particular (taken for one release: drop it after 0.5.0).
+    let signed = |message: &str| identity::verify(&q.identity, message, &q.signature);
+    let for_here = c.signed_for(&headers).is_some_and(|host| signed(&identity::suggestions_message_for(&host, q.time)));
+    if !identity::is_global_id(&q.identity) || !identity::fresh(q.time, identity::now()) || !(for_here || signed(&identity::suggestions_message(q.time))) {
         return fail(StatusCode::FORBIDDEN, "the signature doesn't match");
     }
     c.suggestions_of(&q.identity).await.map_or_else(internal, ok)

@@ -4182,6 +4182,18 @@ async fn players_suggest_from_the_launcher_and_admins_keep_the_roadmap() {
     assert!(v["suggestions"][0].get("identity").is_none(), "players don't get admin fields");
     let other = identity::Identity::generate();
     assert_eq!(t.call("GET", &mine(&me, &other), None, None).await.0, StatusCode::FORBIDDEN);
+    // Launchers from 0.5.0 sign for this coordinator by its name: taken here, not for another.
+    let signed_for = |host: &str| {
+        let time = identity::now();
+        format!(
+            "/v1/suggestions/mine?identity={}&time={time}&signature={}",
+            me.global_id(),
+            me.sign(&identity::suggestions_message_for(host, time))
+        )
+    };
+    let (status, v) = t.call("GET", &signed_for("coordinator.test"), None, None).await;
+    assert_eq!((status, v["suggestions"].as_array().map(Vec::len)), (StatusCode::OK, Some(3)), "{v}");
+    assert_eq!(t.call("GET", &signed_for("other.example.net"), None, None).await.0, StatusCode::FORBIDDEN);
 
     // Admins answer, decline or promote them.
     let (status, v) = admin_call(&r, "GET", "/api/suggestions", &cookie, None).await;
