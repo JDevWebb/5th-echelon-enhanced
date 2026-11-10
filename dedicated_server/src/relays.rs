@@ -160,6 +160,14 @@ pub fn on_link(data: &[u8], src: std::net::SocketAddrV4, socket: &std::net::UdpS
         // Another relay's player's packet for one of this helper's: the address it came from is
         // that relay's from now on (a reply to it goes back there).
         crate::link::Body::Forward { from_name, from, to, payload } => {
+            // Only for its own players: one relayed there is on its address in its range, one
+            // direct isn't on another relay's address; and the matchmaking server, which has
+            // every relay's reports, knows which relay each player is at and their address.
+            let others: Vec<Ipv4Addr> = links().iter().filter(|l| l.id != link.id).map(|l| l.ip).collect();
+            let reported = network_relays().then(|| reported_for(&from_name));
+            if !forward_plausible(&link, from, &others, reported.as_ref()) {
+                return None;
+            }
             learn(from, &link.id);
             return Some(Forwarded { from_name, from, to, payload });
         }
@@ -260,9 +268,37 @@ const MAX_LEARNED: usize = 50_000;
 type Learned = std::collections::HashMap<std::net::SocketAddrV4, (String, std::time::Instant)>;
 static LEARNED: std::sync::LazyLock<Mutex<Learned>> = std::sync::LazyLock::new(Mutex::default);
 
+/// Whether link `link` may forward a packet of its player seen at `from`: relayed there, an
+/// address on it in its range; direct, not on another relay's address (`others`). On the
+/// matchmaking server, `reported`: what the relays last reported of the player
+/// ([`reported_for`]), which must be this relay's report at `from`.
+fn forward_plausible(link: &Link, from: std::net::SocketAddrV4, others: &[Ipv4Addr], reported: Option<&Option<(String, std::net::SocketAddrV4)>>) -> bool {
+    let on_it = if *from.ip() == link.ip {
+        (link.ports.0..=link.ports.1).contains(&from.port())
+    } else {
+        !others.contains(from.ip())
+    };
+    on_it && reported.is_none_or(|r| r.as_ref().is_some_and(|(relay, advertise)| *relay == link.id && *advertise == from))
+}
+
+/// The relay that reported `name` lately (within [`LEARNED_FOR`]: a report or two late still
+/// counts), and the address it gave them.
+fn reported_for(name: &str) -> Option<(String, std::net::SocketAddrV4)> {
+    let remote = REMOTE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    remote
+        .get(&identity::name_key(name))
+        .filter(|r| r.at.elapsed() < LEARNED_FOR)
+        .map(|r| (r.relay.clone(), r.advertise))
+}
+
+/// Notes that packets from `from` come through `link`, unless another relay's did lately (an
+/// address stays with the relay that first forwarded from it while that goes on).
 fn learn(from: std::net::SocketAddrV4, link: &str) {
     let now = std::time::Instant::now();
     let mut learned = LEARNED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if learned.get(&from).is_some_and(|(other, at)| other != link && now.duration_since(*at) < LEARNED_FOR) {
+        return;
+    }
     if learned.len() >= MAX_LEARNED && !learned.contains_key(&from) {
         learned.retain(|_, (_, at)| now.duration_since(*at) < LEARNED_FOR);
         if learned.len() >= MAX_LEARNED {
@@ -635,6 +671,43 @@ mod tests {
         assert_eq!(remote_advertised_for("Taken", seen), Some("5.6.7.8:40012".parse().unwrap()), "the first relay's stands");
         remote_report(&syd, vec![reg("Elsewhere", "198.51.100.1:13000", false)]);
         assert_eq!(remote_advertised_for("Elsewhere", seen), None, "an implausible report isn't kept");
+    }
+
+    #[test]
+    fn a_relay_forwards_only_for_its_own_players() {
+        let syd = Link {
+            id: "syd".into(),
+            ip: [5, 6, 7, 8].into(),
+            port: 21128,
+            ports: (40000, 40999),
+            key: [0; 32],
+            matchmaking: false,
+        };
+        let others: Vec<Ipv4Addr> = vec![[9, 9, 9, 9].into()];
+        let at = |s: &str| -> std::net::SocketAddrV4 { s.parse().unwrap() };
+        assert!(forward_plausible(&syd, at("5.6.7.8:40012"), &others, None), "relayed there");
+        assert!(!forward_plausible(&syd, at("5.6.7.8:22"), &others, None), "its address, outside its range");
+        assert!(forward_plausible(&syd, at("203.0.113.9:3074"), &others, None), "a direct player there");
+        assert!(!forward_plausible(&syd, at("9.9.9.9:40012"), &others, None), "another relay's player");
+        // The matchmaking server knows where each player is.
+        let theirs = Some(("syd".to_string(), at("5.6.7.8:40012")));
+        assert!(forward_plausible(&syd, at("5.6.7.8:40012"), &others, Some(&theirs)));
+        assert!(!forward_plausible(&syd, at("5.6.7.8:40013"), &others, Some(&theirs)), "not where it reported them");
+        assert!(
+            !forward_plausible(&syd, at("5.6.7.8:40012"), &others, Some(&Some(("eu".to_string(), at("5.6.7.8:40012"))))),
+            "another relay's player"
+        );
+        assert!(!forward_plausible(&syd, at("5.6.7.8:40012"), &others, Some(&None)), "reported by nobody");
+    }
+
+    #[test]
+    fn an_address_stays_with_the_relay_that_forwarded_from_it() {
+        let from: std::net::SocketAddrV4 = "198.51.100.77:3074".parse().unwrap();
+        learn(from, "syd");
+        learn(from, "eu");
+        assert_eq!(LEARNED.lock().unwrap().get(&from).map(|(l, _)| l.clone()).as_deref(), Some("syd"));
+        learn(from, "syd");
+        assert_eq!(LEARNED.lock().unwrap().get(&from).map(|(l, _)| l.clone()).as_deref(), Some("syd"), "its own again");
     }
 
     #[test]
