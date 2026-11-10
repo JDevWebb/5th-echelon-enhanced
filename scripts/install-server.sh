@@ -137,6 +137,8 @@
 #   --yes                 don't ask; go on past warnings (e.g. DNS not
 #                         pointing here yet)
 #   --force               install even though a port is already in use
+#   --force-downgrade     install a release older than the one installed (or
+#                         than the oldest the updater may go back to)
 #   --status              show what's installed and whether it's working
 #   --show-join-token     print this machine's coordinator join token
 #   --rotate-join-token   make a new join token (servers that joined keep
@@ -236,7 +238,7 @@ CADDY_SHA512_arm64="3db36ba90c7a6e8dda40ee3dd71fa08844c76b5fb08f61b31e5e78d2ed38
 domain="" no_caddy=0 public_address="" version="latest" binary="" relay=""
 # What to tell the operator at the end (added to along the way).
 notes=()
-firewall=1 yes=0 force=0 uninstall=0 purge=0 use_systemd=1
+firewall=1 yes=0 force=0 force_downgrade=0 uninstall=0 purge=0 use_systemd=1
 # The community network's coordinator, by the names it has had (setup/src/directory.rs).
 COMMUNITY_COORDINATORS="scbl-coord.jdevwebb.net scbl.jdevwebb.net play.scbl.jdevwebb.net"
 friends="" server_name="" region="" coordinator="" join_token="" coord_domain="" coord_binary=""
@@ -332,6 +334,7 @@ while [ $# -gt 0 ]; do
     --no-firewall) firewall=0 ;;
     --yes|-y) yes=1 ;;
     --force) force=1 ;;
+    --force-downgrade) force_downgrade=1 ;;
     --uninstall) uninstall=1 ;;
     --purge) purge=1 ;;
     --no-systemd) use_systemd=0 ;;
@@ -1375,6 +1378,20 @@ verify_release() {
   fi
 }
 
+# Whether release $1 is older than $2 (a pre-release, 1.2.0-rc.1, is older than 1.2.0).
+version_older() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "${1/-/\~}" "${2/-/\~}" | sort -V | head -1)" = "${1/-/\~}" ]; }
+
+# The release $1 would go below (the installed one, or the oldest the updater may go back
+# to), if it would: printed, else nothing.
+downgrade_from() {
+  local f floor
+  for f in "$PROGRAM_DIR/release" "$ETC_DIR/min-release"; do
+    floor="$(head -c 64 "$f" 2>/dev/null | head -1 || true)"
+    [[ "$floor" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || continue
+    if version_older "$1" "$floor"; then echo "$floor"; return 0; fi
+  done
+}
+
 # Which release to download: the one asked for, or the latest one's tag
 # (from GitHub's API, or else where /releases/latest leads). Downloads then
 # come from that tag, and its signature must name that version.
@@ -1390,6 +1407,14 @@ resolve_version() {
   fi
   release_version="${version#v}"
   base="https://github.com/$REPO/releases/download/v$release_version"
+  # Never older than what runs here, unless asked: an old release brings back what later
+  # ones fixed (and may not open a database a newer one moved on).
+  local floor
+  floor="$(downgrade_from "$release_version")"
+  if [ -n "$floor" ]; then
+    [ "$force_downgrade" -eq 1 ] || die "release $release_version is older than $floor, installed here; --force-downgrade installs it anyway"
+    warn "installing $release_version, older than $floor (--force-downgrade)"
+  fi
 }
 
 if [ "$coord_only" -eq 1 ]; then
@@ -2362,8 +2387,13 @@ UPDATER
   if [ -n "$installed" ]; then
     echo "$installed" > "$PROGRAM_DIR/release"
     if [ "$installed" != unknown ]; then
-      echo "$installed" > "$ETC_DIR/min-release"
-      rm -f "$ETC_DIR/rollback-until"
+      # A --binary build older than the floor doesn't lower it, unless asked.
+      if [ "$force_downgrade" -eq 0 ] && [ -n "$(downgrade_from "$installed")" ]; then
+        warn "the installed build ($installed) is older than the oldest release this machine may run, which stays the floor (--force-downgrade lowers it)"
+      else
+        echo "$installed" > "$ETC_DIR/min-release"
+        rm -f "$ETC_DIR/rollback-until"
+      fi
     fi
   fi
   [ -f "$PROGRAM_DIR/release" ] || echo unknown > "$PROGRAM_DIR/release"

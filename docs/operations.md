@@ -55,6 +55,7 @@ The updater runs as root in a sandbox: it can only write its program folder, its
 **Downgrades:**
 - The updater never installs a release older than the one running, except the one it kept in `previous/`, which is how a rollback works, and only for 14 days after the update.
 - It never goes below `/etc/5th-echelon/min-release` (root's): the release the installer last installed, raised to the one each update replaced.
+- The installer won't go below it either, nor below the release installed: running it again with an older `--version` (or when GitHub's latest is older) stops, unless `--force-downgrade` is given.
 - So a coordinator (or a compromised server) can only ever have a machine install a release signed with the release key: no newer than what's on GitHub, and at most one step back, soon after an update.
 
 ### Keeping up is part of membership
