@@ -351,12 +351,14 @@ impl<T> ClientRegistry<T> {
     }
 
     /// Takes a connection that has signed in (on CONNECT with a ticket, or by a sign-in call)
-    /// off the count of those that haven't.
-    fn settle(&mut self, signature: u32) {
+    /// off the count of those that haven't, unless as a `shared` account (whose password is
+    /// public: signing in as one proves nothing, so its connections stay within the limits on
+    /// those that haven't signed in).
+    fn settle(&mut self, signature: u32, shared: fn(u32) -> bool) {
         let Some(ci) = self.clients.get_mut(&signature).map(RefCell::get_mut) else {
             return;
         };
-        if ci.counted_anonymous && ci.user_id.is_some() {
+        if ci.counted_anonymous && ci.user_id.is_some_and(|id| !shared(id)) {
             ci.counted_anonymous = false;
             let ip = ci.address().ip();
             self.uncount_anonymous(ip);
@@ -490,6 +492,10 @@ where
     /// [`Self::sign_out_elsewhere`]): every user by default. Shared accounts (the server's
     /// own, whose passwords are public) must not.
     pub newest_sign_in_wins: fn(u32) -> bool,
+    /// Accounts anyone may sign in as (the server's own, whose passwords are public): their
+    /// connections count against the limits on connections that haven't signed in, per
+    /// address and in all, as before signing in. None by default.
+    pub shared_account: fn(u32) -> bool,
     /// Users to sign out now, from every address (an admin's kick or ban); read once a
     /// second.
     pub sign_outs: Option<std::sync::mpsc::Receiver<u32>>,
@@ -538,6 +544,7 @@ where
             stale_connection_handler: None,
             unacked_handler: None,
             newest_sign_in_wins: |_| true,
+            shared_account: |_| false,
             sign_outs: None,
             next_conn_id: AtomicU32::new(0x3AAA_AAAA),
         }
@@ -871,7 +878,7 @@ where
         }
         drop(guard);
         if !signed_in {
-            self.client_registry.settle(packet.signature);
+            self.client_registry.settle(packet.signature, self.shared_account);
         }
     }
 
@@ -1211,7 +1218,7 @@ where
         // The sign-in is taken in (the player online, their other games signed out) before
         // it's answered: once the game is signed in, everyone sees it online.
         let signed_in = ci.borrow().user_id;
-        self.client_registry.settle(packet.signature);
+        self.client_registry.settle(packet.signature, self.shared_account);
         let answered = !packet.payload.is_empty();
         if let Some(user_id) = signed_in.filter(|id| (self.newest_sign_in_wins)(*id)) {
             self.sign_out_elsewhere(logger, user_id, client);
@@ -1838,11 +1845,18 @@ mod tests {
         // One signing in no longer counts.
         let other = *server.client_registry.clients.keys().next().unwrap();
         server.client_registry.clients[&other].borrow_mut().user_id = Some(1234);
-        server.client_registry.settle(other);
+        server.client_registry.settle(other, |_| false);
         assert_eq!(server.client_registry.anonymous_from(Ipv4Addr::new(10, 1, 2, 3).into()).0, MAX_ANONYMOUS_PER_IP - 2);
         connect(&mut server, 41000);
         connect(&mut server, 41001);
         assert_eq!(server.client_registry.clients.len(), MAX_ANONYMOUS_PER_IP + 1);
+        // One signing in as a shared account (public password) still counts.
+        let shared = *server.client_registry.clients.iter().find(|(_, c)| c.borrow().user_id.is_none()).unwrap().0;
+        server.client_registry.clients[&shared].borrow_mut().user_id = Some(105);
+        server.client_registry.settle(shared, |id| id == 105);
+        assert_eq!(server.client_registry.anonymous_from(Ipv4Addr::new(10, 1, 2, 3).into()).0, MAX_ANONYMOUS_PER_IP);
+        connect(&mut server, 41002);
+        assert_eq!(server.client_registry.clients.len(), MAX_ANONYMOUS_PER_IP + 1, "the address is full");
     }
 
     /// Calls from connections that haven't signed in: a burst, then the rate, per address.
