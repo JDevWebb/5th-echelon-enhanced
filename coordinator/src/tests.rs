@@ -1212,6 +1212,55 @@ async fn live_updates_want_the_admin_site_and_a_session() {
     t.c.publish(admin::live::Event::Metrics);
 }
 
+/// A member's words reach the alerts (and the webhook's channel) only as plain text: its name,
+/// and its update status, which is kept only as the fields its updater writes, each of its kind.
+#[tokio::test]
+async fn a_servers_words_in_alerts_are_plain_text() {
+    let t = start("alert-words").await;
+    let a = t.join("server-a").await;
+    let name = "[sign in](https://evil.example) @everyone";
+    let (status, v) = t
+        .call(
+            "POST",
+            "/v1/heartbeat",
+            Some(&a),
+            Some(json!({ "name": name, "host": "server-a", "names": ["server-a"], "listed": false })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let report = json!({ "metrics": {}, "update": {
+        "auto_update": true,
+        "running": "1.0.0",
+        "updater": { "state": "failed", "version": "[1.1](https://evil.example)", "error": "x".repeat(5000) },
+        "verify": { "state": "mismatch", "detail": "[click here](https://evil.example/login)\n\n@here `code`" },
+        "extra": "y".repeat(100_000),
+    } });
+    assert_eq!(t.call("POST", "/v1/metrics", Some(&a), Some(report)).await.0, StatusCode::OK);
+    let kept: String = sqlx::query_scalar("SELECT update_status FROM servers WHERE id = 'server-a'")
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
+    let kept: Value = serde_json::from_str(&kept).unwrap();
+    assert!(kept.get("extra").is_none(), "{kept}");
+    assert_eq!((kept["running"].as_str(), kept["updater"]["state"].as_str()), (Some("1.0.0"), Some("failed")));
+    assert!(kept["updater"]["version"].is_null(), "not a version");
+    assert_eq!(kept["updater"]["error"].as_str().unwrap().chars().count(), 200);
+    assert!(!kept["verify"]["detail"].as_str().unwrap().contains('\n'));
+    // Not a status at all: kept as nothing.
+    assert_eq!(metrics::update_status(&json!("nonsense")), json!({}));
+    t.c.check_alerts().await.unwrap();
+    let alerts = t.c.alerts().await.unwrap();
+    let details: Vec<String> = alerts["active"].as_array().unwrap().iter().map(|a| a["detail"].as_str().unwrap().to_string()).collect();
+    assert!(details.iter().any(|d| d.contains("update to ? failed")), "{details:?}");
+    assert!(details.iter().any(|d| d.contains("click here")), "{details:?}");
+    for d in &details {
+        assert!(
+            !d.contains("](") && !d.contains("://") && !d.contains("@everyone") && !d.contains("@here") && !d.contains('`'),
+            "{d}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn reports_count_anonymised_players_traffic_and_alerts() {
     let t = start("reports").await;

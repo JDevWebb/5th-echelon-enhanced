@@ -280,6 +280,58 @@ impl HourTraffic {
     }
 }
 
+/// A server's update status as it may be kept: only the fields its updater writes
+/// (`self_update::status` in the server), each of its kind and size, the rest dropped. It's
+/// shown to admins and its words go into alerts, so a member can't put more there.
+pub(crate) fn update_status(v: &Value) -> Value {
+    // A release as `0.5.0` or `0.5.0-rc.1+abc`.
+    let version = |v: &Value| {
+        v.as_str()
+            .filter(|s| (1..=32).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+')))
+            .map(|s| json!(s))
+            .unwrap_or(Value::Null)
+    };
+    // A state as `verified` or `rolled-back`.
+    let state = |v: &Value| {
+        v.as_str()
+            .filter(|s| (1..=24).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'))
+            .map(|s| json!(s))
+            .unwrap_or(Value::Null)
+    };
+    // Words: one line of printable characters, cut to 200.
+    let words = |v: &Value| {
+        v.as_str()
+            .map(|s| {
+                let line: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+                json!(line.chars().filter(|c| !c.is_control()).take(200).collect::<String>())
+            })
+            .unwrap_or(Value::Null)
+    };
+    let at = |v: &Value| v.as_i64().map_or(Value::Null, |t| json!(t));
+    let object = |v: &Value, keep: &dyn Fn(&Value) -> Value| if v.is_object() { keep(v) } else { Value::Null };
+    if !v.is_object() {
+        return json!({});
+    }
+    json!({
+        "auto_update": v["auto_update"].as_bool().unwrap_or(false),
+        "running": version(&v["running"]),
+        "requested": version(&v["requested"]),
+        "updater": object(&v["updater"], &|u| json!({
+            "state": state(&u["state"]),
+            "version": version(&u["version"]),
+            "from": version(&u["from"]),
+            "at": at(&u["at"]),
+            "error": words(&u["error"]),
+        })),
+        "verify": object(&v["verify"], &|u| json!({
+            "state": state(&u["state"]),
+            "version": version(&u["version"]),
+            "at": at(&u["at"]),
+            "detail": words(&u["detail"]),
+        })),
+    })
+}
+
 impl Coordinator {
     /// Stores a server's metrics report.
     pub(crate) async fn record_metrics(&self, server: &str, report: &Value) -> sqlx::Result<()> {
@@ -291,7 +343,7 @@ impl Coordinator {
             .execute(&self.pool)
             .await?;
         sqlx::query("UPDATE servers SET update_status = ? WHERE id = ?")
-            .bind(report["update"].to_string())
+            .bind(update_status(&report["update"]).to_string())
             .bind(server)
             .execute(&self.pool)
             .await?;

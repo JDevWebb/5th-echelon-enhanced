@@ -336,13 +336,16 @@ impl Coordinator {
         let mut found = Vec::new();
         for (sig, g) in groups {
             let what = if g.kind == "freeze" { "freeze" } else { "crash" };
+            // Where it crashed, as the players' games said: shown as code in the webhook's
+            // channel, so on one line, cut, and with no backtick to end the code early.
+            let at: String = sig.split_whitespace().collect::<Vec<_>>().join(" ").replace('`', "'").chars().take(120).collect();
             match marks.get(&sig) {
                 None if g.players.len() >= ALERT_PLAYERS => found.push((
                     "crash".to_string(),
                     sig.clone(),
                     "warn",
                     format!(
-                        "A new {what} at `{sig}` hit {} players in the last day ({} times, {} ended the game)",
+                        "A new {what} at `{at}` hit {} players in the last day ({} times, {} ended the game)",
                         g.players.len(),
                         g.count,
                         g.fatal
@@ -357,10 +360,10 @@ impl Coordinator {
                             sig.clone(),
                             "bad",
                             format!(
-                                "The {what} at `{sig}`, fixed in {}, came back: {} times in the last day on {}",
+                                "The {what} at `{at}`, fixed in {}, came back: {} times in the last day on {}",
                                 m.fixed_in,
                                 g.count,
-                                again.iter().map(|r| r.as_str()).collect::<Vec<_>>().join(", ")
+                                again.iter().take(8).map(|r| crate::reports::chat_safe(r, 32)).collect::<Vec<_>>().join(", ")
                             ),
                         ));
                     }

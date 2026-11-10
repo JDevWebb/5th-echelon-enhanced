@@ -42,6 +42,13 @@ pub const WEBHOOK_SETTING: &str = "alert_webhook";
 /// A condition that holds now: (kind, server, level, what to say).
 type Condition = (String, String, &'static str, String);
 
+/// A server's words in an alert (its name, its updater's version or detail): on one line, cut
+/// to `max`, and neither Markdown, a link nor a mention in the webhook's channel, as players'
+/// words in reports are.
+fn safe(text: &str, max: usize) -> String {
+    crate::reports::chat_safe(text, max)
+}
+
 fn num(v: &Value) -> f64 {
     v.as_f64().unwrap_or(0.0)
 }
@@ -58,7 +65,7 @@ impl Coordinator {
                 .as_deref()
                 .and_then(|l| serde_json::from_str::<Value>(l).ok())
                 .and_then(|l| l["name"].as_str().map(str::to_string))
-                .unwrap_or_else(|| id.to_string())
+                .map_or_else(|| safe(id, 64), |n| safe(&n, 48))
         };
         let mut names = HashMap::new();
         let mut offline = Vec::new();
@@ -76,10 +83,10 @@ impl Coordinator {
             // updater, as root, before the server started).
             if status["verify"]["state"].as_str() == Some("mismatch") {
                 let detail = status["verify"]["detail"].as_str().unwrap_or("its program doesn't match the release");
-                found.push(("program".into(), id.clone(), "bad", format!("{n}: {}", detail.chars().take(200).collect::<String>())));
+                found.push(("program".into(), id.clone(), "bad", format!("{n}: {}", safe(detail, 200))));
             }
             if let Some(state) = updater["state"].as_str().filter(|s| *s == "failed" || *s == "rolled-back") {
-                let version = updater["version"].as_str().unwrap_or("?");
+                let version = safe(updater["version"].as_str().unwrap_or("?"), 32);
                 found.push((
                     "update".into(),
                     id.clone(),
@@ -131,7 +138,7 @@ impl Coordinator {
             if checks.len() < API_CHECKS_FAILED || !checks.iter().take(API_CHECKS_FAILED).all(|c| c.0.is_none()) {
                 continue;
             }
-            let n = names.get(id).cloned().unwrap_or_else(|| id.clone());
+            let n = names.get(id).cloned().unwrap_or_else(|| safe(id, 64));
             if checks.iter().take(API_CHECKS_FAILED).all(|c| c.1.as_deref() == Some("lookup")) {
                 found.push((
                     "dns".into(),
@@ -165,7 +172,7 @@ impl Coordinator {
                 .push((cpu.unwrap_or(0.0), mt.unwrap_or(0.0), ma.unwrap_or(0.0), dt.unwrap_or(0.0), df.unwrap_or(0.0)));
         }
         for (id, samples) in &by_server {
-            let n = names.get(id).cloned().unwrap_or_else(|| id.clone());
+            let n = names.get(id).cloned().unwrap_or_else(|| safe(id, 64));
             // CPU high in every sample of the five minutes (at least three of them).
             if samples.len() >= 3 && samples.iter().all(|s| s.0 > CPU_HIGH) {
                 let avg = samples.iter().map(|s| s.0).sum::<f64>() / samples.len() as f64;
@@ -194,7 +201,7 @@ impl Coordinator {
         for (id, lo, hi) in failed {
             let n = hi.unwrap_or(0.0) - lo.unwrap_or(0.0);
             if n >= FAILED_SIGNINS {
-                let name = names.get(&id).cloned().unwrap_or_else(|| id.clone());
+                let name = names.get(&id).cloned().unwrap_or_else(|| safe(&id, 64));
                 found.push(("signins".into(), id, "warn", format!("{n:.0} sign-ins refused on {name} in 10 min")));
             }
         }
@@ -203,7 +210,7 @@ impl Coordinator {
         for a in report["allowances"].as_array().into_iter().flatten() {
             let Some(allowance) = a["allowance"].as_f64() else { continue };
             let id = a["server"].as_str().unwrap_or_default().to_string();
-            let n = names.get(&id).cloned().unwrap_or_else(|| id.clone());
+            let n = names.get(&id).cloned().unwrap_or_else(|| safe(&id, 64));
             let (used, projected) = (num(&a["used"]) / allowance, num(&a["projected"]) / allowance);
             if used >= 1.0 {
                 found.push((
@@ -230,7 +237,11 @@ impl Coordinator {
         }
         let rollout = self.rollout().await?;
         if rollout.stage == "halted" {
-            let note = if rollout.note.is_empty() { String::new() } else { format!(": {}", rollout.note) };
+            let note = if rollout.note.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", safe(&rollout.note, 300))
+            };
             found.push((
                 "rollout".into(),
                 String::new(),
