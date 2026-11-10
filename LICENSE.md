@@ -1,79 +1,80 @@
 # Licensing
 
-This repository mixes code from several sources, and **only part of it is under a licence.** This file says exactly which part.
+This repository mixes code from several sources, and **only part of it is under a licence.** This file says which part, and how to tell.
 
-- **5th Echelon Enhanced's own work is under the [MIT licence](#mit-licence)** (full text below).
-- **Upstream 5th Echelon's code is not.** Its authors haven't chosen a licence yet ([unixoide/5th-echelon#129](https://github.com/unixoide/5th-echelon/issues/129)), so it remains theirs, with all rights reserved.
-- **Code merged from others' pull requests** stays under its authors' terms.
+- **5th Echelon Enhanced's own work is under the [MIT licence](#mit-licence)** (full text below), and so are contributions made to this repository.
+- **Upstream [5th Echelon](https://github.com/unixoide/5th-echelon)'s code is not.** Its authors haven't chosen a licence ([unixoide/5th-echelon#129](https://github.com/unixoide/5th-echelon/issues/129), open with no answer as of November 2026), so it remains theirs, with all rights reserved.
+- **Third-party material** keeps its own terms ([section 4](#4-third-party-material)).
 
 This project can't license other people's work, and doesn't try to. If upstream adopts a licence, this file will be updated to match.
 
-## What is under the MIT licence
+## 1. The rule: who wrote the line
 
-### 1. Files created by 5th Echelon Enhanced
+Licensing here follows authorship, as recorded in the git history:
 
-Everything in these files and folders is under MIT:
+- **Lines written by this project** (commits by JDevWebb) are under MIT.
+- **Lines contributed to this repository by pull request** are under MIT, as [CONTRIBUTING.md](CONTRIBUTING.md) says contributors agree. These include Matthias Walther's (MPW1412) pull requests #2, #3, #5, #7, #8, #10, #11, #12 and #13: host and party migration, quick start, the lobby-return crash fix, the Linux changes and the in-match chat relay, among others.
+- **Lines from upstream 5th Echelon** (commits by upstream's authors, unixoide and "Sam Fisher", and its contributors: ThirteenAG, Thiago, Michał Kapała, koteyka and askorbinovaya-kislota) stay theirs, with no licence.
+- **Lines from pull requests made to upstream and carried over** stay under their authors' terms: Matthias Walther's [#123](https://github.com/unixoide/5th-echelon/pull/123) and [#124](https://github.com/unixoide/5th-echelon/pull/124) (including the four invite migrations in `dedicated_server/src/storage/migrations/` dated 2026-09-29), and Thiago's [#128](https://github.com/unixoide/5th-echelon/pull/128) (`hooks/src/hooks/nla.rs`).
+
+`git blame -w -M -C <file>` shows who wrote each line, following lines that moved or were copied between files. A file can mix both kinds: changes this project made to an upstream file are MIT; the upstream lines in it are not.
+
+## 2. How much is which
+
+A count of every tracked line (`git blame -w -M -C` at 0.5.0, leaving out `vendor/`, lock files, images and fonts):
+
+| | Lines | Share |
+|---|---|---|
+| This project | about 158,000 | 60 % |
+| Upstream 5th Echelon | about 93,000 | 35 % |
+| Matthias Walther (contributions) | about 11,000 | 4 % |
+
+About two thirds of upstream's lines are data and tools rather than the programs: the RMC protocol dumps in `scripts/ddls/`, the game's name hashes in `hooks/maphashes.txt` and `hooks/preload.dat`, the base save in `setup/data/base_savegame.xml`, and the research tools in `tools/`. In the programs themselves, upstream's code is about one line in six, most of it the game's protocol definitions.
+
+## 3. Where upstream's code is
+
+**Wholly or mostly upstream's** (no licence):
 
 | Path | What |
 |---|---|
-| `identity/` | A player's identity across servers (Ed25519 keys and the messages they sign), and `release-sign`, which signs releases |
-| `coordinator/`, except `coordinator/admin-ui/src/lib/world.js` and the fonts | The coordinator: friends shared between servers, name reservations, the server directory, update rollouts, metrics and the admin UI |
-| `geo/` | Locating addresses with DB-IP's city database, for metrics |
-| `stat_boards/` | The game's statistics boards and leaderboards, for the servers and the coordinator |
-| `nat_proto/` | The NAT helper's protocol between the server and the client (internet play) |
-| `portmap/` | Asking the router to forward a port (UPnP and NAT-PMP), for the client and the launcher's connection test |
-| `setup/`, except the files listed in section 3 | The launcher's logic library: finding the game, installing, accounts, saves, checks, the server directory |
-| `launcher/src/app.rs`, `diagnostics.rs`, `feedback.rs`, `flow.rs`, `play.rs`, `server.rs` (except its log view; see section 3), `settings.rs`, `scale.rs`, `services.rs`, `task.rs`, `theme.rs`, `updater.rs`, `main.rs`, `network/nat.rs` | The launcher's interface, players' feedback, signed updates, and internet play checks (`updater.rs` and `main.rs` were rewritten from scratch) |
-| `dedicated_server/src/clients.rs`, `news_0.3.150.json`, `community_api.rs`, `federation.rs`, `friends_policy.rs`, `keys.rs`, `metrics.rs`, `nat_helper.rs`, `players.rs`, `rate_limit.rs`, `recent_log.rs`, `reports.rs`, `self_update.rs`, `session_events.rs`, `storage/players.rs`, `storage/relationships.rs`, `storage/stats.rs`, `storage/global_stats.rs`, `storage/session_events.rs` | Refusing outdated clients, the community API, sharing friends with a coordinator, friend-list rules, persistent keys, the NAT helper and relay, admin actions on players, rate limits, players' reports and the log lines kept for them, players' session events, the stats boards, and play sessions, bans, friends, blocks, identities, player stats and the network's leaderboards in the database |
-| `dedicated_server/src/storage/migrations/` dated 2026-09-28, 2026-10-01, 2026-10-04 and 2026-10-08 | Disabling the sample accounts; friends, name conflicts and token epochs; client sign-ins; player stats; play sessions, bans and match players; global stats; reports; session events |
-| `quazal/src/rmc/unhandled.rs`, `quazal/src/rmc/failures.rs` | Counting calls the server can't answer, and passing on requests it failed to |
-| `hooks/src/community.rs`, `hooks/src/dataversion.rs`, `hooks/src/diagnostics.rs`, `hooks/src/hooks/nat.rs`, `hooks/src/hooks/portmap.rs`, `hooks/hooks-config/src/text.rs`, `hooks/hooks-config/src/redact.rs`, `hooks/hooks-config/src/diagnostics.rs` | The overlay's friends, player search and invites; what the game's data version is made of; the game's diagnostics for the server, and hiding what's private in logs; internet play in the client (the NAT helper, the relay, keeping the router's port mapping) |
-| `tools/testbot/` | Headless test players and the load test |
-| `build/`, `docker/`, `release.toml`, `.dockerignore`, `.github/` | Builds, the server image, release numbering, CI and release workflows, issue forms |
-| `scripts/install-server.sh`, `harden-host.sh`, `sign-release.sh`, `release.sh`, `bots.sh`, `load-test.sh`, `proxy-test.sh`, `federation-test.sh`, `check-clean.sh`, `install-hooks.sh` | The Linux installer, release signing, test runners and repository checks |
-| `docs/deploying.md`, `operations.md`, `community-servers.md`, `friends.md`, `server-settings.md`, `reverse-proxy.md`, `reverse-proxy/`, `load-testing.md`, `roadmap.md`, `releases/`, `research/nat-traversal.md`, `research/cross-region.md` | This project's documentation |
-| `docs/logo.svg`, `docs/logo.png`, `launcher/logo.ico`, `coordinator/admin-ui/public/icon.svg` | 5th Echelon Enhanced's logo: five units in an echelon formation |
-| `docs/screenshots/` | Screenshots of the launcher |
-| `LICENSE.md` | This file |
-| `SECURITY.md` | How to report security problems |
-| `CONTRIBUTING.md` | How to report problems and contribute |
+| `quazal/` (except `rmc/unhandled.rs`, `rmc/failures.rs` and this project's changes) | The Quazal PRUDP and RMC protocol library the game speaks |
+| `dedicated_server/sc_bl_protocols/` | The game's RMC protocol definitions, generated from upstream's dumps by upstream's generator |
+| `dedicated_server/src/`: `overlord_core.rs`, `overlord_news.rs`, `overlord_challenge.rs`, `ticket.rs` and the other original service handlers, in part | The game's services as upstream wrote them; this project rewrote or added most of the server around them (see `git blame`) |
+| `hooks/src/uplay_r1_loader.rs`, `hooks/src/uplay_r1_loader/`, `hooks/src/hooks.rs`, `hooks/src/dll_utils/`, `hooks/hooks-addresses/src/lib.rs` and `patterns.rs`, `hooks/hooks-proc/`, `hooks/shim-gen/` | The client DLL's base: the Uplay API stand-in, the game hooks and how they're found |
+| `launcher/src/version.rs`, `launcher/src/dll_utils/`, `launcher/src/network/quazal.rs`, `launcher/build.rs` (in part) | Reading the game's version and the server check, from upstream's launcher |
+| `setup/src/config.rs`, `setup/src/sys/win.rs` and the `GameVersion` type in `setup/src/game.rs` (in part) | Adapted from upstream's launcher |
+| `tools/quazal-tools/`, `tools/umd_browser/`, `tools/storm_parser/`, `tools/wireshark-dissector/`, `tools/quazal.lua`, `tools/rmc.txt`, `tools/dormc.txt` | Upstream's research and development tools |
+| `scripts/ddls/`, `hooks/maphashes.txt`, `hooks/preload.dat` | Upstream's protocol dumps and name tables |
+| `setup/data/base_savegame.xml` | Upstream's generated save, used for a new player's rank 5 save |
+| `data/mp_balancing.ini` | The multiplayer balancing the game downloads from its server, as upstream shipped it |
+| `dedicated_server/src/news_upstream.json` | Upstream's news, kept to recognise it |
+| `docs/research/splinter_cell_blacklist.md`, `docs/research/quazal.md` | Upstream's research notes |
 
-### 2. This project's changes to upstream files
+**Wholly this project's** (MIT): `coordinator/` (except `admin-ui/src/lib/world.js` and the fonts), `launcher-slint/` (except the fonts and avatars), `identity/`, `hwid/`, `replay/`, `moderation/`, `geo/`, `stat_boards/`, `nat_proto/`, `portmap/`, `api/`, `tools/testbot/` (with Matthias Walther's contributions), `tools/map_geometry/`, `build/`, `docker/`, `.github/`, `scripts/` (except `ddls/` and `launch.bat`), `docs/` (except the two research notes above), and most of `setup/`, `launcher/`, `dedicated_server/src/` and `hooks/src/`.
 
-Many upstream files carry changes made by 5th Echelon Enhanced. **Those changes (the lines it added or changed, as recorded in the git history) are under MIT. The files as a whole are not:** the upstream code in them stays as described at the top.
-
-The same applies to this project's follow-up changes to code merged from pull requests.
-
-`git log --author=JDevWebb` lists this project's commits, and `git blame` shows who wrote each line.
-
-### 3. Not covered by this licence
+## 4. Third-party material
 
 | What | Whose, and on what terms |
 |---|---|
-| All code from upstream [5th Echelon](https://github.com/unixoide/5th-echelon), in any file | unixoide and upstream contributors; no licence yet |
-| `setup/src/config.rs`, `setup/src/sys/win.rs`, the `GameVersion` type in `setup/src/game.rs`, and the log view in `launcher/src/server.rs` | Adapted from upstream's launcher: the upstream parts stay upstream's; this project's changes are under MIT (section 2) |
-| Code from [#123](https://github.com/unixoide/5th-echelon/pull/123) and [#124](https://github.com/unixoide/5th-echelon/pull/124), including the four invite migrations in `dedicated_server/src/storage/migrations/` dated 2026-09-29 | Matthias Walther |
-| `hooks/src/hooks/nla.rs` ([#128](https://github.com/unixoide/5th-echelon/pull/128)) | Thiago |
+| `vendor/hudhook/` | hudhook 0.8.1 by Andrea Venuta, under the MIT licence (`vendor/hudhook/LICENSE`), vendored with this project's patches |
+| The Slint UI toolkit (the launcher) | SixtyFPS GmbH; used under the [Slint Royalty-free Desktop, Mobile, and Web Applications License](https://slint.dev/terms-and-conditions), which asks for attribution: the launcher's About page and this README credit it |
+| `hooks/fonts/*.ttf`, `launcher-slint/ui/fonts/*.ttf`, `coordinator/admin-ui/src/assets/fonts/*.ttf` | IBM Plex Sans, Sans Condensed and Mono, under the SIL Open Font License 1.1 (`hooks/fonts/OFL-*.txt`, `launcher-slint/ui/fonts/OFL-*.txt`, `coordinator/admin-ui/public/fonts-license.txt`) |
 | `coordinator/admin-ui/src/lib/world.js` | The land outline of [Natural Earth](https://www.naturalearthdata.com) (public domain), via [world-atlas](https://github.com/topojson/world-atlas) (ISC licence) |
 | GeoIP data downloaded at run time | [DB-IP](https://db-ip.com)'s IP to City Lite, under CC BY 4.0; the admin UI credits it |
-| `hooks/fonts/*.ttf` | IBM Plex Sans, Sans Condensed and Mono, under the SIL Open Font License 1.1 (`hooks/fonts/OFL-*.txt`) |
-| `coordinator/admin-ui/src/assets/fonts/*.ttf` | the same IBM Plex fonts, for the admin UI, under the SIL Open Font License 1.1 (`coordinator/admin-ui/public/fonts-license.txt`) |
-| `setup/data/base_savegame.xml` | Upstream 5th Echelon's generated save |
-| `dedicated_server/src/news_upstream.json` | Upstream 5th Echelon's news (`data/news.json`), kept to recognise it |
-| `docs/research/`, except `nat-traversal.md` and `cross-region.md` | Upstream's research notes |
-| The README | Partly written by this project, and partly upstream's (community links, research tools) |
+| `launcher-slint/ui/assets/avatars/` | The GitHub profile pictures of the people the launcher's About page credits, each theirs, shown to credit them |
+| Libraries fetched by Cargo and npm (tokio, tonic, egui, Dear ImGui via imgui-rs, Vue, three.js and others) | Their own licences; they aren't part of this repository, but the release binaries include them |
 
-**No warranty, for everything here.** Whatever its licence, the software in this repository, its builds, and the community network are provided "as is", without warranty of any kind, express or implied, including merchantability, fitness for a particular purpose and non-infringement. In no event are the authors or the network's operator liable for any claim, damages or other liability, in contract, tort or otherwise, arising from or in connection with them, their use, or other dealings in them. 5th Echelon Enhanced isn't affiliated with or endorsed by Ubisoft; *Tom Clancy's Splinter Cell: Blacklist* and its names and marks are Ubisoft's.
+## No warranty, and what this isn't
 
-**The community network** (`scbl.jdevwebb.net`, its relays, coordinator and admin UI) is a service JDevWebb runs with this software. The licence covers the code, not the service or access to it; the release signing key and the community coordinator's join token aren't part of it either.
+**No warranty, for everything here.** Whatever its licence, the software in this repository, its builds, and the community network are provided "as is", without warranty of any kind, express or implied, including merchantability, fitness for a particular purpose and non-infringement. In no event are the authors or the network's operator liable for any claim, damages or other liability, in contract, tort or otherwise, arising from or in connection with them, their use, or other dealings in them.
 
-Third-party libraries used by the build (egui, hudhook, Dear ImGui, tokio, tonic and others) keep their own licences. They're fetched by Cargo and aren't part of this repository.
+**The community network** (`scbl.jdevwebb.net` and its relays, coordinator and admin UI) is a service JDevWebb runs with this software. The licence covers the code, not the service or access to it; the release signing key and the community coordinator's join token aren't part of it either.
 
-Splinter Cell and Splinter Cell: Blacklist are trademarks of Ubisoft Entertainment. This project isn't affiliated with Ubisoft and contains no game files.
+Splinter Cell and Splinter Cell: Blacklist are trademarks of Ubisoft Entertainment. 5th Echelon Enhanced isn't affiliated with or endorsed by Ubisoft and contains no game files.
 
 ## Contributions
 
-Unless a pull request says otherwise, contributions to this repository are accepted under the MIT licence. They then become part of section 1 or 2.
+Unless a pull request says otherwise, contributions to this repository are accepted under the MIT licence ([CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## MIT licence
 
