@@ -71,6 +71,11 @@ pub const RELEASES: &[Release] = &[
                 community: false,
             },
             Item {
+                title: "The overlay without a mouse",
+                text: "With the keyboard (the arrows, Enter) or a controller: View + Menu opens and closes it, the d-pad moves, A presses, B goes back, LB and RB change tabs. The game sees the controller at rest while it's open.",
+                community: false,
+            },
+            Item {
                 title: "Match recordings",
                 text: "Your game records each match (where everyone was, faced and shot) in the game folder's replays, and sends it to your server, which keeps it a week for the admins to watch when a match is reported. ReplayRecording = false in uplay.toml turns it off, ReplayUpload = false keeps them on your PC.",
                 community: false,

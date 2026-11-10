@@ -70,6 +70,8 @@ pub fn init() {
             warn!("Overlay: DirectInput isn't held back while the panel is open: {e}");
         }
     }
+    // The controller: the overlay reads it, and the game sees it at rest while the panel's open.
+    crate::pad::init(false);
 }
 
 unsafe fn hook<T: retour::Function>(
@@ -180,6 +182,7 @@ pub fn game_in_front() -> bool {
 
 /// The panel opened or closed (checked every frame).
 pub fn set_open(open: bool) {
+    crate::pad::set_blocked(open);
     if OPEN.swap(open, Ordering::SeqCst) == open {
         return;
     }

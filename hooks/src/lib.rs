@@ -61,6 +61,7 @@ mod mouse_turn_fix;
 mod net_capture;
 mod overlay;
 mod overlay_input;
+mod pad;
 mod particle_fix;
 mod party_follow;
 mod pawns;

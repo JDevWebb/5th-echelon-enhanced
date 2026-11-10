@@ -715,6 +715,8 @@ macro_rules! configurable_hook {
 }
 
 pub unsafe fn init(config: &Config, addr: &Addresses) {
+    // The controller, before the game looks for one (the overlay's; see pad.rs).
+    crate::pad::init(true);
     configurable_hook!(config, Hook::ChangeState, ChangeStateHook ; addr.func_goal_change_state => change_state);
     configurable_hook!(config, Hook::GearStrDestructor, GearStrDestructor ; addr.func_gear_str_destructor => gear_str_destructor);
     configurable_hook!(config, Hook::GearStrDestructor, SomeGearStrConstructor ; addr.func_some_gear_str_constructor => gear_str_constructor);

@@ -33,6 +33,8 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_F4;
+use windows::Win32::UI::Input::KeyboardAndMouse::VK_RETURN;
+use windows::Win32::UI::Input::KeyboardAndMouse::VK_RIGHT;
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 use windows::Win32::UI::WindowsAndMessaging::SC_CLOSE;
@@ -50,6 +52,10 @@ use crate::uplay_r1_loader::EVENTS;
 const PRODUCT: &str = env!("FE_PRODUCT");
 const RELEASE: &str = env!("FE_RELEASE");
 
+/// `ImGuiWindowFlags_NavFlattened` (imgui 1.89; imgui-rs has no name for it): the keyboard and
+/// the controller move between the side menu and the pane as one.
+// SAFETY: a flag imgui defines; imgui-rs passes the bits through.
+const NAV_FLATTENED: imgui::WindowFlags = unsafe { imgui::WindowFlags::from_bits_unchecked(1 << 23) };
 static NOTIFICATION_TIMEOUT: Duration = Duration::from_secs(30);
 static INITIAL_POPUP_DURATION: Duration = Duration::from_secs(10);
 /// The start toast shows by this long after the game started, with no key or click.
@@ -559,6 +565,22 @@ struct MyRenderLoop {
     chat_text: String,
     /// Keep the typing focus after sending.
     chat_refocus: bool,
+    /// The controller's buttons last frame (`pad::poll`).
+    pad_held: u16,
+    /// The controller's buttons pressed this frame, for `render` (B, LB, RB).
+    pad_pressed: u16,
+    /// A popup (a row's menu, a question) or a text field was open last frame: B closes that,
+    /// not the panel.
+    popup_was_open: bool,
+    text_was_active: bool,
+    /// Where the keyboard or controller focus goes next: 2 the current tab (this frame), then
+    /// 1 the pane's first control (the next frame); a pane with none leaves it on the tab.
+    focus_step: u8,
+    /// The keyboard or controller is on a tab (Right then goes into the pane).
+    tab_has_focus: bool,
+    /// Enter and Right, as they were last frame.
+    enter_down: bool,
+    right_down: bool,
 }
 
 /// Builds the Uplay event that hands an accepted invitation to the game.
@@ -677,6 +699,102 @@ impl MyRenderLoop {
                 UiState::Show
             }
         };
+    }
+
+    /// The controller, once a frame: View + Menu opens and closes the panel; while it's open
+    /// the d-pad (or the left stick) moves, A presses, B goes back (closing the panel when
+    /// nothing else is open), LB and RB change tabs.
+    fn poll_pad(&mut self, ctx: &mut imgui::Context, in_front: bool) {
+        use crate::pad::button;
+        let held = crate::pad::poll();
+        let pressed = held & !self.pad_held;
+        let changed = held ^ self.pad_held;
+        self.pad_held = held;
+        self.pad_pressed = 0;
+        if held & button::CHORD == button::CHORD && pressed & button::CHORD != 0 && in_front {
+            self.toggle();
+            let open = self.ui_state == UiState::Show;
+            self.focus_step = if open { 2 } else { 0 };
+            self.log_draw_state = open;
+            // The chord's buttons stay hidden from the game until let go.
+            crate::pad::swallow(held);
+            crate::game_state::overlay(open, "View + Menu");
+            return;
+        }
+        if self.ui_state != UiState::Show {
+            return;
+        }
+        self.pad_pressed = pressed;
+        if pressed & button::RIGHT != 0 && self.tab_has_focus {
+            self.focus_step = 1;
+        }
+        let io = ctx.io_mut();
+        for (bit, key) in [
+            (button::UP, imgui::Key::GamepadDpadUp),
+            (button::DOWN, imgui::Key::GamepadDpadDown),
+            (button::LEFT, imgui::Key::GamepadDpadLeft),
+            (button::RIGHT, imgui::Key::GamepadDpadRight),
+            (button::A, imgui::Key::GamepadFaceDown),
+            (button::B, imgui::Key::GamepadFaceRight),
+        ] {
+            if changed & bit != 0 {
+                io.add_key_event(key, held & bit != 0);
+            }
+        }
+    }
+
+    /// The controller's B and shoulder buttons, in `render` (the panel is open).
+    fn pad_actions(&mut self) {
+        use crate::pad::button;
+        let pressed = std::mem::take(&mut self.pad_pressed);
+        if pressed & button::B != 0 && !self.popup_was_open && !self.text_was_active {
+            self.ui_state = UiState::Hide;
+            // B, still held, doesn't reach the game when it's let go.
+            crate::pad::swallow(self.pad_held);
+            crate::game_state::overlay(false, "B");
+            return;
+        }
+        let step = if pressed & button::RB != 0 {
+            1
+        } else if pressed & button::LB != 0 {
+            Tab::ALL.len() - 1
+        } else {
+            0
+        };
+        if step != 0 {
+            let at = Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0);
+            self.tab = Tab::ALL[(at + step) % Tab::ALL.len()];
+            self.focus_step = 2;
+        }
+    }
+
+    /// The keyboard, while the panel is open: Enter presses the focused button as Space does
+    /// (imgui 1.89 gives Enter to text fields only), and Right on a tab goes into the pane.
+    fn poll_nav_keys(&mut self, ctx: &mut imgui::Context) {
+        #[allow(clippy::cast_possible_wrap)]
+        let down = |vk: u16| unsafe { GetAsyncKeyState(vk.into()) & 0x8000u16 as i16 != 0 };
+        let enter = down(VK_RETURN.0);
+        let right = down(VK_RIGHT.0);
+        if self.ui_state == UiState::Show && crate::overlay_input::game_in_front() {
+            if enter != self.enter_down && !self.text_was_active {
+                ctx.io_mut().add_key_event(imgui::Key::Space, enter);
+            }
+            if right && !self.right_down && self.tab_has_focus {
+                self.focus_step = 1;
+            }
+        }
+        self.enter_down = enter;
+        self.right_down = right;
+    }
+
+    /// Whether the keyboard or the controller has the item just drawn (imgui draws no focus
+    /// for the overlay's own buttons: they draw [`Self::focus_ring`] after their content).
+    fn nav_focused(ui: &Ui) -> bool {
+        ui.is_item_focused() && ui.io().nav_visible
+    }
+
+    fn focus_ring(&self, dl: &imgui::DrawListMut<'_>, from: [f32; 2], to: [f32; 2]) {
+        dl.add_rect(from, to, pal().accent).rounding(self.s(8.0)).thickness(self.s(2.0)).build();
     }
 
     fn poll_keys(&mut self) {
@@ -1118,20 +1236,33 @@ impl MyRenderLoop {
                 self.panel_header(ui, size[0], header_h);
                 let body_h = size[1] - header_h - footer_h;
                 ui.set_cursor_pos([0.0, header_h]);
-                ui.child_window("##fe-nav").size([self.s(200.0), body_h]).build(|| self.panel_nav(ui));
+                ui.child_window("##fe-nav").flags(NAV_FLATTENED).size([self.s(200.0), body_h]).build(|| self.panel_nav(ui));
                 ui.same_line_with_spacing(0.0, 0.0);
                 {
                     let _cp = ui.push_style_var(StyleVar::WindowPadding([self.s(26.0), self.s(20.0)]));
                     ui.child_window("##fe-content")
+                        .flags(NAV_FLATTENED)
                         .size([0.0, body_h])
                         .always_use_window_padding(true)
-                        .build(|| match self.tab {
-                            Tab::Friends => self.pane_friends(ui),
-                            Tab::Chat => self.pane_chat(ui),
-                            Tab::Players => self.pane_players(ui),
-                            Tab::Invites => self.pane_invites(ui),
-                            Tab::Match => self.pane_match(ui),
-                            Tab::Server => self.pane_server(ui),
+                        .build(|| {
+                            // The pane's first control takes the focus (after a tab change or
+                            // opening with the controller, a frame after its tab did).
+                            match self.focus_step {
+                                1 => {
+                                    ui.set_keyboard_focus_here();
+                                    self.focus_step = 0;
+                                }
+                                2 => self.focus_step = 1,
+                                _ => {}
+                            }
+                            match self.tab {
+                                Tab::Friends => self.pane_friends(ui),
+                                Tab::Chat => self.pane_chat(ui),
+                                Tab::Players => self.pane_players(ui),
+                                Tab::Invites => self.pane_invites(ui),
+                                Tab::Match => self.pane_match(ui),
+                                Tab::Server => self.pane_server(ui),
+                            }
                         });
                 }
                 self.panel_footer(ui, size, footer_h);
@@ -1228,16 +1359,22 @@ impl MyRenderLoop {
         let pad = self.s(12.0);
         let item_h = self.s(44.0);
         let pending = self.active_invites.len();
+        let mut tab_focus = false;
         #[allow(clippy::cast_precision_loss)]
         for (i, tab) in Tab::ALL.into_iter().enumerate() {
             let top = pad + i as f32 * (item_h + self.s(4.0));
             ui.set_cursor_pos([pad, top]);
             let p = ui.cursor_screen_pos();
             let w = size[0] - pad * 2.0;
+            if self.tab == tab && self.focus_step == 2 {
+                ui.set_keyboard_focus_here();
+            }
             if ui.invisible_button(format!("##fe-tab-{i}"), [w, item_h]) {
                 self.tab = tab;
             }
-            let hovered = ui.is_item_hovered();
+            let focused = Self::nav_focused(ui);
+            tab_focus |= focused;
+            let hovered = ui.is_item_hovered() || focused;
             let selected = self.tab == tab;
             let dl = ui.get_window_draw_list();
             // As the launcher's side menu: the current one on its own ground with the accent
@@ -1292,7 +1429,11 @@ impl MyRenderLoop {
                 dl.add_rect([bx, by], [bx + bw, by + bh], pal().accent).filled(true).rounding(bh / 2.0).build();
                 dl.add_text([bx + self.s(6.0), by + self.s(2.0)], pal().on_accent, &n);
             }
+            if focused {
+                self.focus_ring(&dl, p, [p[0] + w, p[1] + item_h]);
+            }
         }
+        self.tab_has_focus = tab_focus;
     }
 
     fn panel_footer(&self, ui: &Ui, size: [f32; 2], h: f32) {
@@ -1309,7 +1450,15 @@ impl MyRenderLoop {
         ui.same_line();
         self.key(ui, "Esc");
         ui.same_line();
-        ui.text_colored(pal().muted, "closes.   The game gets no mouse or keys while this is open.");
+        ui.text_colored(pal().muted, "closes, as do");
+        ui.same_line();
+        self.key(ui, "View + Menu");
+        ui.same_line();
+        ui.text_colored(pal().muted, "or");
+        ui.same_line();
+        self.key(ui, "B");
+        ui.same_line();
+        ui.text_colored(pal().muted, "on a controller.");
     }
 
     fn pane_title(&self, ui: &Ui, title: &str, note: &str) {
@@ -1650,7 +1799,8 @@ impl MyRenderLoop {
             if ui.invisible_button(format!("##fe-seg-{id}-{i}"), [*w, h]) {
                 picked = Some(i);
             }
-            let hovered = ui.is_item_hovered();
+            let focused = Self::nav_focused(ui);
+            let hovered = ui.is_item_hovered() || focused;
             let on = i == current;
             let dl = ui.get_window_draw_list();
             if on || hovered {
@@ -1670,6 +1820,9 @@ impl MyRenderLoop {
                 pal().muted
             };
             self.with_font(ui, |f| f.strong, || dl.add_text([at[0] + pad_x, at[1] + self.s(8.0)], color, label));
+            if focused {
+                self.focus_ring(&dl, at, [at[0] + w, at[1] + h]);
+            }
             x += w;
         }
         ui.set_cursor_screen_pos([start[0], start[1] + h + self.s(6.0)]);
@@ -2458,6 +2611,11 @@ impl ImguiRenderLoop for MyRenderLoop {
         self.fonts = Some(add_fonts(ctx, self.font_scale));
         // Nothing to remember between games; don't write imgui.ini.
         ctx.set_ini_filename(None::<std::path::PathBuf>);
+        // The panel works with the keyboard (arrows, Tab, Enter or Space) and a controller (the
+        // d-pad, A, B; fed from XInput in `before_render`), as well as the mouse.
+        let io = ctx.io_mut();
+        io.config_flags |= imgui::ConfigFlags::NAV_ENABLE_KEYBOARD | imgui::ConfigFlags::NAV_ENABLE_GAMEPAD;
+        io.backend_flags |= imgui::BackendFlags::HAS_GAMEPAD;
     }
 
     fn before_render(&mut self, ctx: &mut imgui::Context, render_context: &mut dyn hudhook::RenderContext) {
@@ -2491,6 +2649,8 @@ impl ImguiRenderLoop for MyRenderLoop {
                 if self.font_rebuild_failed { ", rebuild failed" } else { "" }
             );
         }
+        self.poll_pad(ctx, in_front);
+        self.poll_nav_keys(ctx);
         ctx.io_mut().font_global_scale = self.s / self.font_scale;
         // The game hides the system's cursor in play: the overlay draws its own while open.
         ctx.io_mut().mouse_draw_cursor = self.ui_state == UiState::Show;
@@ -2501,6 +2661,9 @@ impl ImguiRenderLoop for MyRenderLoop {
         // A frame: the freeze watch's sign the game is alive.
         crate::crash::frame();
         self.poll_keys();
+        if self.ui_state == UiState::Show {
+            self.pad_actions();
+        }
         crate::overlay_input::set_open(self.ui_state == UiState::Show);
         self.poll_invites();
         self.poll_relogin();
@@ -2521,6 +2684,12 @@ impl ImguiRenderLoop for MyRenderLoop {
             if hooks_config::get().is_some_and(|c| c.overlay_debug) {
                 self.show_debug(ui);
             }
+            // SAFETY: a query of imgui's state, inside the frame.
+            self.popup_was_open = unsafe { imgui::sys::igIsPopupOpen(std::ptr::null(), imgui::sys::ImGuiPopupFlags_AnyPopupId as i32) };
+            self.text_was_active = ui.io().want_text_input;
+        } else {
+            self.popup_was_open = false;
+            self.text_was_active = false;
         }
         self.show_error_banner(ui);
         self.show_invite_toast(ui);
@@ -2619,6 +2788,14 @@ fn init_hudhook<T: hudhook::Hooks + 'static>(invites: crossbeam_channel::Receive
             chat_with: None,
             chat_text: String::new(),
             chat_refocus: false,
+            pad_held: 0,
+            pad_pressed: 0,
+            popup_was_open: false,
+            text_was_active: false,
+            focus_step: 0,
+            tab_has_focus: false,
+            enter_down: false,
+            right_down: false,
         })
         .with_hmodule(unsafe { GetModuleHandleA(PCSTR::null())?.into() })
         .build()
