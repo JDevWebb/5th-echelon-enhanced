@@ -115,8 +115,9 @@ enum AdminCommand {
 
 #[derive(argh::FromArgs)]
 #[argh(subcommand, name = "add")]
-/// add an admin: prints a one-time link (24 hours) to choose a password and
-/// add a passkey or authenticator app
+/// add an owner (manages the admins and the security settings; the admin
+/// UI adds admins too): prints a one-time link (24 hours) to choose a
+/// password and add a passkey or authenticator app
 struct AdminAdd {
     #[argh(positional)]
     username: String,
@@ -364,8 +365,11 @@ async fn main() -> eyre::Result<()> {
             match a.command {
                 AdminCommand::Add(add) => {
                     let link = c.admin_setup_link(&add.username, false).await.map_err(|e| eyre::eyre!(e))?;
-                    c.audit("console", None, "added an admin", &add.username).await;
-                    println!("{} can set up their sign-in at this link, within 24 hours (it works once):\n\n  {link}", add.username);
+                    c.audit("console", None, "added an admin", &format!("{} (owner)", add.username)).await;
+                    println!(
+                        "{} (an owner) can set up their sign-in at this link, within 24 hours (it works once):\n\n  {link}",
+                        add.username
+                    );
                 }
                 AdminCommand::Reset(reset) => {
                     let link = c.admin_setup_link(&reset.username, true).await.map_err(|e| eyre::eyre!(e))?;
@@ -376,13 +380,13 @@ async fn main() -> eyre::Result<()> {
                     );
                 }
                 AdminCommand::List(_) => {
-                    for (name, disabled, totp, passkeys) in c.admin_list().await? {
+                    for (name, role, disabled, totp, passkeys) in c.admin_list().await? {
                         let factors = match (totp, passkeys) {
                             (false, 0) => String::from("no second factor yet"),
                             (true, 0) => String::from("authenticator app"),
                             (t, n) => format!("{n} passkey(s){}", if t { " and an authenticator app" } else { "" }),
                         };
-                        println!("{name}{}: {factors}", if disabled { " (disabled)" } else { "" });
+                        println!("{name} ({role}{}): {factors}", if disabled { ", disabled" } else { "" });
                     }
                 }
                 AdminCommand::OpenAccess(_) => {

@@ -8,7 +8,7 @@
       <p class="small muted">Each launcher and game add-on sends a fingerprint of its own file when it signs in. The project's signed releases are known by theirs; anything else is a modified or development build, or a client older than 0.4.5. A client can be made to send a release's fingerprint, so this stops honest modified builds and casual tampering, not a determined attacker.</p>
       <div class="row">
         <label class="field" style="max-width: 320px"><span>Other builds</span>
-          <select v-model="mode" @change="saveMode">
+          <select v-model="mode" :disabled="!owner" :title="owner ? '' : 'Only an owner can change it'" @change="saveMode">
             <option value="off">Off: not checked</option>
             <option value="report">Report: noted on Sessions, still let in</option>
             <option value="enforce">Enforce: refused, unless allowed below</option>
@@ -51,6 +51,9 @@ import { api } from '../lib/api.js';
 import { confirmBox } from '../lib/dialogs.js';
 import { fmt } from '../lib/fmt.js';
 import { toast } from '../lib/ui.js';
+
+// Only an owner changes the mode (a security setting); any admin allows a developer's identity.
+defineProps({ owner: { type: Boolean, default: false } });
 
 const data = ref(null), error = ref(''), mode = ref('report'), identity = ref(''), note = ref('');
 

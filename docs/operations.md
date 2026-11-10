@@ -306,7 +306,7 @@ The admin UI is served by the coordinator on its own port (127.0.0.2:8701, a loo
    sudo bash install-server.sh --add-admin yourname
    ```
 
-   This prints a one-time setup link. It works for 24 hours.
+   This prints a one-time setup link. It works for 24 hours. An admin added here is an **owner** (see Owners and admins).
 7. **Set up your sign-in.** Open the link, choose a password, and add a passkey (recommended) or an authenticator app. Save the recovery codes it shows you.
 
 **Cloudflare leaves the pages as they are:** the admin UI sends `Cache-Control: no-store, no-transform`, so Cloudflare neither caches it nor adds scripts of its own (Web Analytics, bot detection, Rocket Loader), which the UI's content security policy would block.
@@ -345,9 +345,20 @@ The admin UI is served by the coordinator on its own port (127.0.0.2:8701, a loo
 
 **Everything is in the audit log** for 400 days: sign-ins, failures and changes.
 
+### Owners and admins
+
+Each admin is an **owner** or an **admin**, shown on **Admins and security**.
+
+- Only owners add admins, reset another admin's sign-in, disable, enable or remove an admin, change roles, and change the security settings on that page: where admins may sign in from, and which client builds servers take (Client builds; any admin can still allow a developer's identity other builds from their player page).
+- Admins do everything else (players, reports, support, servers, releases and so on), and see the admins and the settings read-only. The server refuses them, not just the page.
+- `--add-admin` adds an owner (the server's operator). An owner adding someone in the UI picks the role; it's admin unless they choose owner.
+- An owner can make an admin an owner, an owner an admin, or step down themselves; nobody raises their own role.
+- The last enabled owner can't be demoted, disabled or removed, so someone can always manage the admins.
+- Role changes are in the audit log. Admins added before roles came in (0.5.0) are all owners.
+
 ### Where admins may sign in from
 
-Under **Admins and security**, limit the admin UI to address ranges (e.g. your home's address) and countries.
+Under **Admins and security**, an owner can limit the admin UI to address ranges (e.g. your home's address) and countries.
 
 - Every request is checked, the sign-in page too. A request from anywhere else gets a refusal and nothing more.
 - Rules that would lock out the admin saving them are refused.
@@ -357,7 +368,7 @@ Under **Admins and security**, limit the admin UI to address ranges (e.g. your h
 | Problem | What to do |
 |---|---|
 | Every admin locked out by the restrictions | `sudo bash install-server.sh --admin-open-access` clears them |
-| An admin lost their second factor | On the machine: `sudo bash install-server.sh --reset-admin NAME` clears their sign-in and gives a new setup link. Another admin's **Reset sign-in** clears it and signs them out (e.g. a lost laptop), but gives no link: the link comes from the console only, so one admin can't take over another's account |
+| An admin lost their second factor | On the machine: `sudo bash install-server.sh --reset-admin NAME` clears their sign-in and gives a new setup link. An owner's **Reset sign-in** clears it and signs them out (e.g. a lost laptop), but gives no link: the link comes from the console only, so one admin can't take over another's account |
 | Cloudflare shows error 525 | Caddy has no certificate for the name: install an Origin CA certificate (step 3) |
 | A TLS error before Cloudflare answers | The name is two levels deep, which Cloudflare's free certificate doesn't cover: use a one-level name (step 1) |
 | `ERR_HTTP2_PROTOCOL_ERROR` right after switching the record to proxied | Your computer still has the server's own address cached, and Caddy drops anything that isn't from Cloudflare. Flush your DNS cache (macOS: `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`) |

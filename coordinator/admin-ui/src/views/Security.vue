@@ -64,22 +64,29 @@
     <section class="panel">
       <header><h2>Where admins may sign in from</h2><span class="small muted">You: {{ rules.you.ip }}{{ rules.you.country ? ` · ${flag(rules.you.country)} ${rules.you.country}` : '' }}</span></header>
       <form class="grid cols-2" @submit.prevent="saveRules">
-        <label class="field"><span>Networks (empty: any)</span><textarea v-model="nets" placeholder="One per line, e.g.&#10;203.0.113.7&#10;198.51.100.0/24&#10;2001:db8::/48"></textarea></label>
+        <label class="field"><span>Networks (empty: any)</span><textarea v-model="nets" :disabled="!owner" placeholder="One per line, e.g.&#10;203.0.113.7&#10;198.51.100.0/24&#10;2001:db8::/48"></textarea></label>
         <div class="stack">
-          <label class="field"><span>Countries (empty: any)</span><input v-model="countries" placeholder="e.g. NZ, AU"></label>
+          <label class="field"><span>Countries (empty: any)</span><input v-model="countries" :disabled="!owner" placeholder="e.g. NZ, AU"></label>
           <p class="small muted">Countries come from Cloudflare. Rules that would lock you out are refused. Locked out anyway? On the coordinator's machine: coordinator admin open-access.</p>
-          <div class="row end"><button class="primary" type="submit">Save rules</button></div>
+          <div v-if="owner" class="row end"><button class="primary" type="submit">Save rules</button></div>
+          <p v-else class="small muted">Only an owner can change these.</p>
         </div>
       </form>
     </section>
-    <ClientBuilds />
+    <ClientBuilds :owner="owner" />
     <section class="panel">
       <header>
         <h2>Admins</h2>
-        <form class="row" @submit.prevent="addAdmin"><input v-model="newName" placeholder="new admin's name" maxlength="32" style="max-width: 240px"><button class="small" type="submit">Add admin</button></form>
+        <form v-if="owner" class="row" @submit.prevent="addAdmin">
+          <input v-model="newName" placeholder="new admin's name" maxlength="32" style="max-width: 240px">
+          <select v-model="newRole" title="Owners also manage the admins and the security settings" style="max-width: 120px"><option value="admin">Admin</option><option value="owner">Owner</option></select>
+          <button class="small" type="submit">Add</button>
+        </form>
+        <span v-else class="small muted">Only an owner can add or change admins.</span>
       </header>
+      <p class="small muted">Owners manage the admins and the security settings on this page; admins do everything else.</p>
       <div class="table-wrap"><table>
-        <thead><tr><th>Admin</th><th>Second factors</th><th>Last sign-in</th><th></th></tr></thead>
+        <thead><tr><th>Admin</th><th>Role</th><th>Second factors</th><th>Last sign-in</th><th></th></tr></thead>
         <tbody>
           <tr v-for="a in admins.admins" :key="a.id">
             <td>
@@ -87,10 +94,16 @@
               <span v-if="a.disabled" class="pill bad" style="margin-left: 8px">disabled</span>
               <span v-if="!a.set_up" class="pill warn" style="margin-left: 8px">setup pending</span>
             </td>
+            <td><span class="pill" :class="{ ok: a.role === 'owner' }">{{ a.role }}</span></td>
             <td class="small"><span v-if="factors(a)">{{ factors(a) }}</span><span v-else class="faint">none</span></td>
             <td class="small muted">{{ fmt.ago(a.last_login) }}</td>
             <td class="r">
-              <div v-if="a.username !== me.username" class="row end">
+              <div v-if="owner && a.username === me.username && owners > 1" class="row end">
+                <button class="ghost small" type="button" @click="adminAction(a, 'make-admin', ['Step down to admin?', 'You keep everything but managing the admins and the security settings. Another owner can make you an owner again.', 'Step down'])">Step down</button>
+              </div>
+              <div v-else-if="owner && a.username !== me.username" class="row end">
+                <button v-if="a.role === 'owner'" class="ghost small" type="button" @click="adminAction(a, 'make-admin', [`Make ${a.username} an admin?`, 'They can no longer manage the admins or the security settings.', 'Make admin'])">Make admin</button>
+                <button v-else class="ghost small" type="button" @click="adminAction(a, 'make-owner', [`Make ${a.username} an owner?`, 'They can add, reset, disable and remove admins, change roles, and change the sign-in restrictions and client builds.', 'Make owner'])">Make owner</button>
                 <button class="ghost small" type="button" @click="adminAction(a, 'reset', [`Reset ${a.username}'s sign-in?`, `Their password, passkeys and authenticator are cleared and they're signed out. Their new setup link comes from the server's console (sudo bash install-server.sh --reset-admin ${a.username}), not here.`, 'Reset sign-in'])">Reset sign-in</button>
                 <button v-if="a.disabled" class="ghost small" type="button" @click="adminAction(a, 'enable')">Enable</button>
                 <button v-else class="ghost small" type="button" @click="adminAction(a, 'disable', [`Disable ${a.username}?`, 'They\'re signed out and can\'t sign in until enabled.', 'Disable'])">Disable</button>
@@ -124,7 +137,7 @@ import { session } from '../lib/session.js';
 import { openModal, toast } from '../lib/ui.js';
 
 const me = ref(null), admins = ref(null), rules = ref(null), error = ref('');
-const nets = ref(''), countries = ref(''), newName = ref('');
+const nets = ref(''), countries = ref(''), newName = ref(''), newRole = ref('admin');
 const pw = reactive({ current: '', new: '' });
 
 async function load() {
@@ -138,6 +151,9 @@ async function load() {
 }
 onMounted(load);
 
+// Only owners manage the admins and the security settings (the server refuses the rest anyway).
+const owner = computed(() => session.info?.role === 'owner');
+const owners = computed(() => (admins.value?.admins || []).filter(a => a.role === 'owner' && !a.disabled).length);
 const pending = computed(() => (admins.value?.admins || []).filter(a => !a.set_up).length);
 const factors = a => [a.passkeys ? `${a.passkeys} passkey${a.passkeys > 1 ? 's' : ''}` : null, a.totp ? 'authenticator' : null].filter(Boolean).join(' · ');
 const run = async (fn, done) => { try { const r = await fn(); if (done) toast(typeof done === 'function' ? done(r) : done); load(); return r; } catch (e) { toast(e.message, true); } };
@@ -180,8 +196,9 @@ const saveRules = () => run(() => api('PUT', '/restrictions', {
 async function addAdmin() {
   const name = newName.value.trim();
   try {
-    const r = await api('POST', '/admins', { username: name });
+    const r = await api('POST', '/admins', { username: name, role: newRole.value });
     newName.value = '';
+    newRole.value = 'admin';
     await openModal(SetupLink, { who: name, link: r.link });
     load();
   } catch (e) { toast(e.message, true); }

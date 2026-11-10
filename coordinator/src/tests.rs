@@ -3670,6 +3670,183 @@ async fn failed_sign_ins_lock_an_account_and_admins_cant_lock_everyone_out() {
     assert_eq!(status, StatusCode::UNAUTHORIZED, "a reset admin's old password");
 }
 
+/// A signed-in admin's cookie, as [`admin_cookie`] makes it (just verified), with `role`.
+async fn admin_cookie_as(t: &Test, name: &str, role: &str) -> String {
+    let cookie = admin_cookie(t, name, 0).await;
+    sqlx::query("UPDATE admins SET role = ? WHERE username = ?")
+        .bind(role)
+        .bind(name)
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    cookie
+}
+
+async fn admin_id(t: &Test, name: &str) -> i64 {
+    sqlx::query_scalar("SELECT id FROM admins WHERE username = ?")
+        .bind(name)
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap()
+}
+
+async fn admin_role(t: &Test, name: &str) -> String {
+    sqlx::query_scalar("SELECT role FROM admins WHERE username = ?")
+        .bind(name)
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn only_owners_manage_the_admins_and_the_security_settings() {
+    let t = start("admin-roles").await;
+    let r = admin_router_at(&t, [192, 0, 2, 30]);
+    let boss = admin_cookie_as(&t, "boss", "owner").await;
+    let helper = admin_cookie_as(&t, "helper", "admin").await;
+    let (boss_id, helper_id) = (admin_id(&t, "boss").await, admin_id(&t, "helper").await);
+
+    // The session says each one's role, for the page to show the right controls.
+    assert_eq!(admin_send(&r, "GET", "/api/session", &boss, None).await.1["role"], "owner");
+    assert_eq!(admin_send(&r, "GET", "/api/session", &helper, None).await.1["role"], "admin");
+
+    // An admin is refused every owner's action, raising their own role too; nothing changed.
+    let mut refused = vec![
+        ("POST", "/api/admins".to_string(), Some(json!({ "username": "sneaky", "role": "owner" }))),
+        ("PUT", "/api/restrictions".to_string(), Some(json!({ "networks": [], "countries": [] }))),
+        ("PUT", "/api/clients".to_string(), Some(json!({ "mode": "off" }))),
+        ("POST", format!("/api/admins/{helper_id}/make-owner"), None),
+    ];
+    for action in ["reset", "disable", "enable", "remove", "make-owner", "make-admin"] {
+        refused.push(("POST", format!("/api/admins/{boss_id}/{action}"), None));
+    }
+    for (method, path, body) in refused {
+        let (status, v, _) = admin_send(&r, method, &path, &helper, body).await;
+        assert_eq!((status, v["owner_only"].as_bool()), (StatusCode::FORBIDDEN, Some(true)), "{method} {path}: {v}");
+    }
+    assert_eq!(admin_role(&t, "helper").await, "admin");
+    assert_eq!(admin_role(&t, "boss").await, "owner");
+    let admins: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM admins WHERE disabled = 0").fetch_one(&t.c.pool).await.unwrap();
+    assert_eq!(admins, 2, "nobody added, disabled or removed");
+    // Admins still read the page, and do everything else.
+    let (status, v, _) = admin_send(&r, "GET", "/api/admins", &helper, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert!(v["admins"].as_array().unwrap().iter().any(|a| a["username"] == "boss" && a["role"] == "owner"), "{v}");
+    assert_eq!(admin_send(&r, "GET", "/api/restrictions", &helper, None).await.0, StatusCode::OK);
+    assert_eq!(admin_send(&r, "GET", "/api/overview", &helper, None).await.0, StatusCode::OK);
+
+    // An owner adds an admin (the default) or an owner; no other role.
+    let (status, v, _) = admin_send(&r, "POST", "/api/admins", &boss, Some(json!({ "username": "newbie" }))).await;
+    assert_eq!((status, v["role"].as_str()), (StatusCode::OK, Some("admin")), "{v}");
+    assert_eq!(admin_role(&t, "newbie").await, "admin");
+    let (status, v, _) = admin_send(&r, "POST", "/api/admins", &boss, Some(json!({ "username": "partner", "role": "owner" }))).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(admin_role(&t, "partner").await, "owner");
+    let (status, ..) = admin_send(&r, "POST", "/api/admins", &boss, Some(json!({ "username": "god", "role": "god" }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "no such role");
+    // The other owner's actions on admins, and the security settings.
+    for (method, path, body) in [
+        ("PUT", "/api/restrictions", json!({ "networks": [], "countries": [] })),
+        ("PUT", "/api/clients", json!({ "mode": "report" })),
+    ] {
+        let (status, v, _) = admin_send(&r, method, path, &boss, Some(body)).await;
+        assert_eq!(status, StatusCode::OK, "{method} {path}: {v}");
+    }
+    let newbie = admin_id(&t, "newbie").await;
+    for action in ["disable", "enable", "reset", "remove"] {
+        let (status, v, _) = admin_send(&r, "POST", &format!("/api/admins/{newbie}/{action}"), &boss, None).await;
+        assert_eq!(status, StatusCode::OK, "{action}: {v}");
+    }
+
+    // Roles: made an owner, the helper may then manage the admins; then back to admin.
+    let (status, v, _) = admin_send(&r, "POST", &format!("/api/admins/{helper_id}/make-owner"), &boss, None).await;
+    assert_eq!((status, v["role"].as_str()), (StatusCode::OK, Some("owner")), "{v}");
+    assert_eq!(admin_send(&r, "GET", "/api/session", &helper, None).await.1["role"], "owner");
+    let (status, ..) = admin_send(&r, "POST", &format!("/api/admins/{helper_id}/make-owner"), &boss, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "an owner already");
+    let (status, v, _) = admin_send(&r, "POST", &format!("/api/admins/{helper_id}/make-admin"), &boss, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let changes: Vec<String> = sqlx::query_scalar("SELECT detail FROM audit WHERE admin = 'boss' AND event = 'changed an admin''s role' ORDER BY id")
+        .fetch_all(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(changes, ["helper: admin to owner", "helper: owner to admin"]);
+    let added: Vec<String> = sqlx::query_scalar("SELECT detail FROM audit WHERE admin = 'boss' AND event = 'added an admin' ORDER BY id")
+        .fetch_all(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(added, ["newbie (admin)", "partner (owner)"]);
+
+    // The last enabled owner can't step down; a disabled owner doesn't count. With another
+    // owner enabled, they may.
+    let partner = admin_id(&t, "partner").await;
+    let (status, v, _) = admin_send(&r, "POST", &format!("/api/admins/{partner}/disable"), &boss, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let (status, v, _) = admin_send(&r, "POST", &format!("/api/admins/{boss_id}/make-admin"), &boss, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "the last owner: {v}");
+    assert!(v["error"].as_str().unwrap().contains("last owner"), "{v}");
+    assert_eq!(admin_role(&t, "boss").await, "owner");
+    for action in ["disable", "remove", "make-owner"] {
+        let (status, v, _) = admin_send(&r, "POST", &format!("/api/admins/{boss_id}/{action}"), &boss, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{action} themselves: {v}");
+    }
+    admin_send(&r, "POST", &format!("/api/admins/{partner}/enable"), &boss, None).await;
+    let (status, v, _) = admin_send(&r, "POST", &format!("/api/admins/{boss_id}/make-admin"), &boss, None).await;
+    assert_eq!(status, StatusCode::OK, "another owner remains: {v}");
+    assert_eq!(admin_role(&t, "boss").await, "admin");
+    let (status, v, _) = admin_send(&r, "POST", &format!("/api/admins/{boss_id}/make-owner"), &boss, None).await;
+    assert_eq!(
+        (status, v["owner_only"].as_bool()),
+        (StatusCode::FORBIDDEN, Some(true)),
+        "no raising their own role back: {v}"
+    );
+}
+
+#[tokio::test]
+async fn the_console_adds_owners_and_a_reset_keeps_the_role() {
+    let t = start("admin-console-roles").await;
+    t.c.admin_setup_link("operator", false).await.unwrap();
+    assert_eq!(admin_role(&t, "operator").await, "owner", "the console adds the server's owner");
+    sqlx::query("UPDATE admins SET role = 'admin' WHERE username = 'operator'")
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    t.c.admin_setup_link("operator", true).await.unwrap();
+    assert_eq!(admin_role(&t, "operator").await, "admin", "--reset-admin clears the sign-in, not the role");
+    let listed = t.c.admin_list().await.unwrap();
+    assert_eq!((listed[0].0.as_str(), listed[0].1.as_str()), ("operator", "admin"));
+}
+
+#[tokio::test]
+async fn admins_from_before_roles_become_owners() {
+    let dir = std::env::temp_dir().join(format!("fe-coord-admin-migrate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("c.db");
+    {
+        // The database as the release before roles left it, with its admins.
+        let options = sqlx::sqlite::SqliteConnectOptions::new().filename(&path).create_if_missing(true);
+        let pool = sqlx::SqlitePool::connect_with(options).await.unwrap();
+        let mut before = sqlx::migrate!("./migrations");
+        before.migrations = before.migrations.iter().filter(|m| m.version < 20261111000201).cloned().collect::<Vec<_>>().into();
+        before.run(&pool).await.unwrap();
+        for (name, disabled) in [("kiwi", 0), ("tui", 1)] {
+            sqlx::query("INSERT INTO admins (username, created_at, disabled) VALUES (?, 0, ?)")
+                .bind(name)
+                .bind(disabled)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        pool.close().await;
+    }
+    let c = Coordinator::open(&path.to_string_lossy(), "TOKEN".into()).await.unwrap();
+    let roles: Vec<(String, String)> = sqlx::query_as("SELECT username, role FROM admins ORDER BY username").fetch_all(&c.pool).await.unwrap();
+    assert_eq!(roles, [("kiwi".to_string(), "owner".to_string()), ("tui".to_string(), "owner".to_string())]);
+    drop(c);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The admin UI's own site, as its pages' passkeys are made for it.
 const ADMIN_SITE: admin::webauthn::Site<'static> = admin::webauthn::Site {
     rp_id: "admin.example",

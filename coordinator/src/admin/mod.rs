@@ -10,7 +10,10 @@
 //! or a recovery code), or a passkey alone (it verifies the admin with a PIN
 //! or biometric). New admins get a one-time setup link from
 //! `coordinator admin add`; they choose a password and must add a second
-//! factor before anything else. Changes that matter (admins, sign-in
+//! factor before anything else. An admin is an owner or an admin: only
+//! owners manage the admins (add, reset, disable, remove, change roles) and
+//! the security settings (sign-in restrictions, which client builds servers
+//! take); the console adds owners. Changes that matter (admins, sign-in
 //! restrictions, rollbacks, removing servers, banning, renaming or deleting
 //! a player, resetting their password, removing a person's stats, deleting a
 //! player's report) want a second factor proved in the last ten minutes.
@@ -149,7 +152,12 @@ struct Session {
     username: String,
     stage: String,
     verified_at: i64,
+    /// `owner` or `admin`.
+    role: String,
 }
+
+/// The roles an admin may have. Owners manage the admins and the security settings.
+pub const ROLES: [&str; 2] = ["owner", "admin"];
 
 type Shared = Arc<Coordinator>;
 
@@ -456,9 +464,18 @@ impl Coordinator {
         Ok(())
     }
 
-    /// Adds an admin (or, with `reset`, clears an existing one's password,
-    /// second factors and sessions) and answers a one-time setup link.
+    /// Adds an owner (the console's `admin add`: the server's operator owns it) or, with
+    /// `reset`, clears an existing admin's password, second factors and sessions, keeping
+    /// their role; answers a one-time setup link.
     pub async fn admin_setup_link(&self, username: &str, reset: bool) -> Result<String, String> {
+        self.setup_link(username, reset, "owner").await
+    }
+
+    /// [`Self::admin_setup_link`], adding a new admin with `role`.
+    async fn setup_link(&self, username: &str, reset: bool, role: &str) -> Result<String, String> {
+        if !ROLES.contains(&role) {
+            return Err("the role is owner or admin".into());
+        }
         let username = username.trim();
         if !(2..=32).contains(&username.len()) || !username.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')) {
             return Err("admin names are 2 to 32 letters, digits, _ - and .".into());
@@ -476,9 +493,10 @@ impl Coordinator {
                 self.clear_sign_in(id).await.map_err(|e| e.to_string())?;
                 id
             }
-            (None, false) => sqlx::query_scalar("INSERT INTO admins (username, created_at) VALUES (?, ?) RETURNING id")
+            (None, false) => sqlx::query_scalar("INSERT INTO admins (username, created_at, role) VALUES (?, ?, ?) RETURNING id")
                 .bind(username)
                 .bind(now)
+                .bind(role)
                 .fetch_one(&self.pool)
                 .await
                 .map_err(|e| e.to_string())?,
@@ -496,8 +514,8 @@ impl Coordinator {
     }
 
     /// Admins, for `coordinator admin list`.
-    pub async fn admin_list(&self) -> sqlx::Result<Vec<(String, bool, bool, i64)>> {
-        sqlx::query_as("SELECT username, disabled, totp_secret IS NOT NULL, (SELECT COUNT(*) FROM passkeys p WHERE p.admin_id = admins.id) FROM admins ORDER BY username")
+    pub async fn admin_list(&self) -> sqlx::Result<Vec<(String, String, bool, bool, i64)>> {
+        sqlx::query_as("SELECT username, role, disabled, totp_secret IS NOT NULL, (SELECT COUNT(*) FROM passkeys p WHERE p.admin_id = admins.id) FROM admins ORDER BY username")
             .fetch_all(&self.pool)
             .await
     }
@@ -577,14 +595,14 @@ impl Coordinator {
 
     async fn session_seen(&self, headers: &HeaderMap, client: &Client, seen: bool) -> sqlx::Result<Option<Session>> {
         let Some(token) = cookie(headers, cfg(self).cookie_name()) else { return Ok(None) };
-        let row: Option<(String, i64, String, String, i64, i64, i64, String, i64)> = sqlx::query_as(
-            "SELECT s.token_hash, s.admin_id, a.username, s.stage, s.verified_at, s.created_at, s.last_seen, s.country, a.disabled
+        let row: Option<(String, i64, String, String, i64, i64, i64, String, i64, String)> = sqlx::query_as(
+            "SELECT s.token_hash, s.admin_id, a.username, s.stage, s.verified_at, s.created_at, s.last_seen, s.country, a.disabled, a.role
                FROM admin_sessions s JOIN admins a ON a.id = s.admin_id WHERE s.token_hash = ?",
         )
         .bind(auth::digest(&token))
         .fetch_optional(&self.pool)
         .await?;
-        let Some((token_hash, admin_id, username, stage, verified_at, created_at, last_seen, country, disabled)) = row else {
+        let Some((token_hash, admin_id, username, stage, verified_at, created_at, last_seen, country, disabled, role)) = row else {
             return Ok(None);
         };
         let now = identity::now();
@@ -606,6 +624,7 @@ impl Coordinator {
             username,
             stage,
             verified_at,
+            role,
         }))
     }
 
@@ -626,6 +645,20 @@ impl Coordinator {
     /// A full session with a second factor proved lately.
     async fn recent(&self, headers: &HeaderMap, client: &Client) -> Result<Session, Response> {
         let s = self.full(headers, client).await?;
+        if identity::now() - s.verified_at > RECENT {
+            return Err(answer(StatusCode::FORBIDDEN, json!({ "error": "confirm it's you first", "reverify": true })));
+        }
+        Ok(s)
+    }
+
+    /// A full session of an owner, with a second factor proved lately: managing the admins
+    /// and the security settings. An admin is told it's for owners before being asked to
+    /// confirm it's them.
+    async fn owner_session(&self, headers: &HeaderMap, client: &Client) -> Result<Session, Response> {
+        let s = self.full(headers, client).await?;
+        if s.role != "owner" {
+            return Err(answer(StatusCode::FORBIDDEN, json!({ "error": "only an owner can do that", "owner_only": true })));
+        }
         if identity::now() - s.verified_at > RECENT {
             return Err(answer(StatusCode::FORBIDDEN, json!({ "error": "confirm it's you first", "reverify": true })));
         }
@@ -859,7 +892,7 @@ async fn session_info(State(c): State<Shared>, Extension(client): Extension<Clie
                 Err(e) => return internal(e),
             };
             ok(json!({
-                "stage": s.stage, "username": s.username, "totp": totp, "passkeys": passkeys, "recovery_left": recovery,
+                "stage": s.stage, "username": s.username, "role": s.role, "totp": totp, "passkeys": passkeys, "recovery_left": recovery,
                 "verified_recently": identity::now() - s.verified_at <= RECENT,
                 "you": { "ip": client.ip.to_string(), "country": client.country },
             }))
@@ -1522,51 +1555,78 @@ async fn admins(State(c): State<Shared>, Extension(client): Extension<Client>, h
     if let Err(r) = c.full(&headers, &client).await {
         return r;
     }
-    let rows: Vec<(i64, String, i64, Option<i64>, i64, bool, i64, bool)> = sqlx::query_as(
+    let rows: Vec<(i64, String, i64, Option<i64>, i64, bool, i64, bool, String)> = sqlx::query_as(
         "SELECT id, username, created_at, last_login, disabled, totp_secret IS NOT NULL,
-                (SELECT COUNT(*) FROM passkeys p WHERE p.admin_id = admins.id), password_hash IS NOT NULL
+                (SELECT COUNT(*) FROM passkeys p WHERE p.admin_id = admins.id), password_hash IS NOT NULL, role
            FROM admins ORDER BY username",
     )
     .fetch_all(&c.pool)
     .await
     .unwrap_or_default();
-    ok(json!({ "admins": rows.into_iter().map(|(id, name, created, last, disabled, totp, passkeys, set_up)| json!({
-        "id": id, "username": name, "created_at": created, "last_login": last, "disabled": disabled != 0, "totp": totp, "passkeys": passkeys, "set_up": set_up
-    })).collect::<Vec<_>>() }))
+    ok(
+        json!({ "admins": rows.into_iter().map(|(id, name, created, last, disabled, totp, passkeys, set_up, role)| json!({
+        "id": id, "username": name, "created_at": created, "last_login": last, "disabled": disabled != 0, "totp": totp, "passkeys": passkeys, "set_up": set_up, "role": role
+    })).collect::<Vec<_>>() }),
+    )
 }
 
 #[derive(Deserialize)]
 struct NewAdmin {
     username: String,
+    /// `admin` unless the owner adding them says `owner`.
+    #[serde(default)]
+    role: Option<String>,
 }
 
 async fn add_admin(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Json(req): Json<NewAdmin>) -> Response {
-    let s = match c.recent(&headers, &client).await {
+    let s = match c.owner_session(&headers, &client).await {
         Ok(s) => s,
         Err(r) => return r,
     };
-    match c.admin_setup_link(&req.username, false).await {
+    let role = req.role.as_deref().unwrap_or("admin");
+    match c.setup_link(&req.username, false, role).await {
         Ok(link) => {
-            c.audit(&s.username, Some(&client), "added an admin", req.username.trim()).await;
-            ok(json!({ "link": link, "expires_in": SETUP_FOR }))
+            c.audit(&s.username, Some(&client), "added an admin", &format!("{} ({role})", req.username.trim())).await;
+            ok(json!({ "link": link, "expires_in": SETUP_FOR, "role": role }))
         }
         Err(e) => fail(StatusCode::BAD_REQUEST, &e),
     }
 }
 
+/// The last enabled owner isn't demoted, disabled or removed, or nobody could manage the
+/// admins: a condition on `admins` rows, in the same statement as the change, so two owners
+/// demoting each other at once can't both pass.
+const NOT_LAST_OWNER: &str = "(role != 'owner' OR disabled != 0 OR EXISTS (SELECT 1 FROM admins o WHERE o.role = 'owner' AND o.disabled = 0 AND o.id != admins.id))";
+
+/// Runs a change to admin `id` that mustn't leave no owner: false when it was the last.
+async fn unless_last_owner(c: &Coordinator, sql: &str, bind: Option<&str>, id: i64) -> sqlx::Result<bool> {
+    let sql = format!("{sql} AND {NOT_LAST_OWNER}");
+    let mut q = sqlx::query(&sql);
+    if let Some(b) = bind {
+        q = q.bind(b);
+    }
+    Ok(q.bind(id).execute(&c.pool).await?.rows_affected() > 0)
+}
+
+fn last_owner() -> Response {
+    fail(StatusCode::BAD_REQUEST, "that's the last owner; make another admin an owner first")
+}
+
 async fn admin_action(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Path((id, action)): Path<(i64, String)>) -> Response {
-    let s = match c.recent(&headers, &client).await {
+    let s = match c.owner_session(&headers, &client).await {
         Ok(s) => s,
         Err(r) => return r,
     };
-    let Ok(Some(username)) = sqlx::query_scalar::<_, String>("SELECT username FROM admins WHERE id = ?")
+    let Ok(Some((username, role))) = sqlx::query_as::<_, (String, String)>("SELECT username, role FROM admins WHERE id = ?")
         .bind(id)
         .fetch_optional(&c.pool)
         .await
     else {
         return fail(StatusCode::NOT_FOUND, "no such admin");
     };
-    if id == s.admin_id && action != "reset" {
+    // An owner may step down to admin themselves (while another owner remains); nothing else
+    // is done to yourself here.
+    if id == s.admin_id && action != "reset" && action != "make-admin" {
         return fail(StatusCode::BAD_REQUEST, "you can't do that to yourself");
     }
     let result = match action.as_str() {
@@ -1579,7 +1639,11 @@ async fn admin_action(State(c): State<Shared>, Extension(client): Extension<Clie
             if others == 0 {
                 return fail(StatusCode::BAD_REQUEST, "that's the last admin");
             }
-            let _ = sqlx::query("UPDATE admins SET disabled = 1 WHERE id = ?").bind(id).execute(&c.pool).await;
+            match unless_last_owner(&c, "UPDATE admins SET disabled = 1 WHERE id = ?", None, id).await {
+                Ok(true) => {}
+                Ok(false) => return last_owner(),
+                Err(e) => return internal(e),
+            }
             let _ = sqlx::query("DELETE FROM admin_sessions WHERE admin_id = ?").bind(id).execute(&c.pool).await;
             json!({})
         }
@@ -1603,9 +1667,24 @@ async fn admin_action(State(c): State<Shared>, Extension(client): Extension<Clie
             Err(e) => return internal(e),
         },
         "reset" => return fail(StatusCode::BAD_REQUEST, "change your own sign-in under Your account"),
-        "remove" => {
-            let _ = sqlx::query("DELETE FROM admins WHERE id = ?").bind(id).execute(&c.pool).await;
-            json!({})
+        "remove" => match unless_last_owner(&c, "DELETE FROM admins WHERE id = ?", None, id).await {
+            Ok(true) => json!({}),
+            Ok(false) => return last_owner(),
+            Err(e) => return internal(e),
+        },
+        "make-owner" | "make-admin" => {
+            let new = if action == "make-owner" { "owner" } else { "admin" };
+            if role == new {
+                return fail(StatusCode::BAD_REQUEST, &format!("{username} is an {new} already"));
+            }
+            match unless_last_owner(&c, "UPDATE admins SET role = ? WHERE id = ?", Some(new), id).await {
+                Ok(true) => {}
+                Ok(false) => return last_owner(),
+                Err(e) => return internal(e),
+            }
+            c.audit(&s.username, Some(&client), "changed an admin's role", &format!("{username}: {role} to {new}"))
+                .await;
+            return ok(json!({ "role": new }));
         }
         _ => return fail(StatusCode::NOT_FOUND, "no such action"),
     };
@@ -1647,7 +1726,7 @@ struct ClientModeRequest {
 }
 
 async fn set_client_mode(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Json(req): Json<ClientModeRequest>) -> Response {
-    let s = match c.recent(&headers, &client).await {
+    let s = match c.owner_session(&headers, &client).await {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -1722,7 +1801,7 @@ async fn restrictions(State(c): State<Shared>, Extension(client): Extension<Clie
 }
 
 async fn set_restrictions(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Json(req): Json<auth::Restrictions>) -> Response {
-    let s = match c.recent(&headers, &client).await {
+    let s = match c.owner_session(&headers, &client).await {
         Ok(s) => s,
         Err(r) => return r,
     };

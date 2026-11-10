@@ -124,10 +124,11 @@
 #   --mm-record NAME      the matchmaking server's own name (DNS only, a short
 #                         TTL), which players and servers use and the standby
 #                         moves; served here as an alias
-#   --add-admin NAME      print a one-time setup link for a new admin of the
-#                         admin UI
+#   --add-admin NAME      print a one-time setup link for a new owner of the
+#                         admin UI (owners manage the admins; they add
+#                         other admins from the UI)
 #   --reset-admin NAME    for an admin who lost their second factor: a new
-#                         setup link (their sign-in is cleared)
+#                         setup link (their sign-in is cleared; role kept)
 #   --admin-open-access   clear the admin UI's sign-in restrictions (when
 #                         every admin is locked out)
 #   --no-auto-update, --auto-update
