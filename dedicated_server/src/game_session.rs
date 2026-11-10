@@ -1090,6 +1090,12 @@ fn may_change_session(caller: u32, creator: u32, participants: &[u32], targets: 
     caller == creator || participants.contains(&caller) || targets.is_some_and(|t| !t.is_empty() && t.iter().all(|id| *id == caller))
 }
 
+/// Whether participants may be added to a session with these `members` (as
+/// `Storage::session_members` reads them): only a live one.
+fn may_add_to(members: Option<&(u32, Vec<u32>)>) -> bool {
+    members.is_some()
+}
+
 impl GameSessionProtocolServerImpl {
     /// Refuses a change to `session_id` by someone outside it (see
     /// [`may_change_session`]). Sessions the server doesn't know are left to
@@ -1327,9 +1333,21 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // check below must see `[me]` then, or joining that way slipped past them.
         targets.sort_unstable();
         targets.dedup();
+        if !crate::rate_limit::participant_adds().check(user_id) {
+            warn!(logger, "User {user_id} adds participants too fast; refused");
+            return Err(Error::AccessDenied);
+        }
         self.authorise(logger, user_id, request.game_session_key.session_id, Some(&targets), "add participants to")?;
         let session_id = request.game_session_key.session_id;
         let members = rmc_err!(self.storage.session_members(session_id), logger, "error reading session members")?;
+        // Only into a live session: the game adds players to one it just made (its host first,
+        // right after CreateSession or SplitSession), found or was invited into, all live. One
+        // that ended (or an id never handed out) has nobody to play with, and each call left
+        // rows behind in it for anyone to pile up.
+        if !may_add_to(members.as_ref()) {
+            warn!(logger, "User {user_id} adds {targets:?} to session {session_id}, which isn't live; refused");
+            return Err(Error::AccessDenied);
+        }
         let is_member = members
             .as_ref()
             .is_some_and(|(creator, participants)| *creator == user_id || participants.contains(&user_id));
@@ -3299,6 +3317,7 @@ mod tests {
     use quazal::rmc::Request;
 
     use super::attribute_value;
+    use super::may_add_to;
     use super::may_change_session;
     use super::only_reachable_addresses;
     use super::rooms_for_friend_search;
@@ -3510,6 +3529,21 @@ mod tests {
         assert!(!may_change_session(stranger, host, &participants, Some(&[stranger, guest])));
         assert!(!may_change_session(stranger, host, &participants, Some(&[])));
         assert!(may_change_session(host, host, &participants, Some(&[stranger])), "the host adds anyone");
+    }
+
+    #[test]
+    fn participants_are_added_to_live_sessions_only() {
+        let (storage, dir) = crate::storage::tests::temp_storage("add-live-only");
+        storage.register_user("Host", "pw", Some("HOST")).unwrap();
+        let host = storage.find_user_id_by_name("Host").unwrap().unwrap();
+        let room = storage.create_game_session(host, 1, "113 => 1".into()).unwrap();
+        let members = storage.session_members(room).unwrap();
+        assert!(may_add_to(members.as_ref()), "the host adds itself to the room it just made");
+        storage.delete_game_session(host, 1, room).unwrap();
+        assert!(!may_add_to(storage.session_members(room).unwrap().as_ref()), "an ended room");
+        assert!(!may_add_to(storage.session_members(room + 1000).unwrap().as_ref()), "an id never handed out");
+        drop(storage);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

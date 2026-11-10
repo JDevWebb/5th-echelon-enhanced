@@ -2213,6 +2213,15 @@ impl Storage {
         ))
         .execute(&self.pool)
         .await?;
+        // A match kept for the coordinator (up to two days) keeps its row, but nothing reads
+        // who was in it an hour after it ended (a split carries a room on within the minute).
+        for table in ["participants", "guests", "past_members"] {
+            sqlx::query(&format!(
+                "DELETE FROM {table} WHERE game_id IN (SELECT id FROM game_sessions WHERE destroyed_at < datetime('now', '-1 hour'))"
+            ))
+            .execute(&self.pool)
+            .await?;
+        }
         sqlx::query("DELETE FROM game_session_invites WHERE created_at < datetime('now', '-30 minutes')")
             .execute(&self.pool)
             .await?;
@@ -2658,6 +2667,41 @@ pub(crate) mod tests {
         let next = storage.create_game_session(host, 1, "113 => 1".into()).unwrap();
         assert!(next > last && last > first, "{first} {last} {next}: ids keep climbing");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn who_was_in_a_long_ended_match_goes_with_the_purge() {
+        let (storage, dir) = temp_storage("purge-members");
+        for (name, ubi) in [("Host", "HOST"), ("Guest", "GUEST")] {
+            storage.register_user(name, "pw", Some(ubi)).unwrap();
+        }
+        let id = |n: &str| storage.find_user_id_by_name(n).unwrap().unwrap();
+        let (host, guest) = (id("Host"), id("Guest"));
+        let old = storage.create_game_session(host, 1, "113 => 0".into()).unwrap();
+        let recent = storage.create_game_session(host, 1, "113 => 0".into()).unwrap();
+        let live = storage.create_game_session(host, 1, "113 => 0".into()).unwrap();
+        for room in [old, recent, live] {
+            storage.add_participants(1, room, vec![], vec![host, guest]).unwrap();
+        }
+        // Matches the coordinator hasn't taken yet: their rows stay, their members needn't.
+        run(sqlx::query("UPDATE game_sessions SET peak_players = 2").execute(&storage.pool)).unwrap().unwrap();
+        run(sqlx::query("UPDATE game_sessions SET destroyed_at = datetime('now', '-2 hours') WHERE id = ?")
+            .bind(old)
+            .execute(&storage.pool))
+        .unwrap()
+        .unwrap();
+        run(sqlx::query("UPDATE game_sessions SET destroyed_at = datetime('now', '-5 minutes') WHERE id = ?")
+            .bind(recent)
+            .execute(&storage.pool))
+        .unwrap()
+        .unwrap();
+        run(storage.purge_stale_async()).unwrap().unwrap();
+        assert!(storage.session_creator(old).unwrap().is_some(), "kept for the coordinator");
+        assert!(!storage.was_member(old, guest).unwrap(), "who was in it went");
+        assert!(storage.was_member(recent, guest).unwrap(), "just ended: a split may carry it on");
+        assert_eq!(storage.session_members(live).unwrap().unwrap().1.len(), 2);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

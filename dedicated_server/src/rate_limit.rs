@@ -355,6 +355,14 @@ pub fn game_requests() -> &'static PlayerLimit {
     LIMIT.get_or_init(|| PlayerLimit::new(120, Duration::from_secs(60)))
 }
 
+/// AddParticipants calls a player may make: 60 a minute. The game sends one as it makes or
+/// splits a room (its host adding itself), takes its party along, or follows an invitation;
+/// a few a minute at most. Its own budget, so a busy search never stops a host adding itself.
+pub fn participant_adds() -> &'static PlayerLimit {
+    static LIMIT: std::sync::OnceLock<PlayerLimit> = std::sync::OnceLock::new();
+    LIMIT.get_or_init(|| PlayerLimit::new(60, Duration::from_secs(60)))
+}
+
 /// Requests that failed (a call the server couldn't read, or one that went wrong) kept as
 /// session events per player: 20 a minute; and 20 a minute among everyone not signed in,
 /// as player 0, since the sign-in service takes anyone's packets.
