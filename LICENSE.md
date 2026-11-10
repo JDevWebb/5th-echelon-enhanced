@@ -58,7 +58,6 @@ The same applies to this project's follow-up changes to code merged from pull re
 | GeoIP data downloaded at run time | [DB-IP](https://db-ip.com)'s IP to City Lite, under CC BY 4.0; the admin UI credits it |
 | `hooks/fonts/*.ttf` | IBM Plex Sans, Sans Condensed and Mono, under the SIL Open Font License 1.1 (`hooks/fonts/OFL-*.txt`) |
 | `coordinator/admin-ui/src/assets/fonts/*.ttf` | the same IBM Plex fonts, for the admin UI, under the SIL Open Font License 1.1 (`coordinator/admin-ui/public/fonts-license.txt`) |
-| `docs/demo.webm`, `docs/demo_thumb.png`, `docs/overlay_*.png`, `launcher/old_logo.ico` | Upstream 5th Echelon (upstream's logo, which this project used until 0.4.1, is in the git history) |
 | `setup/data/base_savegame.xml` | Upstream 5th Echelon's generated save |
 | `dedicated_server/src/news_upstream.json` | Upstream 5th Echelon's news (`data/news.json`), kept to recognise it |
 | `docs/research/`, except `nat-traversal.md` and `cross-region.md` | Upstream's research notes |

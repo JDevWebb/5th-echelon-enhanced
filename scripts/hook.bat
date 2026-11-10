@@ -1,1 +1,0 @@
-cargo run -p hooks --target i686-pc-windows-msvc --release
