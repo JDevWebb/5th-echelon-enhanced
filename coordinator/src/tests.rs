@@ -5258,3 +5258,24 @@ async fn a_recording_is_taken_only_when_asked_for() {
     assert!(t.c.recording_path("../server-a", id).is_none());
     assert_eq!(t.c.recording_asked("server-a", id).await.unwrap().map(|(s, _)| s), Some("pending".to_string()));
 }
+
+/// A recording's body may be 8 MB, so the body budget reserves that much for it, and only a
+/// member server may send one: a stranger is refused before the body is read.
+#[tokio::test]
+async fn recordings_are_for_members_only_and_reserve_their_size() {
+    assert_eq!(body_rule("/v1/recordings/0123456789abcdef"), (recordings::MAX_BODY, true));
+    assert_eq!(body_rule("/v1/recordings"), (MAX_BODY, false), "not the recordings route");
+    let t = start("recordings-auth").await;
+    for secret in [None, Some("not-a-secret")] {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/v1/recordings/0123456789abcdef")
+            .header("content-type", "application/octet-stream")
+            .header("host", "coordinator.test");
+        if let Some(s) = secret {
+            req = req.header("authorization", format!("Bearer {s}"));
+        }
+        let req = req.body(Body::from(vec![0u8; 1024 * 1024])).unwrap();
+        assert_eq!(t.router.clone().oneshot(req).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+    }
+}

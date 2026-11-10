@@ -174,6 +174,9 @@ fn body_rule(path: &str) -> (usize, bool) {
         "/v1/stats" => (stats::MAX_BODY, true),
         "/v1/events" => (sessions::MAX_BODY, true),
         "/v1/support" => (support::MAX_BODY, false),
+        // A recording an admin asked a server for: up to 8 MB, so reserved as that much and
+        // refused to strangers before their body is read.
+        p if p.starts_with("/v1/recordings/") => (recordings::MAX_BODY, true),
         _ => (MAX_BODY, false),
     }
 }
