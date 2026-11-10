@@ -191,6 +191,30 @@ pub async fn server_info_tls(host: &str, port: u16) -> Option<setup::server_info
     setup::server_info::parse_json(std::str::from_utf8(&body).ok()?).filter(|i| !i.version.is_empty())
 }
 
+/// The news of the server `profile` plays on: over HTTPS, on its API's name and port, when the
+/// profile has its API there (nobody on the way can change it, the link in it above all), else
+/// on port 80 as before. Empty when it has none or doesn't answer.
+pub fn news(profile: &setup::config::Profile, timeout: std::time::Duration) -> Vec<setup::server_info::NewsItem> {
+    let api = profile.api_server_url();
+    if api.scheme() != "https" {
+        return setup::server_info::news(&profile.server, timeout);
+    }
+    let Ok(url) = api.join("/api/news") else { return Vec::new() };
+    let fetch = async move {
+        let client = reqwest::Client::builder().timeout(timeout).redirect(reqwest::redirect::Policy::none()).build().ok()?;
+        let mut resp = client.get(url).header("accept", "application/json").send().await.ok()?.error_for_status().ok()?;
+        let mut body = Vec::new();
+        while let Some(chunk) = resp.chunk().await.ok()? {
+            if body.len() + chunk.len() > 64 * 1024 {
+                return None;
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Some(setup::server_info::parse_news(std::str::from_utf8(&body).ok()?))
+    };
+    crate::services::rt().block_on(fetch).unwrap_or_default()
+}
+
 /// Whether `url` (https://host) is a network's coordinator: its `/v1/info`
 /// answers with the coordinator's name and how many servers it has.
 pub async fn is_coordinator(url: &str) -> bool {

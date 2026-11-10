@@ -1124,7 +1124,7 @@ pub fn player_action(core: &Core, action: &str, id: &str, name: &str) {
 }
 
 /// The player's server's news in full, newest first: (title, text, link), the server's words as
-/// text only.
+/// text only, and the link only when it's one [`open_url`] would open (else empty).
 pub fn news_items(core: &Core) -> Vec<(String, String, String)> {
     news(core);
     core.lock()
@@ -1133,10 +1133,32 @@ pub fn news_items(core: &Core) -> Vec<(String, String, String)> {
         .map(|(_, _, items)| {
             items
                 .iter()
-                .map(|n| (hooks_config::text::clip(&n.title, 80), hooks_config::text::clip(&n.text, 500), n.link.clone()))
+                .map(|n| (hooks_config::text::clip(&n.title, 80), hooks_config::text::clip(&n.text, 500), news_link(&n.link)))
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The longest news link kept.
+const MAX_LINK: usize = 300;
+
+/// A news item's link as the server sent it, kept only when it's a plain https address of at
+/// most [`MAX_LINK`] characters (no control or invisible ones), else empty.
+pub fn news_link(link: &str) -> String {
+    let link = link.trim();
+    let plain = link.chars().count() <= MAX_LINK && hooks_config::text::clip(link, MAX_LINK) == link;
+    let opens = url::Url::parse(link).is_ok_and(|u| u.scheme() == "https" && u.host_str().is_some() && u.username().is_empty() && u.password().is_none());
+    if plain && opens {
+        link.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Where a link goes, as a player reads it: its host, without a leading `www.`.
+pub fn link_host(link: &str) -> Option<String> {
+    let host = url::Url::parse(link).ok()?.host_str()?.to_ascii_lowercase();
+    Some(host.strip_prefix("www.").unwrap_or(&host).to_string())
 }
 
 /// The player's server's news, newest first: the server's words, as text only.
@@ -1144,7 +1166,8 @@ pub fn news(core: &Core) -> Vec<String> {
     let Some(server) = core.server() else { return Vec::new() };
     let fresh = core.lock().news.as_ref().is_some_and(|(from, at, _)| *from == server && at.elapsed() < NEWS_EVERY);
     if !fresh {
-        let news = setup::server_info::news(&server, Duration::from_secs(5));
+        let profile = core.lock().game.as_ref().and_then(|g| g.cfg.current_profile().cloned());
+        let news = profile.map(|p| launcher::network::news(&p, Duration::from_secs(5))).unwrap_or_default();
         core.lock().news = Some((server.clone(), Instant::now(), news));
     }
     let inner = core.lock();
@@ -1470,4 +1493,30 @@ pub fn use_network(core: &Core, typed: &str) -> Result<(), String> {
 /// The servers that answered on this PC's networks.
 pub fn find_on_network() -> Result<Vec<String>, String> {
     connect::find_on_network().map(|ips| ips.iter().map(ToString::to_string).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_news_link_is_kept_only_when_plain_and_says_where_it_goes() {
+        use super::link_host;
+        use super::news_link;
+        assert_eq!(news_link(" https://www.Example.com/post?id=3 "), "https://www.Example.com/post?id=3");
+        assert_eq!(link_host("https://www.Example.com/post").as_deref(), Some("example.com"));
+        assert_eq!(
+            link_host("https://xn--e1afmkfd.xn--p1ai/").as_deref(),
+            Some("xn--e1afmkfd.xn--p1ai"),
+            "a look-alike shows as it is"
+        );
+        for bad in [
+            "http://example.com/",
+            "https://user:pw@example.com/",
+            "javascript:alert(1)",
+            "https://example.com/\u{202e}moc.evil",
+            "https://example.com/\nx",
+        ] {
+            assert_eq!(news_link(bad), "", "{bad:?}");
+        }
+        assert_eq!(news_link(&format!("https://example.com/{}", "a".repeat(400))), "", "too long");
+    }
 }

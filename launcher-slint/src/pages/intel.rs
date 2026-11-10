@@ -64,7 +64,10 @@ impl Screen for IntelPage {
                     r.card(t);
                     r.add(note(format!("Briefing {} of {}", self.open + 1, news.len())).tone("accent"));
                     r.add_if(!body.is_empty(), || text(body.clone()));
-                    r.add_if(link.starts_with("https://"), || buttons(vec![super::b(format!("link:{link}"), "Read more").kind("link")]));
+                    // Where the server's link goes, said on the button before it's opened.
+                    if let Some(host) = crate::core::link_host(link).filter(|_| link.starts_with("https://")) {
+                        r.add(buttons(vec![super::b(format!("link:{link}"), format!("Read more on {host}")).kind("link")]));
+                    }
                 }
             } else {
                 r.add(note("Choose a server first: its news shows here."));

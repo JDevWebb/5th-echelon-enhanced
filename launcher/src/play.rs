@@ -1229,8 +1229,9 @@ fn load_news(play: &mut Play, game: &Game, ctx: &egui::Context) {
         }
         // Marked as fetched now, so a server that doesn't answer isn't asked every frame.
         play.news_from = Some((server.clone(), Instant::now()));
+        let profile = game.cfg.current_profile().cloned();
         play.fetching_news.start(ctx, move || {
-            let news = setup::server_info::news(&server, Duration::from_secs(5));
+            let news = profile.map(|p| crate::network::news(&p, Duration::from_secs(5))).unwrap_or_default();
             Ok((server, news))
         });
     }

@@ -100,16 +100,19 @@ pub struct NewsItem {
     pub link: String,
 }
 
-/// The server's news; empty when it has none or doesn't say.
+/// The server's news on port 80; empty when it has none or doesn't say. A server with HTTPS is
+/// asked there instead (the launcher's `network::news`), so nobody on the way can change it.
 pub fn news(server: &str, timeout: Duration) -> Vec<NewsItem> {
+    get(server, crate::CONFIG_PORT, "/api/news", timeout).map(|body| parse_news(&body)).unwrap_or_default()
+}
+
+/// The news in a `/api/news` answer's body, at most 10; empty when it isn't one.
+pub fn parse_news(body: &str) -> Vec<NewsItem> {
     #[derive(Deserialize)]
     struct News {
         news: Vec<NewsItem>,
     }
-    get(server, crate::CONFIG_PORT, "/api/news", timeout)
-        .and_then(|body| serde_json::from_str::<News>(&body).ok())
-        .map(|n| n.news.into_iter().take(10).collect())
-        .unwrap_or_default()
+    serde_json::from_str::<News>(body).map(|n| n.news.into_iter().take(10).collect()).unwrap_or_default()
 }
 
 /// What's being played on `server` (`GET /api/playing`, servers from 0.4.4): its public
