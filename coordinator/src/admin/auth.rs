@@ -25,6 +25,34 @@ pub fn check_password(password: &str, hash: &str) -> bool {
     argon2::password_hash::PasswordHash::new(hash).is_ok_and(|h| argon2::Argon2::default().verify_password(password.as_bytes(), &h).is_ok())
 }
 
+/// Argon2 checks at once, at most: each takes tens of milliseconds and 19 MiB, and runs on
+/// a blocking thread, never the async runtime the public API shares (a crowd of sign-ins
+/// would stall every player's calls).
+const HASHERS: usize = 2;
+/// How long a check waits for its turn before the sign-in is refused as busy.
+const HASH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Runs `work` on a blocking thread, one of [`HASHERS`]; `None` when it waited too long for
+/// its turn (or the thread failed).
+async fn hashing<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    static TURNS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    let turns = TURNS.get_or_init(|| tokio::sync::Semaphore::new(HASHERS));
+    let _turn = tokio::time::timeout(HASH_WAIT, turns.acquire()).await.ok()?.ok()?;
+    tokio::task::spawn_blocking(work).await.ok()
+}
+
+/// [`hash_password`] off the async runtime; `Err` when busy too.
+pub async fn hash_password_off(password: &str) -> Result<String, String> {
+    let password = password.to_string();
+    hashing(move || hash_password(&password)).await.unwrap_or_else(|| Err("busy".into()))
+}
+
+/// [`check_password`] off the async runtime: `None` when busy.
+pub async fn check_password_off(password: &str, hash: &str) -> Option<bool> {
+    let (password, hash) = (password.to_string(), hash.to_string());
+    hashing(move || check_password(&password, &hash)).await
+}
+
 /// Why a new password isn't good enough, if it isn't.
 pub fn weak_password(password: &str, username: &str) -> Option<&'static str> {
     if password.chars().count() < MIN_PASSWORD {
@@ -245,6 +273,21 @@ mod tests {
         assert!(weak_password("kiwi-is-the-best-1", "kiwi").is_some());
         assert!(weak_password("aaaaaaaaaaaaaaaa", "x").is_some());
         assert!(weak_password("night vision goggles 4", "jason").is_none());
+    }
+
+    /// Checks off the runtime give the same answers, and many at once take their turns.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn passwords_off_the_runtime() {
+        let h = hash_password_off("correct horse battery").await.unwrap();
+        let checks: Vec<_> = (0..6)
+            .map(|i| {
+                let h = h.clone();
+                tokio::spawn(async move { check_password_off(if i % 2 == 0 { "correct horse battery" } else { "wrong" }, &h).await })
+            })
+            .collect();
+        for (i, check) in checks.into_iter().enumerate() {
+            assert_eq!(check.await.unwrap(), Some(i % 2 == 0));
+        }
     }
 
     #[test]

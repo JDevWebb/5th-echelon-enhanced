@@ -150,6 +150,26 @@ fn limits() -> &'static (Limit, Limit) {
     L.get_or_init(|| (Limit::new(20), Limit::new(600)))
 }
 
+/// Password sign-ins (and setup links) from everyone together in a minute: each costs an
+/// Argon2 check, and many addresses at once could otherwise keep the checks busy for good.
+const SIGN_INS_A_MINUTE: usize = 300;
+
+/// Whether one more password check may run now: per address, then for everyone.
+fn password_try(client: &Client) -> Result<(), Response> {
+    static EVERYONE: OnceLock<Limit> = OnceLock::new();
+    if !limits().0.check(&crate::limit_key(client.ip)) {
+        return Err(fail(StatusCode::TOO_MANY_REQUESTS, "too many attempts; wait a minute"));
+    }
+    if !EVERYONE.get_or_init(|| Limit::new(SIGN_INS_A_MINUTE)).check("everyone") {
+        return Err(fail(StatusCode::SERVICE_UNAVAILABLE, "too many sign-ins right now; try again in a minute"));
+    }
+    Ok(())
+}
+
+fn busy() -> Response {
+    fail(StatusCode::SERVICE_UNAVAILABLE, "the server is busy; try again in a minute")
+}
+
 fn answer(status: StatusCode, v: Value) -> Response {
     (status, Json(v)).into_response()
 }
@@ -737,8 +757,8 @@ struct LoginRequest {
 }
 
 async fn login(State(c): State<Shared>, Extension(client): Extension<Client>, Json(req): Json<LoginRequest>) -> Response {
-    if !limits().0.check(&crate::limit_key(client.ip)) {
-        return fail(StatusCode::TOO_MANY_REQUESTS, "too many attempts; wait a minute");
+    if let Err(r) = password_try(&client) {
+        return r;
     }
     // Anyone can try a name, and failures are kept 400 days: only as much of it as a name can
     // be (admins' names are at most 32 characters).
@@ -754,7 +774,7 @@ async fn login(State(c): State<Shared>, Extension(client): Extension<Client>, Js
     let refused = || fail(StatusCode::UNAUTHORIZED, "wrong name or password");
     let Some((id, hash, disabled, locked_until)) = row else {
         // As slow as a real check, so names can't be told from timing.
-        let _ = auth::check_password(&req.password, DUMMY_HASH);
+        let _ = auth::check_password_off(&req.password, DUMMY_HASH).await;
         c.audit(&username, Some(&client), "sign-in failed", "no such admin").await;
         return refused();
     };
@@ -763,12 +783,9 @@ async fn login(State(c): State<Shared>, Extension(client): Extension<Client>, Js
     }
     // An admin still setting up has no password yet: checked against a hash all the same, or
     // their answer came back many times faster and told their name.
-    let valid = match hash.as_deref() {
-        Some(h) => auth::check_password(&req.password, h),
-        None => {
-            let _ = auth::check_password(&req.password, DUMMY_HASH);
-            false
-        }
+    let valid = match auth::check_password_off(&req.password, hash.as_deref().unwrap_or(DUMMY_HASH)).await {
+        Some(valid) => valid && hash.is_some(),
+        None => return busy(),
     };
     if !valid || disabled != 0 {
         c.failed(id, &username, &client, "password").await;
@@ -993,8 +1010,8 @@ const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzb21lc2FsdA$
 
 /// A setup link: the admin chooses a password, then must add a second factor.
 async fn setup(State(c): State<Shared>, Extension(client): Extension<Client>, Json(req): Json<SetupRequest>) -> Response {
-    if !limits().0.check(&crate::limit_key(client.ip)) {
-        return fail(StatusCode::TOO_MANY_REQUESTS, "too many attempts; wait a minute");
+    if let Err(r) = password_try(&client) {
+        return r;
     }
     let row: Option<(i64, String, i64)> =
         sqlx::query_as("DELETE FROM setup_tokens WHERE token_hash = ? AND expires_at >= ? RETURNING admin_id, (SELECT username FROM admins WHERE id = admin_id), expires_at")
@@ -1017,9 +1034,18 @@ async fn setup(State(c): State<Shared>, Extension(client): Extension<Client>, Js
             .await;
         return fail(StatusCode::BAD_REQUEST, why);
     }
-    let hash = match auth::hash_password(&req.password) {
+    let hash = match auth::hash_password_off(&req.password).await {
         Ok(h) => h,
-        Err(e) => return internal(e),
+        Err(e) => {
+            // The link stays usable for another try (as for a weak password).
+            let _ = sqlx::query("INSERT INTO setup_tokens (token_hash, admin_id, expires_at) VALUES (?, ?, ?)")
+                .bind(auth::digest(&req.token))
+                .bind(admin_id)
+                .bind(expires_at)
+                .execute(&c.pool)
+                .await;
+            return if e == "busy" { busy() } else { internal(e) };
+        }
     };
     if let Err(e) = sqlx::query("UPDATE admins SET password_hash = ? WHERE id = ?")
         .bind(hash)
@@ -1094,14 +1120,25 @@ async fn change_password(State(c): State<Shared>, Extension(client): Extension<C
         .fetch_one(&c.pool)
         .await
         .unwrap_or(None);
-    if !hash.as_deref().is_some_and(|h| auth::check_password(&req.current, h)) {
+    let valid = match hash {
+        Some(h) => match auth::check_password_off(&req.current, &h).await {
+            Some(valid) => valid,
+            None => return busy(),
+        },
+        None => false,
+    };
+    if !valid {
         c.failed(s.admin_id, &s.username, &client, "password change").await;
         return fail(StatusCode::UNAUTHORIZED, "your current password isn't right");
     }
     if let Some(why) = auth::weak_password(&req.new, &s.username) {
         return fail(StatusCode::BAD_REQUEST, why);
     }
-    let Ok(hash) = auth::hash_password(&req.new) else { return internal("hashing failed") };
+    let hash = match auth::hash_password_off(&req.new).await {
+        Ok(h) => h,
+        Err(e) if e == "busy" => return busy(),
+        Err(e) => return internal(e),
+    };
     let _ = sqlx::query("UPDATE admins SET password_hash = ? WHERE id = ?")
         .bind(hash)
         .bind(s.admin_id)
