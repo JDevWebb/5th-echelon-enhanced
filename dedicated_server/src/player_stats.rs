@@ -49,6 +49,13 @@ const MAX_ITEMS: usize = 100;
 /// the limits on each part multiply, and all of it runs on the game service's thread.
 const MAX_WRITES: usize = 1000;
 const MAX_READS: usize = 200;
+/// The most leaderboards one request may ask for: the game has 12 ([`stat_boards::leaderboard`]),
+/// each worth one read, so more only repeat them. Each counts against
+/// [`crate::rate_limit::stats_requests`].
+const MAX_QUERIES: usize = 16;
+/// The most places one leaderboard answer carries, over all its queries (each up to
+/// [`MAX_ITEMS`]): a few pages of the game's lists.
+const MAX_PLACES: usize = 500;
 /// Larger stat values than this are refused: no stat the game keeps comes near it.
 const MAX_VALUE: f64 = 1e12;
 
@@ -263,7 +270,8 @@ impl PlayerStatsProtocolServerImpl {
     /// A leaderboard's places as the game wants them, each with the player's stats (those
     /// the query names, all when none) and the stat they are ranked by as the score: the
     /// network's, once the coordinator has sent them, else this server's.
-    fn leaderboard_result(&self, logger: &Logger, (board_id, context_id, reset_frequency, stat_ids): Query, wanted: &Wanted) -> Result<LeaderboardResult, Error> {
+    /// At most `room` places, which it takes from.
+    fn leaderboard_result(&self, logger: &Logger, (board_id, context_id, reset_frequency, stat_ids): Query, wanted: &Wanted, room: &mut usize) -> Result<LeaderboardResult, Error> {
         let mut result = LeaderboardResult {
             board_id,
             context_id,
@@ -285,6 +293,7 @@ impl PlayerStatsProtocolServerImpl {
         result.leaderboard_total_player_count = total;
         let ranks: Vec<PlayerRank> = places
             .into_iter()
+            .take(*room)
             .map(|place| PlayerRank {
                 player_stat_set: PlayerStatSet {
                     player_pid: place.pid,
@@ -297,13 +306,28 @@ impl PlayerStatsProtocolServerImpl {
                 score: variant(leaderboard.stat, place.value),
             })
             .collect();
+        *room -= ranks.len();
         result.player_ranks = ranks.into();
         Ok(result)
     }
 
-    /// Each query's leaderboard, with the places `wanted` names for it.
-    fn leaderboards<'q>(&self, logger: &Logger, queries: impl Iterator<Item = Query<'q>>, wanted: impl Fn(&Query<'q>) -> Wanted) -> Result<Vec<LeaderboardResult>, Error> {
-        queries.take(MAX_ITEMS).map(|query| self.leaderboard_result(logger, query, &wanted(&query))).collect()
+    /// Each query's leaderboard, with the places `wanted` names for it: at most
+    /// [`MAX_QUERIES`], each but the first counted against `user_id`'s stats requests (the
+    /// request itself was), and [`MAX_PLACES`] in all.
+    fn leaderboards<'q>(
+        &self,
+        logger: &Logger,
+        user_id: u32,
+        queries: impl Iterator<Item = Query<'q>>,
+        wanted: impl Fn(&Query<'q>) -> Wanted,
+    ) -> Result<Vec<LeaderboardResult>, Error> {
+        let queries: Vec<Query<'q>> = queries.take(MAX_QUERIES).collect();
+        charge_more(user_id, queries.len())?;
+        let mut room = MAX_PLACES;
+        queries
+            .into_iter()
+            .map(|query| self.leaderboard_result(logger, query, &wanted(&query), &mut room))
+            .collect()
     }
 
     /// Players' stats on a board and context: across the network for those the coordinator
@@ -338,6 +362,21 @@ fn player<T>(ci: &ClientInfo<T>) -> Result<u32, Error> {
     let user_id = login_required(ci)?;
     if crate::rate_limit::stats_requests().check(user_id) {
         Ok(user_id)
+    } else {
+        Err(Error::AccessDenied)
+    }
+}
+
+/// Counts the reads of a request past its first against `user_id`'s
+/// [`crate::rate_limit::stats_requests`] (the request itself was counted by [`player`]): one
+/// request asking for many leaderboards costs as many as asking for each.
+fn charge_more(user_id: u32, reads: usize) -> Result<(), Error> {
+    charge_more_with(crate::rate_limit::stats_requests(), user_id, reads)
+}
+
+fn charge_more_with(limit: &crate::rate_limit::PlayerLimit, user_id: u32, reads: usize) -> Result<(), Error> {
+    if (1..reads).all(|_| limit.check(user_id)) {
+        Ok(())
     } else {
         Err(Error::AccessDenied)
     }
@@ -416,10 +455,10 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         _client_registry: &ClientRegistry<T>,
         _socket: &std::net::UdpSocket,
     ) -> Result<ReadLeaderboardsNearPlayerResponse, Error> {
-        player(&*ci)?;
+        let user_id = player(&*ci)?;
         info!(logger, "Leaderboards near {}: {:?}", request.player_pid, request.queries);
         let queries = request.queries.iter().map(|q| (q.board_id, q.context_id, q.reset_frequency, &q.stat_ids[..]));
-        let results = self.leaderboards(logger, queries, |_| Wanted::Around(request.player_pid, capped(request.count)))?;
+        let results = self.leaderboards(logger, user_id, queries, |_| Wanted::Around(request.player_pid, capped(request.count)))?;
         Ok(ReadLeaderboardsNearPlayerResponse { results: results.into() })
     }
 
@@ -432,10 +471,10 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         _client_registry: &ClientRegistry<T>,
         _socket: &std::net::UdpSocket,
     ) -> Result<ReadLeaderboardsByRankResponse, Error> {
-        player(&*ci)?;
+        let user_id = player(&*ci)?;
         info!(logger, "Leaderboards from rank {}: {:?}", request.starting_rank, request.queries);
         let queries = request.queries.iter().map(|q| (q.board_id, q.context_id, q.reset_frequency, &q.stat_ids[..]));
-        let results = self.leaderboards(logger, queries, |_| Wanted::From(request.starting_rank, capped(request.count)))?;
+        let results = self.leaderboards(logger, user_id, queries, |_| Wanted::From(request.starting_rank, capped(request.count)))?;
         Ok(ReadLeaderboardsByRankResponse { results: results.into() })
     }
 
@@ -449,11 +488,11 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         _client_registry: &ClientRegistry<T>,
         _socket: &std::net::UdpSocket,
     ) -> Result<ReadLeaderboardsByPlayersResponse, Error> {
-        player(&*ci)?;
+        let user_id = player(&*ci)?;
         info!(logger, "Leaderboards of {:?}: {:?}", request.player_pids, request.queries);
         let players: Vec<u32> = request.player_pids.iter().copied().take(MAX_ITEMS).collect();
         let queries = request.queries.iter().map(|q| (q.board_id, q.context_id, q.reset_frequency, &q.stat_ids[..]));
-        let results = self.leaderboards(logger, queries, |_| Wanted::Players(players.clone()))?;
+        let results = self.leaderboards(logger, user_id, queries, |_| Wanted::Players(players.clone()))?;
         Ok(ReadLeaderboardsByPlayersResponse { results: results.into() })
     }
 
@@ -466,10 +505,10 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         _client_registry: &ClientRegistry<T>,
         _socket: &std::net::UdpSocket,
     ) -> Result<ReadLeaderboardsNearPlayer2Response, Error> {
-        player(&*ci)?;
+        let user_id = player(&*ci)?;
         info!(logger, "Leaderboards near {} (2): {:?}", request.player_pid, request.queries);
         let queries = request.queries.iter().map(|q| (q.board_id, q.context_id, q.reset_frequency, &q.stat_ids[..]));
-        let results = self.leaderboards(logger, queries, |_| Wanted::Around(request.player_pid, capped(request.count)))?;
+        let results = self.leaderboards(logger, user_id, queries, |_| Wanted::Around(request.player_pid, capped(request.count)))?;
         Ok(ReadLeaderboardsNearPlayer2Response { results: results.into() })
     }
 
@@ -482,10 +521,10 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         _client_registry: &ClientRegistry<T>,
         _socket: &std::net::UdpSocket,
     ) -> Result<ReadLeaderboardsByRank2Response, Error> {
-        player(&*ci)?;
+        let user_id = player(&*ci)?;
         info!(logger, "Leaderboards from rank {} (2): {:?}", request.starting_rank, request.queries);
         let queries = request.queries.iter().map(|q| (q.board_id, q.context_id, q.reset_frequency, &q.stat_ids[..]));
-        let results = self.leaderboards(logger, queries, |_| Wanted::From(request.starting_rank, capped(request.count)))?;
+        let results = self.leaderboards(logger, user_id, queries, |_| Wanted::From(request.starting_rank, capped(request.count)))?;
         Ok(ReadLeaderboardsByRank2Response { results: results.into() })
     }
 
@@ -499,13 +538,16 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         _client_registry: &ClientRegistry<T>,
         _socket: &std::net::UdpSocket,
     ) -> Result<ReadLeaderboardsByPlayers2Response, Error> {
-        player(&*ci)?;
+        let user_id = player(&*ci)?;
         info!(logger, "Leaderboards of players (2): {:?}", request.queries);
+        let queries = request.queries.iter().take(MAX_QUERIES).collect::<Vec<_>>();
+        charge_more(user_id, queries.len())?;
         let mut results = Vec::new();
-        for q in request.queries.iter().take(MAX_ITEMS) {
+        let mut room = MAX_PLACES;
+        for q in queries {
             let players: Vec<u32> = q.estimated_pids.iter().copied().take(MAX_ITEMS).collect();
             let query = (q.board_id, q.context_id, q.reset_frequency, &q.stat_ids[..]);
-            results.push(self.leaderboard_result(logger, query, &Wanted::Players(players))?);
+            results.push(self.leaderboard_result(logger, query, &Wanted::Players(players), &mut room)?);
         }
         Ok(ReadLeaderboardsByPlayers2Response { results: results.into() })
     }
@@ -536,6 +578,28 @@ mod tests {
         assert!(a >= 0x4000_0000 && a < 0x8000_0000);
         assert_eq!(a, outside_pid("GV7WV5QTKBCZA"));
         assert_ne!(a, outside_pid("GV7WV5QTKBCZB"));
+    }
+
+    #[test]
+    fn each_leaderboard_asked_for_counts_against_the_limit() {
+        let limit = crate::rate_limit::PlayerLimit::new(10, std::time::Duration::from_secs(60));
+        assert!(limit.check(7), "the request itself");
+        assert!(charge_more_with(&limit, 7, 1).is_ok(), "one query: the request alone");
+        assert!(charge_more_with(&limit, 7, 10).is_ok(), "nine more: ten in all");
+        assert!(charge_more_with(&limit, 7, 2).is_err(), "the budget is spent");
+        assert!(charge_more_with(&limit, 8, 2).is_ok(), "per player");
+    }
+
+    #[test]
+    fn a_leaderboard_answer_is_bounded() {
+        let (storage, dir) = crate::storage::tests::temp_storage("leaderboard-bounds");
+        let server = PlayerStatsProtocolServerImpl { storage: Arc::new(storage) };
+        let logger = Logger::root(slog::Discard, slog::o!());
+        let queries = (0..100).map(|_| (1, 0, 0, &[][..]));
+        let results = server.leaderboards(&logger, 0x7fff_0001, queries, |_| Wanted::From(1, 100)).unwrap();
+        assert_eq!(results.len(), MAX_QUERIES, "no more queries than the game has leaderboards (and a few)");
+        drop(server);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
