@@ -298,7 +298,45 @@ pub fn registrations() -> &'static RateLimit {
 pub struct PlayerLimit {
     max: usize,
     window: Duration,
-    seen: Mutex<HashMap<u32, VecDeque<Instant>>>,
+    seen: Mutex<Seen<u32>>,
+}
+
+/// The most keys (addresses, players) a limit keeps at once: past it, a key not yet known
+/// is refused until the next sweep.
+const MAX_KEYS: usize = 100_000;
+
+/// What a limit has seen of each key, and when the keys whose times have all expired were
+/// last let go: once a window, or sooner when [`MAX_KEYS`] are kept, never on every call
+/// (a scan of the whole map, under the lock every request takes).
+struct Seen<K> {
+    times: HashMap<K, VecDeque<Instant>>,
+    swept: Instant,
+}
+
+impl<K: std::hash::Hash + Eq> Seen<K> {
+    fn new() -> Self {
+        Self {
+            times: HashMap::new(),
+            swept: Instant::now(),
+        }
+    }
+
+    /// Lets go of the keys idle for `window`, when it's time to; then `key`'s times, but
+    /// `None` for a new key while the map is full.
+    fn entry(&mut self, key: K, window: Duration, now: Instant) -> Option<&mut VecDeque<Instant>> {
+        if now.saturating_duration_since(self.swept) >= window || (self.times.len() >= MAX_KEYS && !self.times.contains_key(&key)) {
+            self.times.retain(|_, times| times.back().is_some_and(|t| now.saturating_duration_since(*t) < window));
+            self.swept = now;
+        }
+        if self.times.len() >= MAX_KEYS && !self.times.contains_key(&key) {
+            return None;
+        }
+        let times = self.times.entry(key).or_default();
+        while times.front().is_some_and(|t| now.saturating_duration_since(*t) >= window) {
+            times.pop_front();
+        }
+        Some(times)
+    }
 }
 
 impl PlayerLimit {
@@ -306,7 +344,7 @@ impl PlayerLimit {
         Self {
             max,
             window,
-            seen: Mutex::new(HashMap::new()),
+            seen: Mutex::new(Seen::new()),
         }
     }
 
@@ -317,11 +355,7 @@ impl PlayerLimit {
 
     fn check_at(&self, player: u32, now: Instant) -> bool {
         let mut seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        seen.retain(|_, times| times.back().is_some_and(|t| now.duration_since(*t) < self.window));
-        let times = seen.entry(player).or_default();
-        while times.front().is_some_and(|t| now.duration_since(*t) >= self.window) {
-            times.pop_front();
-        }
+        let Some(times) = seen.entry(player, self.window, now) else { return false };
         if times.len() >= self.max {
             return false;
         }
@@ -564,7 +598,7 @@ impl AccountLimit {
 pub struct RateLimit {
     pub(crate) max: usize,
     window: Duration,
-    seen: Mutex<HashMap<IpAddr, VecDeque<Instant>>>,
+    seen: Mutex<Seen<IpAddr>>,
 }
 
 impl RateLimit {
@@ -572,7 +606,7 @@ impl RateLimit {
         Self {
             max,
             window,
-            seen: Mutex::new(HashMap::new()),
+            seen: Mutex::new(Seen::new()),
         }
     }
 
@@ -586,7 +620,7 @@ impl RateLimit {
     /// [`RateLimit::check`] that turned out fine (a sign-in that worked).
     pub fn refund(&self, peer: Option<IpAddr>) {
         let key = bucket(peer);
-        if let Some(times) = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_mut(&key) {
+        if let Some(times) = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).times.get_mut(&key) {
             times.pop_back();
         }
     }
@@ -607,8 +641,8 @@ impl RateLimit {
         }
         let key = bucket(peer);
         let mut seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(times) = seen.get_mut(&key) else { return false };
-        while times.front().is_some_and(|t| now.duration_since(*t) >= self.window) {
+        let Some(times) = seen.times.get_mut(&key) else { return false };
+        while times.front().is_some_and(|t| now.saturating_duration_since(*t) >= self.window) {
             times.pop_front();
         }
         times.len() >= self.max
@@ -620,8 +654,10 @@ impl RateLimit {
         }
         let key = bucket(peer);
         let mut seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        seen.retain(|_, times| times.back().is_some_and(|t| now.duration_since(*t) < self.window));
-        seen.entry(key).or_default().push_back(now);
+        // A full map counts no new address: it is still refused by `check`.
+        if let Some(times) = seen.entry(key, self.window, now) {
+            times.push_back(now);
+        }
     }
 
     fn check_at(&self, peer: Option<IpAddr>, now: Instant) -> bool {
@@ -631,12 +667,9 @@ impl RateLimit {
         }
         let key = bucket(peer);
         let mut seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Forget addresses whose requests have all expired, so the map stays small.
-        seen.retain(|_, times| times.back().is_some_and(|t| now.duration_since(*t) < self.window));
-        let times = seen.entry(key).or_default();
-        while times.front().is_some_and(|t| now.duration_since(*t) >= self.window) {
-            times.pop_front();
-        }
+        // Addresses whose requests have all expired are let go now and then (`Seen`), so the
+        // map stays small; while it's full, a new address is refused.
+        let Some(times) = seen.entry(key, self.window, now) else { return false };
         if times.len() >= self.max {
             return false;
         }
@@ -671,7 +704,35 @@ mod tests {
         assert!(!limit.check_at(peer, t0 + Duration::from_secs(62)));
         // Idle addresses are forgotten.
         assert!(limit.check_at(Some(IpAddr::from([192, 0, 2, 9])), t0 + Duration::from_secs(300)));
-        assert_eq!(limit.seen.lock().unwrap().len(), 1);
+        assert_eq!(limit.seen.lock().unwrap().times.len(), 1);
+    }
+
+    #[test]
+    fn idle_keys_go_once_a_window_not_on_every_call() {
+        let limit = RateLimit::new((5, Duration::from_secs(60)));
+        let t0 = Instant::now();
+        assert!(limit.check_at(Some(IpAddr::from([192, 0, 2, 1])), t0));
+        assert!(limit.check_at(Some(IpAddr::from([192, 0, 2, 2])), t0 + Duration::from_secs(61)), "a sweep, the first gone");
+        assert_eq!(limit.seen.lock().unwrap().times.len(), 1);
+        assert!(limit.check_at(Some(IpAddr::from([192, 0, 2, 3])), t0 + Duration::from_secs(62)));
+        assert_eq!(limit.seen.lock().unwrap().times.len(), 2, "no sweep within the window");
+    }
+
+    #[test]
+    fn a_full_limit_refuses_new_keys_until_old_ones_expire() {
+        let limit = PlayerLimit::new(1, Duration::from_secs(60));
+        let t0 = Instant::now();
+        {
+            let mut seen = limit.seen.lock().unwrap();
+            for player in 0..MAX_KEYS as u32 {
+                seen.times.insert(player, VecDeque::from([t0]));
+            }
+            seen.swept = t0;
+        }
+        assert!(!limit.check_at(MAX_KEYS as u32, t0 + Duration::from_secs(1)), "full: a new key is refused");
+        assert!(!limit.check_at(0, t0 + Duration::from_secs(1)), "a known key keeps its own budget (spent)");
+        assert!(limit.check_at(MAX_KEYS as u32, t0 + Duration::from_secs(61)), "the others expired and went");
+        assert_eq!(limit.seen.lock().unwrap().times.len(), 1);
     }
 
     #[test]
