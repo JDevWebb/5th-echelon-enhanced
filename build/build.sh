@@ -1,5 +1,6 @@
 #!/bin/sh
-# Builds and tests 5th Echelon Enhanced locally in Docker (no CI).
+# Builds and tests 5th Echelon Enhanced locally in Docker (GitHub Actions also runs ci.yml on
+# pushes to main and pull requests, and release.yml on v* tags).
 #
 #   build/build.sh test      workspace tests (all but the Windows-only hooks DLL and launcher)
 #   build/build.sh server    Linux x86_64 dedicated_server and coordinator -> dist/
@@ -21,8 +22,6 @@
 #   build/build.sh egui      the egui launcher for Windows and Linux x86_64, the DLL embedded
 #                            -> dist/launcher-egui.exe, dist/launcher-egui-linux-x86_64
 #   build/build.sh shots     every egui launcher screen at several window sizes -> dist/shots/*.png
-#   build/build.sh tauri-trial
-#                            the Tauri trial for Windows and Linux x86_64 -> dist/trials
 #   build/build.sh latency [scenario ...]
 #                            the test players with delay and loss added (PROFILES)
 #   build/build.sh load [options]
@@ -174,20 +173,6 @@ case "${1:-test}" in
         # Xvfb started here: xvfb-run can wait forever for its ready signal.
         Xvfb :99 -screen 0 2000x1200x24 -nolisten tcp & sleep 2
         timeout 600 /target/launcher-slint-docs/debug/launcher-slint --shots-docs /src/dist/slint-docs'
-    ;;
-  tauri-trial)
-    # The Tauri trial (trials/tauri-play) for Windows and for Linux x86_64 (the Steam Deck) ->
-    # dist/trials. Linux links against x86_64 WebKitGTK unpacked in an image made from this one
-    # (build/Dockerfile.tauri).
-    docker build -q -t fes-tauri:local -f build/Dockerfile.tauri build >/dev/null
-    mkdir -p dist/trials
-    run -v "$PWD/trials/tauri-play":/trial -e CARGO_TARGET_DIR=/target/tauri-trial -w /trial/src-tauri "$IMAGE" \
-      sh -c 'cargo xwin build --release --target x86_64-pc-windows-msvc && cp /target/tauri-trial/x86_64-pc-windows-msvc/release/tauri-play-trial.exe /src/dist/trials/'
-    sysroot="-C link-arg=-L/sysroot/usr/lib/x86_64-linux-gnu -C link-arg=-L/sysroot/lib/x86_64-linux-gnu"
-    sysroot="$sysroot -C link-arg=-Wl,-rpath-link=/sysroot/usr/lib/x86_64-linux-gnu -C link-arg=-Wl,-rpath-link=/sysroot/lib/x86_64-linux-gnu"
-    run -v "$PWD/trials/tauri-play":/trial -e CARGO_TARGET_DIR=/target/tauri-trial -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="$sysroot" \
-      -w /trial/src-tauri fes-tauri:local \
-      sh -c 'cargo build --release --target x86_64-unknown-linux-gnu && cp /target/tauri-trial/x86_64-unknown-linux-gnu/release/tauri-play-trial /src/dist/trials/tauri-play-trial-linux-x86_64'
     ;;
   shots)
     # Every screen at several window sizes, as PNGs in dist/shots (launcher/src/shots.rs): the

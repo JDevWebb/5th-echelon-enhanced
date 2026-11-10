@@ -36,10 +36,6 @@ pub const SERVER_ASSET: &str = "dedicated_server-linux-x86_64";
 pub const SERVER_FILE: &str = "dedicated_server.exe";
 #[cfg(not(target_os = "windows"))]
 pub const SERVER_FILE: &str = "dedicated_server";
-/// Linux: the Tauri interface, beside the egui launcher that opens it (front_door.rs).
-const TAURI_ASSET: &str = "launcher-tauri-linux-x86_64";
-/// What it's called beside the egui launcher.
-const TAURI_FILE: &str = "launcher-tauri";
 const SUMS_ASSET: &str = "SHA256SUMS";
 const SIG_ASSET: &str = "SHA256SUMS.sig";
 /// The largest download: a launcher or server binary.
@@ -187,11 +183,6 @@ pub fn latest() -> anyhow::Result<Latest> {
     release_at(&format!("https://api.github.com/repos/{REPO}/releases/latest"))
 }
 
-/// This launcher's own release (its tag), for what goes beside it.
-pub fn this_release() -> anyhow::Result<Latest> {
-    release_at(&format!("https://api.github.com/repos/{REPO}/releases/tags/v{}", env!("FE_RELEASE")))
-}
-
 fn release_at(api: &str) -> anyhow::Result<Latest> {
     let body = crate::services::rt().block_on(get(api, Duration::from_secs(15), MAX_SMALL))?;
     let r: GhRelease = serde_json::from_slice(&body)?;
@@ -232,64 +223,17 @@ fn old_path(exe: &Path) -> PathBuf {
     PathBuf::from(old)
 }
 
-/// Linux: where the Tauri interface goes beside the egui launcher `exe`.
-pub fn tauri_beside(exe: &Path) -> Option<PathBuf> {
-    cfg!(target_os = "linux").then(|| exe.with_file_name(TAURI_FILE))
-}
-
-/// Replaces this launcher with the release's, starts it, and exits. On Linux the egui launcher
-/// and the Tauri interface beside it go together: `front_door` is the egui launcher (this one,
-/// or the one that opened this Tauri interface), and the Tauri one beside it is replaced too, or
-/// taken away when the release has none (the egui one shows then, not an older Tauri one).
+/// Replaces this launcher with the release's, starts it, and exits.
 pub fn update_self(latest: &Latest) -> anyhow::Result<()> {
     if !latest.newer() {
         anyhow::bail!("release {} isn't newer than this launcher ({}); not installed", latest.version, env!("FE_RELEASE"));
     }
     let me = std::env::current_exe()?;
-    // Linux's Tauri interface: the egui launcher beside it is the one to replace and start.
-    let front_door = match tauri_beside(&me) {
-        Some(_) if me.file_name().is_some_and(|n| n.to_string_lossy().starts_with(TAURI_FILE)) => {
-            front_door_beside(&me).ok_or_else(|| anyhow::anyhow!("the launcher that opens this one isn't beside it"))?
-        }
-        _ => me.clone(),
-    };
-    let new = with_suffix(&front_door, ".new");
+    let new = with_suffix(&me, ".new");
     download(latest, LAUNCHER_ASSET, &new)?;
-    if let Some(tauri) = tauri_beside(&front_door) {
-        let tauri_new = with_suffix(&tauri, ".new");
-        match latest.url(TAURI_ASSET) {
-            Ok(_) => {
-                download(latest, TAURI_ASSET, &tauri_new)?;
-                swap_in(&tauri, &tauri_new)?;
-            }
-            Err(_) => {
-                let _ = std::fs::remove_file(&tauri);
-            }
-        }
-    }
-    swap_in(&front_door, &new)?;
-    std::process::Command::new(&front_door).spawn()?;
+    swap_in(&me, &new)?;
+    std::process::Command::new(&me).spawn()?;
     std::process::exit(0);
-}
-
-/// Linux, a first start (the release's two files, only this one downloaded): the Tauri
-/// interface of this launcher's own release, fetched beside it, verified as updates are. Not
-/// for a development build (no release of its own).
-pub fn fetch_tauri_beside() -> anyhow::Result<PathBuf> {
-    let me = std::env::current_exe()?;
-    let to = tauri_beside(&me).ok_or_else(|| anyhow::anyhow!("only Linux has a Tauri interface beside it"))?;
-    if is_dev_build() {
-        anyhow::bail!("a development build has no release to fetch it from");
-    }
-    let release = this_release()?;
-    download(&release, TAURI_ASSET, &to)?;
-    Ok(to)
-}
-
-/// Linux: the egui launcher beside the Tauri interface `exe`, by the names it's published and
-/// kept under.
-fn front_door_beside(exe: &Path) -> Option<PathBuf> {
-    ["launcher", "launcher-linux-x86_64"].iter().map(|n| exe.with_file_name(n)).find(|p| p.is_file())
 }
 
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
@@ -312,19 +256,17 @@ fn swap_in(exe: &Path, new: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Deletes the previous launcher left behind by an update (on Linux, the Tauri interface's too).
+/// Deletes the previous launcher left behind by an update.
 pub fn clean_up() {
     let Ok(me) = std::env::current_exe() else { return };
-    for exe in std::iter::once(me.clone()).chain(tauri_beside(&me)).chain(front_door_beside(&me)) {
-        let old = old_path(&exe);
-        if old.exists() {
-            // The old process may still be exiting.
-            for _ in 0..20 {
-                if std::fs::remove_file(&old).is_ok() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(250));
+    let old = old_path(&me);
+    if old.exists() {
+        // The old process may still be exiting.
+        for _ in 0..20 {
+            if std::fs::remove_file(&old).is_ok() {
+                break;
             }
+            std::thread::sleep(Duration::from_millis(250));
         }
     }
 }

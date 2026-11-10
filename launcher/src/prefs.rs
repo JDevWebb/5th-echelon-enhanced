@@ -1,6 +1,6 @@
 //! What the launcher keeps between runs and works on: its own settings (`launcher.toml`), the
 //! game folder with its settings, and what the Play button starts. Shared by both interfaces
-//! (the egui one, and launcher-tauri's).
+//! (launcher-slint's, and the egui one).
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -193,9 +193,6 @@ pub struct Prefs {
     /// next plain Play.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     quick_start_by_hand: Option<hooks_config::QuickStartLobby>,
-    /// Linux: the classic (egui) interface, not the Tauri one (front_door.rs).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    classic_interface: bool,
     /// The launcher's look: dark, light, or as the system is (Settings › Display; from the Slint
     /// launcher, 0.5.0). The game's overlay follows it.
     #[serde(default, skip_serializing_if = "Theme::is_default")]
@@ -507,17 +504,6 @@ impl Prefs {
             prefs.quick_start_by_hand = lobby;
             prefs.save();
         }
-    }
-
-    /// Linux: the player chose the classic (egui) interface.
-    pub fn classic_interface() -> bool {
-        Self::load().classic_interface
-    }
-
-    pub fn set_classic_interface(on: bool) {
-        let mut prefs = Self::load();
-        prefs.classic_interface = on;
-        prefs.save();
     }
 
     /// The launcher's look (Settings › Display).

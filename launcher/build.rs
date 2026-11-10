@@ -160,7 +160,7 @@ fn main() {
 
     // Decided by the target, not the build host, so cross-builds get the icon,
     // manifest and version info too. Only for the egui launcher: without `gui` the crate is
-    // launcher-tauri's library, and its resources would clash with that program's own.
+    // launcher-slint's library, and its resources would clash with that program's own.
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") && env::var_os("CARGO_FEATURE_GUI").is_some() {
         winres::WindowsResource::new()
             // Task Manager and Explorer show the description. The product name

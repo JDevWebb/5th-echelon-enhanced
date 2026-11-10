@@ -1,6 +1,6 @@
 //! The 5th Echelon launcher: sets up Splinter Cell: Blacklist for a 5th Echelon server and
 //! starts it, and runs or manages a server. Its egui interface (the `gui` feature, main.rs) and
-//! launcher-tauri's share what's here; without `gui`, there's no egui in it.
+//! launcher-slint share what's here; without `gui`, there's no egui in it.
 
 // Without the egui interface, what only it calls goes unused.
 #![cfg_attr(not(feature = "gui"), allow(dead_code, unused_imports))]
@@ -15,7 +15,6 @@ pub mod diagnostics;
 pub mod dll_utils;
 pub mod feedback;
 pub mod flow;
-pub mod front_door;
 pub mod game_files;
 pub mod logging;
 pub mod maintenance;
@@ -87,11 +86,6 @@ mod gui {
 
     /// The egui launcher: its window, until it closes.
     pub fn run() -> eframe::Result {
-        // Linux: the Tauri interface when it can run (front_door.rs); this window otherwise.
-        // First, so its log isn't moved aside by this one's.
-        if let Some(code) = crate::front_door::try_tauri(scale::gamescope()) {
-            std::process::exit(code);
-        }
         logging::init();
         if scale::gamescope() {
             tracing::info!("Running in gamescope (gaming mode): full screen");
