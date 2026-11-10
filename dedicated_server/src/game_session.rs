@@ -570,6 +570,16 @@ fn attribute_changes(before: &str, after: &str) -> Option<serde_json::Value> {
     (!changes.is_empty()).then(|| changes.into())
 }
 
+/// The attributes only a room's host may change: its kind (private match, public match,
+/// party: [`PROPERTY_ROOM_KIND`]) and its public (3) and private (4) seats.
+const HOST_ONLY_ATTRIBUTES: [u32; 3] = [PROPERTY_ROOM_KIND, 3, 4];
+
+/// Whether an UpdateSession from someone in a room who isn't its host may go from `before` to
+/// `after`: none of [`HOST_ONLY_ATTRIBUTES`] changes (nor appears or goes).
+fn non_host_may_update(before: &str, after: &str) -> bool {
+    HOST_ONLY_ATTRIBUTES.iter().all(|&id| attribute_value(before, id) == attribute_value(after, id))
+}
+
 pub(crate) fn attribute_value(attributes: &str, wanted_id: u32) -> Option<u32> {
     attributes.split(';').find_map(|part| {
         let (id, value) = part.split_once("=>")?;
@@ -1218,7 +1228,23 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             .collect::<Vec<_>>()
             .join(";");
         let session_id = request.game_session_update.session_key.session_id;
-        let before = self.storage.room_of_failed_join(session_id).ok().flatten().map(|(_, _, a)| a);
+        let room = self.storage.room_of_failed_join(session_id).ok().flatten();
+        // The room is its host's: the game's host sends UpdateSession (a migration's new host
+        // is the creator of the room it split off). A participant may be anyone who added
+        // themselves to a public room, so from one, what makes the room private or public,
+        // or its size, is refused; anything else is let through for now, and logged, to see
+        // whether a real game ever sends it.
+        if let Some((creator, _, before)) = room.as_ref().filter(|(creator, ..)| *creator != user_id && self.debug_config.session_owner_checks) {
+            if !non_host_may_update(before, &attributes) {
+                warn!(
+                    logger,
+                    "User {user_id} isn't the host ({creator}) of session {session_id}; may not change its kind or seats; refused"
+                );
+                return Err(Error::AccessDenied);
+            }
+            warn!(logger, "User {user_id} updates session {session_id}, which {creator} hosts");
+        }
+        let before = room.map(|(_, _, a)| a);
         rmc_err!(
             self.storage
                 .update_game_session(request.game_session_update.session_key.type_id, session_id, attributes.clone()),
@@ -3319,6 +3345,7 @@ mod tests {
     use super::attribute_value;
     use super::may_add_to;
     use super::may_change_session;
+    use super::non_host_may_update;
     use super::only_reachable_addresses;
     use super::rooms_for_friend_search;
     use super::station_urls_for_peers;
@@ -3529,6 +3556,18 @@ mod tests {
         assert!(!may_change_session(stranger, host, &participants, Some(&[stranger, guest])));
         assert!(!may_change_session(stranger, host, &participants, Some(&[])));
         assert!(may_change_session(host, host, &participants, Some(&[stranger])), "the host adds anyone");
+    }
+
+    #[test]
+    fn only_the_host_changes_a_rooms_kind_or_seats() {
+        let lobby = "113 => 1;3 => 4;4 => 0;101 => 3";
+        assert!(non_host_may_update(lobby, lobby));
+        assert!(non_host_may_update(lobby, "113 => 1;3 => 4;4 => 0;101 => 7"), "the map");
+        assert!(!non_host_may_update(lobby, "113 => 0;3 => 4;4 => 0;101 => 3"), "made a private match");
+        assert!(!non_host_may_update(lobby, "113 => 1;3 => 0;4 => 4;101 => 3"), "seats made private");
+        assert!(!non_host_may_update(lobby, "113 => 1;3 => 16;4 => 0;101 => 3"), "more seats");
+        assert!(!non_host_may_update(lobby, "113 => 1;4 => 0;101 => 3"), "its seats dropped");
+        assert!(!non_host_may_update("101 => 3", "101 => 3;113 => 0"), "a kind added");
     }
 
     #[test]

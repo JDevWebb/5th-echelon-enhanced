@@ -3834,7 +3834,7 @@ async fn member_invite(ctx: &mut Ctx) -> Result<()> {
     // Turned into a private match, the member's invitation leads nowhere.
     member.invite(&late.name).await?;
     ensure!(late.poll_invite(Duration::from_secs(3)).await?.is_some(), "the second invitation wasn't delivered");
-    member.update_session(party, PRIVATE_MATCH).await?;
+    host.update_session(party, PRIVATE_MATCH).await?;
     ensure!(
         late.add_participants(party, &[], &[late.pid]).await.is_err(),
         "a member's invitation got someone into a private match"
