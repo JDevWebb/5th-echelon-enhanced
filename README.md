@@ -600,7 +600,7 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
 - **Hosts:** `harden-host.sh`, for SSH, fail2ban, the kernel, and automatic updates (Caddy's included) with reboots at a quiet hour.
 
 **Invites and matches**
-- **Host migration** (from [#8](https://github.com/JDevWebb/5th-echelon-enhanced/pull/8) by Matthias Walther): a match lobby carries on under another player when its host leaves, and a party's leader brings the party into a friend's private match and back. On unless turned off (Settings › Game); DirectX 11.
+- **Host migration** (from [#8](https://github.com/JDevWebb/5th-echelon-enhanced/pull/8) by Matthias Walther): a match lobby carries on under another player when its host leaves, and a party's leader brings the party into a friend's private match and back. Part of every game, with no switch; DirectX 9 and 11.
 - Searches leave out matches whose round has started (the host's game says so), matches with someone you blocked, and, where a server asks for it, far hosts while a near one matches.
 - Invites into private matches, from [#123](https://github.com/unixoide/5th-echelon/pull/123) by Matthias Walther, with follow-up fixes:
   - pushes are resent until acknowledged;

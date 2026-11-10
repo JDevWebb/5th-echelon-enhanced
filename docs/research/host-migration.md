@@ -21,6 +21,9 @@ text below still uses those names for the two parts.
 > three is installed. The old keys `MigrateMatchLobby`, `MigrateRunningMatch` and `PartyFollowsInvite` are gone (a
 > file that still has them is read as before, the keys are ignored). What this means for players without the beta:
 > `docs/architecture/host-and-party-migration.md` §11, "Mixed clients".
+>
+> **Later:** from 0.5.0's release host migration is part of every game, not a beta or a setting; `[Beta]
+> HostMigration` and `DisableHostMigration` in `uplay.toml` are read and ignored (`hooks/src/host_migration.rs`).
 
 ## 1. The session object and its fields (C)
 
@@ -120,7 +123,7 @@ is retried ("migration error", `0x0089e650`).
 - **In a running match** the engine's own check (§2 item 4) decides. Without the running-match part, a host
   leaving a running match still ends it for everyone.
 
-## 5. The hook (`migrate_lobby`, part of the "Host migration" beta)
+## 5. The hook (`migrate_lobby`, part of host migration: a beta at first, in every game from 0.5.0)
 
 Two patches plus a code cave. Both sites are found by signature (`hooks-addresses`, reported by
 `check_crash_fixes`), not at fixed addresses, and are applied only together, or not at all (a site not found, the

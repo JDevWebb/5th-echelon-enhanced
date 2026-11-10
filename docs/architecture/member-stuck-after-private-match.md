@@ -6,8 +6,8 @@ disassembly, **R** seen in the client trace logs and the server log of the test 
 **V** guess. Sections 1–9 are analysis only; §11, §13 and §14.7 record what was built.
 
 > **How it ships.** `follow_unblock.rs` (with `follow-dup`) is one of the three hooks of **host migration**
-> (with `migrate_lobby` and `party_follow`): on by default since 0.5.0, turned off in the launcher's
-> Settings › Game › Host migration, stored as `DisableHostMigration = true` in `uplay.toml`. DX9 and DX11, all or nothing: on any build where one piece
+> (with `migrate_lobby` and `party_follow`): part of every game since 0.5.0, with no switch
+> (`DisableHostMigration` and `[Beta] HostMigration` in `uplay.toml` are read and ignored). DX9 and DX11, all or nothing: on any build where one piece
 > isn't found, none of the three is installed. `follow_unblock` sets its own observer hooks on
 > `PartyFollowLeaderTask::vf04` and `FollowDelegate`. The trace hook `member_trace` used for the measurements
 > below (`TraceMemberLeave`) and H3's `leave_without_party` detour (H7 below) were removed. The measurement

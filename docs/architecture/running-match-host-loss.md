@@ -14,8 +14,8 @@ running round is not migrated.
 Sections: 1 summary · 2 findings (F1–F14) · 3 design · 4 tasks · 5 test rig · 6 open points.
 
 > **How it ships.** The running-match check is part of `migrate_lobby`, one of the three hooks of **host
-> migration** (with `party_follow` and `follow_unblock`): on by default since 0.5.0, turned off in the
-> launcher's Settings › Game › Host migration, stored as `DisableHostMigration = true` in `uplay.toml`. DX9 and DX11,
+> migration** (with `party_follow` and `follow_unblock`): part of every game since 0.5.0, with no switch
+> (`DisableHostMigration` and `[Beta] HostMigration` in `uplay.toml` are read and ignored). DX9 and DX11,
 > all or nothing: on any build where one piece isn't found, none of the three is installed. With it on, the public variant of the check
 > (`CHECK_PATCH_PUBLIC`, §3.2) is the one applied; there is no separate `MigrateRunningMatch` switch any more. A
 > client without it behaves as in the original (F8), see `host-and-party-migration.md` §11, "Mixed clients".
@@ -192,7 +192,7 @@ lost, and each player sees the disconnect dialog first. Not built (not needed).
 ## 4. Task list (in order; each step is one file and testable alone)
 
 1. **H5a config.** (As planned: a `MigrateRunningMatch` key. Superseded: the running-match check is part of host
-   migration, turned off with `DisableHostMigration = true`.)
+   migration, which has no switch from 0.5.0.)
 2. **H5b patch.** `hooks/src/migrate_lobby.rs`: `CHECK_PATCH_PUBLIC` (bytes in §3.2); the read-back check and the
    info line ("engine check @ … answers for public matches too"); unit test that the patch is 19 bytes and that
    `CHECK_PATCH_PUBLIC[6..13]` is the `cmp byte [ecx+0x5a8],0` (`80 B9 A8 05 00 00 00`). The module doc drops the

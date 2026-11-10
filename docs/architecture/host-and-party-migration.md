@@ -9,12 +9,12 @@ Sections: 1 goals · 2 findings (questions A–F) · 3 architecture · 4 decisio
 6 open points for live tests · 7 order and dependencies · 8 implementation notes · 9 case matrix ·
 10 server rules · 11 known limits · 12 live round.
 
-> **How it ships: one setting, on by default (0.5.0).** The three client hooks of this design go together:
+> **How it ships: part of every game (0.5.0), not a setting.** The three client hooks of this design go together:
 > `migrate_lobby.rs` (the match lobby migration and the running-match fallback), `party_follow.rs` (the
-> leader's party following an invitation, H1/H2) and `follow_unblock.rs` (with `follow-dup`). They're on unless a
-> player turns them off in the launcher under **Settings › Game › Host migration**, stored as
-> `DisableHostMigration = true` in `uplay.toml`. (During 0.5.0's development they were a beta, `[Beta] HostMigration`;
-> that key is ignored now.)
+> leader's party following an invitation, H1/H2) and `follow_unblock.rs` (with `follow-dup`), installed by
+> `host_migration.rs` in every game. There is no switch: during 0.5.0's development they were a beta
+> (`[Beta] HostMigration`), then a `DisableHostMigration` key; a `uplay.toml` that still has either is read and the
+> key ignored.
 >
 > - **DX9 and DX11, all or nothing.** On any build where one piece isn't found, none of the three is
 >   installed (one warning in the log). Not in the `patch-free` build.
@@ -233,9 +233,9 @@ pushed right to left, callee cleans (`ret n`).
 
 ### H0 Switch
 
-Planned as a `PartyFollowsInvite` key in `uplay.toml`. Superseded: `party_follow::install` runs unless host
-migration is turned off (`DisableHostMigration = true`), together with the other two hooks of this design, and only
-when all three can be installed.
+Planned as a `PartyFollowsInvite` key in `uplay.toml`. Superseded: `party_follow::install` runs in every game
+(host migration has no switch from 0.5.0), together with the other two hooks of this design, and only when all three
+can be installed.
 
 ### H1 Leader keeps its party when accepting an invitation into a private match
 
@@ -469,7 +469,7 @@ the lobby rules below apply ("as for a lobby migration"). Every wait for a vanis
 waiting for its host, parties included). With the earlier 12 s limit and the game's own detection (~10 s) a hard
 drop was taken over after ~14 s (measured for a public lobby); with 20 s expect a little over 20 s.
 
-All of these need host migration on in every player's game (0.5.0 or later, not turned off) (§11, "Mixed clients").
+All of these need host migration in every player's game (0.5.0 or later) (§11, "Mixed clients").
 
 | # | Case | Wanted behaviour | Mechanism | Status |
 |---|---|---|---|---|
@@ -561,9 +561,9 @@ second member, and a follower's own split looks the same as a competitor's. Docu
   never pulled out of a running match.
 - Searches filter on a silent host by its room's connection (`room_silence`); a host that pings late (packet loss) disappears from
   the lists for the length of the silence only.
-- **One switch for all three.** The client hooks of this design go on and off together with the "Host migration"
-  setting. There is no separate switch for the lobby migration, the running-match fallback, `follow_unblock`/`follow-dup`
-  or the party following. `DisableCrashFixes` and the `patch-free` build still leave the game's code alone, the
+- **All three together, no switch.** The client hooks of this design go in together in every game (from 0.5.0 there
+  is no "Host migration" setting). There is no separate switch for the lobby migration, the running-match fallback,
+  `follow_unblock`/`follow-dup` or the party following. `DisableCrashFixes` and the `patch-free` build still leave the game's code alone, the
   latter for all of them. On DX9, or when any piece isn't found, none of the three is installed.
 
 ### Mixed clients
