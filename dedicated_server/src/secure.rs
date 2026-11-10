@@ -31,7 +31,8 @@ impl<T> SecureConnectionProtocolServerTrait<T> for SecureConnectionProtocolServe
         info!(logger, "Client registers with {:?}", request);
         Ok(RegisterResponse {
             return_value: QResult::Ok,
-            pid_connection_id: ci.connection_id.unwrap().into(), // should be set at this point
+            // Set with the ticket that signed the connection in; an error, never a panic, if not.
+            pid_connection_id: ci.connection_id.ok_or(quazal::rmc::Error::AccessDenied)?.into(),
             url_public: format!("prudp:/address={};port={};sid={};type=2", ci.address().ip(), ci.address().port(), 14)
                 .parse()
                 .map_err(|_| quazal::rmc::Error::InternalError)?,
@@ -55,7 +56,8 @@ impl<T> SecureConnectionProtocolServerTrait<T> for SecureConnectionProtocolServe
         info!(logger, "Client registers with {:?}", request);
         Ok(RegisterExResponse {
             return_value: QResult::Ok,
-            pid_connection_id: ci.connection_id.unwrap().into(), // should be set at this point
+            // Set with the ticket that signed the connection in; an error, never a panic, if not.
+            pid_connection_id: ci.connection_id.ok_or(quazal::rmc::Error::AccessDenied)?.into(),
             url_public: format!("prudp:/address={};port={};sid={};type=3", ci.address().ip(), ci.address().port(), 15)
                 .parse()
                 .map_err(|_| quazal::rmc::Error::InternalError)?,

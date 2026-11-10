@@ -177,7 +177,7 @@ impl<CI> UserStorageProtocolServerTrait<CI> for UserStorageProtocolServerImpl {
     /// the server's configuration.
     fn get_content_url(
         &self,
-        _logger: &Logger,
+        logger: &Logger,
         ctx: &Context,
         ci: &mut ClientInfo<CI>,
         request: GetContentUrlRequest,
@@ -190,14 +190,21 @@ impl<CI> UserStorageProtocolServerTrait<CI> for UserStorageProtocolServerImpl {
         if request.content_key.type_id == crate::uploads::SHADOWNET {
             return Err(Error::AccessDenied);
         }
-        let protocol = ctx.settings.get("content_protocol").map_or("http://", String::as_str).to_owned();
-        let host = ctx.settings.get("storage_host").expect("missing storage_host setting").to_owned();
-        let path = ctx.settings.get("storage_path").expect("missing storage_path setting").to_owned();
-
-        Ok(GetContentUrlResponse {
-            download_info: UserContentURL { protocol, host, path },
+        content_url(&ctx.settings).map_err(|missing| {
+            slog::error!(logger, "GetContentUrl: the {missing} setting is missing");
+            Error::InternalError
         })
     }
+}
+
+/// Where the game downloads content from, as the settings say; the name of a missing one.
+fn content_url(settings: &std::collections::HashMap<String, String>) -> Result<GetContentUrlResponse, &'static str> {
+    let protocol = settings.get("content_protocol").map_or("http://", String::as_str).to_owned();
+    let host = settings.get("storage_host").ok_or("storage_host")?.to_owned();
+    let path = settings.get("storage_path").ok_or("storage_path")?.to_owned();
+    Ok(GetContentUrlResponse {
+        download_info: UserContentURL { protocol, host, path },
+    })
 }
 
 /// Creates a new boxed `UserStorageProtocolServer` instance.
@@ -206,4 +213,20 @@ impl<CI> UserStorageProtocolServerTrait<CI> for UserStorageProtocolServerImpl {
 /// with the server's protocol dispatcher.
 pub fn new_protocol<T: 'static>(storage: std::sync::Arc<Storage>) -> Box<dyn Protocol<T>> {
     Box::new(UserStorageProtocolServer::new(UserStorageProtocolServerImpl { storage }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_content_setting_is_an_error_not_a_panic() {
+        let mut settings = std::collections::HashMap::new();
+        assert_eq!(content_url(&settings).err(), Some("storage_host"));
+        settings.insert("storage_host".to_string(), "example.org".to_string());
+        assert_eq!(content_url(&settings).err(), Some("storage_path"));
+        settings.insert("storage_path".to_string(), "/content".to_string());
+        let url = content_url(&settings).unwrap().download_info;
+        assert_eq!((url.protocol.as_str(), url.host.as_str(), url.path.as_str()), ("http://", "example.org", "/content"));
+    }
 }
