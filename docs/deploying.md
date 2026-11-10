@@ -51,17 +51,65 @@ A machine that only runs a coordinator needs SSH, and TCP 80 and 443.
 
 ## Get the installer
 
+The installer runs as root, so take it from a release and check it first. Each release has `install-server.sh` among its downloads, listed in its `SHA256SUMS`, and `SHA256SUMS.sig` is the release key's signature of that release's version and `SHA256SUMS`. The block below, pasted into a shell on the server:
+
+1. finds the latest release and downloads `install-server.sh`, `SHA256SUMS` and `SHA256SUMS.sig` from it, into `~/5th-echelon-installer`;
+2. checks the signature with OpenSSL against the release key. What's signed isn't a file as published: it's the line `5th-echelon/release/v2`, the version (`0.5.0`, the tag without its `v`) on a line of its own, then `SHA256SUMS`. The signature is base32 without padding, so it's padded and decoded first (the installer and the servers' updater check releases the same way);
+3. checks the installer against `SHA256SUMS`;
+4. runs it, only if everything above passed.
+
+Any failure stops it with an error, and nothing runs. It needs curl, OpenSSL 3, base32 and sha256sum (Debian 12+, Ubuntu 22.04+ and the others above have them).
+
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/JDevWebb/5th-echelon-enhanced/main/scripts/install-server.sh
+(
+  set -eu
+  mkdir -p ~/5th-echelon-installer
+  cd ~/5th-echelon-installer
+  repo=https://github.com/JDevWebb/5th-echelon-enhanced
+  tag=$(curl -fsSI --proto '=https' -o /dev/null -w '%{redirect_url}' "$repo/releases/latest")
+  version=${tag##*/tag/v}
+  printf '%s\n' "$version" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?'
+  rm -f install-server.sh SHA256SUMS SHA256SUMS.sig
+  for f in install-server.sh SHA256SUMS SHA256SUMS.sig; do
+    curl -fsSLO --proto '=https' "$repo/releases/download/v$version/$f"
+  done
+  printf '%s\n' '-----BEGIN PUBLIC KEY-----' \
+    'MCowBQYDK2VwAyEANX9q9hOdzlNhVlSPEtmjJbbdJyOktGgQkPw4ep2KCLI=' \
+    '-----END PUBLIC KEY-----' > release.pem
+  { printf '5th-echelon/release/v2\n%s\n' "$version"; cat SHA256SUMS; } > signed
+  sig=$(tr -d '[:space:]' < SHA256SUMS.sig)
+  while [ $(( ${#sig} % 8 )) -ne 0 ]; do sig="$sig="; done
+  printf '%s' "$sig" | base32 -d > signature
+  openssl pkeyutl -verify -pubin -inkey release.pem -rawin -in signed -sigfile signature
+  grep -Eqx '[0-9a-f]{64}  install-server\.sh' SHA256SUMS
+  sha256sum -c --ignore-missing --strict SHA256SUMS
+  echo "install-server.sh is release $version's, signed by the release key."
+  sudo bash install-server.sh
+)
 ```
 
-It downloads the latest release and checks it against the release's `SHA256SUMS` and the release key's signature. To install a build of your own instead, copy it next to the script and add `--binary ./dedicated_server-linux-x86_64` (and `--coordinator-binary ./coordinator-linux-x86_64` for a coordinator).
+(The whole block is one subshell with `set -e` so that any failing line stops it; don't add `&&` or `||` after its closing parenthesis, which would turn `set -e` off inside it.)
+
+It prints `Signature Verified Successfully` and `install-server.sh: OK` before the installer starts. Releases before 0.5.0 don't list the installer, so the block stops at the `grep` for them.
+
+**The release key** (Ed25519), the same one the installer (`RELEASE_KEY_PEM`), the launcher and the servers check releases with (`RELEASE_KEYS` in `identity/src/lib.rs` holds its raw 32 bytes, in base32):
+
+```
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEANX9q9hOdzlNhVlSPEtmjJbbdJyOktGgQkPw4ep2KCLI=
+-----END PUBLIC KEY-----
+```
+
+Its SHA-256 fingerprint (of the key in DER form) is `0d9aa66595918e8fa5b6d79fc6470b53defde525a719546c5e0440aa992b234a`; `openssl pkey -pubin -in release.pem -outform DER | sha256sum` prints it. Compare it with the key on another copy of this page (the repository's, a clone of your own) if you'd rather not trust one download for both the key and the check.
+
+Run as root, the installer then downloads the release's server (and coordinator) and checks them against the same signed `SHA256SUMS`. It also says whether it's that release's own `install-server.sh`, and warns when it isn't. To install a build of your own instead, copy it next to the script and add `--binary ./dedicated_server-linux-x86_64` (and `--coordinator-binary ./coordinator-linux-x86_64` for a coordinator).
 
 ## One server, or a server with a coordinator
 
-Run it and answer the questions:
+The block above ends by running the installer; answer its questions. To run it again later, or with options, it's in `~/5th-echelon-installer` (get it again with the block when there's a new release):
 
 ```sh
+cd ~/5th-echelon-installer
 sudo bash install-server.sh
 ```
 

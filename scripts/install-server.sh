@@ -2,8 +2,12 @@
 # Installs (or updates) the 5th Echelon server on a Linux machine, e.g. a
 # fresh VPS, as a systemd service, optionally behind Caddy on a domain name.
 #
-#   curl -fsSLO https://raw.githubusercontent.com/JDevWebb/5th-echelon-enhanced/main/scripts/install-server.sh
 #   sudo bash install-server.sh
+#
+# Take it from a release (one of its downloads, listed in its signed
+# SHA256SUMS) and check it before running it as root: docs/deploying.md has
+# the commands. When the release it installs lists an install-server.sh, it
+# says whether it's that one.
 #
 # Run interactively, it asks for what it needs: the domain name, and whether
 # this server shares friends with others (runs a coordinator, or joins one).
@@ -256,6 +260,10 @@ SMALL=(--max-filesize 1048576 --max-time 60)
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+# This file, when it's run from one (not piped into bash): check_self compares it with the
+# release's own installer.
+SELF_FILE="${BASH_SOURCE[0]:-}"
+[ -f "$SELF_FILE" ] || SELF_FILE=""
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0; }
 # A question on the terminal, even when the script is piped into bash.
 ask() {
@@ -1380,11 +1388,29 @@ verify_release() {
   printf '%s' "$sig" | base32 -d > "$work/signature" 2>/dev/null || die "the release's signature is malformed"
   if openssl pkeyutl -verify -pubin -inkey "$work/release.pem" -rawin -in "$work/signed" -sigfile "$work/signature" >/dev/null 2>&1; then
     say "Release signature verified"
+    check_self "$release"
   elif ! openssl pkeyutl -help 2>&1 | grep -q -- '-rawin'; then
     [ "$allow_unsigned" -eq 1 ] || die "this system's OpenSSL ($(openssl version)) can't check the release's signature (it needs OpenSSL 3). --allow-unsigned installs on the checksum alone"
     warn "OpenSSL can't check the signature here; installing on the checksum alone (--allow-unsigned)"
   else
     die "the release's signature doesn't match: SHA256SUMS wasn't signed by the release key as release $release. Not installing it"
+  fi
+}
+
+# Whether this installer is release $1's own: a release lists its install-server.sh in the
+# signed SHA256SUMS (from 0.5.0). Only said, never refused: an installer from another
+# release, or from a checkout, installs as well; but one changed on its way here runs as
+# root unnoticed, so it's worth a warning.
+check_self() {
+  local want have
+  [ -n "$SELF_FILE" ] || return 0
+  want="$(grep -E '^[0-9a-f]{64}  install-server\.sh$' "$work/SHA256SUMS" | head -1 | cut -c1-64 || true)"
+  [ -n "$want" ] || return 0
+  have="$(sha256sum < "$SELF_FILE" | cut -c1-64)"
+  if [ "$have" = "$want" ]; then
+    say "This installer is release $1's own (its signed checksum)"
+  else
+    warn "this installer isn't the one release $1 ships (its SHA-256 isn't in the release's signed SHA256SUMS). Fine if it came from another release; otherwise get release $1's and check it (docs/deploying.md)"
   fi
 }
 

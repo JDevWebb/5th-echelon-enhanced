@@ -48,12 +48,7 @@ Each time the game starts, the launcher pings the network's relays and has the g
 
 ### Run your own server
 
-The community network is a service the project's maintainer runs with this software; everything it runs is in this repository. **Run your own** for your group, on any small Linux VPS, with one script:
-
-```sh
-curl -fsSLO https://raw.githubusercontent.com/JDevWebb/5th-echelon-enhanced/main/scripts/install-server.sh
-sudo bash install-server.sh
-```
+The community network is a service the project's maintainer runs with this software; everything it runs is in this repository. **Run your own** for your group, on any small Linux VPS, with one script: `install-server.sh`, from the latest release. It runs as root, so check it against the release's signed checksums first; [docs/deploying.md](docs/deploying.md#get-the-installer) has a block to paste that downloads it, checks the release key's signature and the installer's checksum, and only then runs it.
 
 Then choose how it fits in:
 
@@ -411,8 +406,9 @@ The first start writes `service.toml` (the settings) and creates the database, k
 
 **The quick way:** one script installs the server as a systemd service on a fresh VPS. It detects Debian, Ubuntu, Fedora, Rocky/Alma or Arch, and can put Caddy in front on a domain name. The full guide is **[docs/deploying.md](docs/deploying.md)**.
 
+Get `install-server.sh` from the latest release (it's one of its downloads, covered by the release's signature) and check it before running it as root: **[Get the installer](docs/deploying.md#get-the-installer)** has the commands, which stop unless the signature and the checksum both check out. Then:
+
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/JDevWebb/5th-echelon-enhanced/main/scripts/install-server.sh
 sudo bash install-server.sh
 ```
 
@@ -708,7 +704,7 @@ By hand, the same steps are:
    ```
 
 The release workflow:
-- builds every download on Windows and Linux runners;
+- builds every download on Windows and Linux runners, and adds the Linux installer (`scripts/install-server.sh` at the tag), so the release's signature covers it too;
 - writes `SHA256SUMS`, which the launcher's updater and the Linux installer check against;
 - attests each download's build provenance (`gh attestation verify <file> --repo JDevWebb/5th-echelon-enhanced`);
 - makes the GitHub release as a draft;
@@ -720,7 +716,7 @@ The release workflow:
 - checks the signature with OpenSSL, as the installer does, uploads it and publishes the draft;
 - tags the server image `:<version>` (and `:latest` for a release) once it has checked the `-unsigned` image was built from the tag's commit. That needs gh's token to have the `write:packages` scope (`gh auth refresh -s write:packages`); without it, it prints the commands.
 
-The key stays off GitHub, in `~/.config/5th-echelon-release/`. Launchers, the installer and the servers' updater only install releases it signed, and a coordinator only rolls out signed releases. Its public half is in `identity/src/lib.rs` (`RELEASE_KEYS`) and `scripts/install-server.sh`; `cargo run -p identity --bin release-sign -- keygen <file>` makes a new one.
+The key stays off GitHub, in `~/.config/5th-echelon-release/`. Launchers, the installer and the servers' updater only install releases it signed, and a coordinator only rolls out signed releases. Its public half is in `identity/src/lib.rs` (`RELEASE_KEYS`), `scripts/install-server.sh` and [docs/deploying.md](docs/deploying.md#get-the-installer) (with its fingerprint, for checking the installer by hand); `cargo run -p identity --bin release-sign -- keygen <file>` makes a new one.
 
 Once a release is published, every network's coordinator finds it within 10 minutes and rolls it out to its servers.
 

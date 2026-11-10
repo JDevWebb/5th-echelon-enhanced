@@ -33,7 +33,9 @@
 # (default ~/.config/5th-echelon-release/release.key); make one with
 #   docker run ... cargo run -p identity --bin release-sign -- keygen <file>
 # and put its public half in RELEASE_KEYS in identity/src/lib.rs (and its
-# PEM in install-server.sh).
+# PEM in install-server.sh, and with its fingerprint in docs/deploying.md's
+# "Get the installer", where operators check install-server.sh, which each
+# release carries among its downloads, by hand).
 # Needs the gh CLI signed in to the release's repository, and Docker.
 set -eu
 cd "$(dirname "$0")/.."
@@ -138,6 +140,9 @@ docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-
 grep -Eqx '[A-Z2-7]{103}' "$work/sign/SHA256SUMS.sig" || die "the signer wrote something that isn't a signature; not uploading it"
 [ ! -f "$work/sign/IMAGE" ] || grep -Eqx '[A-Z2-7]{103}' "$work/sign/IMAGE.sig" || die "the signer wrote something that isn't the image's signature; not uploading it"
 sed -n '/^RELEASE_KEY_PEM="/,/END PUBLIC KEY/p' scripts/install-server.sh | sed 's/^RELEASE_KEY_PEM="//; s/"$//' > "$work/sign/release.pem"
+# The key operators check the installer with by hand is the same one.
+grep -qF -- "$(sed -n 2p "$work/sign/release.pem")" docs/deploying.md \
+  || die "docs/deploying.md doesn't give install-server.sh's release key (Get the installer); not uploading the signature"
 # shellcheck disable=SC2016
 docker run --rm --network none -v "$work/sign":/release:ro "$IMAGE" sh -c '
   set -e
