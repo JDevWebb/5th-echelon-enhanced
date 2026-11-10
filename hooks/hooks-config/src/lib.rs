@@ -646,9 +646,7 @@ pub fn api_in_clear(url: &Url) -> bool {
         Some(url::Host::Ipv6(ip)) => !local_ip(ip.into()),
         Some(url::Host::Domain(name)) => {
             let name = name.trim_end_matches('.').to_ascii_lowercase();
-            let local = name == "localhost"
-                || !name.contains('.')
-                || [".localhost", ".local", ".lan", ".home.arpa", ".internal"].iter().any(|end| name.ends_with(end));
+            let local = name == "localhost" || !name.contains('.') || [".localhost", ".local", ".lan", ".home.arpa", ".internal"].iter().any(|end| name.ends_with(end));
             !local
         }
         None => false,
@@ -656,7 +654,6 @@ pub fn api_in_clear(url: &Url) -> bool {
 }
 
 impl Config {
-
     /// Fair play's watching and recording, on: always on the community network, where they're
     /// part of playing (the user, 2026-11-07: its `WitnessReports`, `ReplayRecording`,
     /// `ReplayUpload` and `NetCapture = false` are ignored there); elsewhere as set (a server of

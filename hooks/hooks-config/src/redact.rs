@@ -19,12 +19,24 @@ pub struct Private {
 impl Private {
     /// This PC's account and computer names.
     pub fn of_this_pc(keep: Vec<Ipv4Addr>) -> Self {
-        let names = ["USERNAME", "USER", "COMPUTERNAME", "HOSTNAME", "LOGNAME"]
+        let mut names: Vec<String> = ["USERNAME", "USER", "COMPUTERNAME", "HOSTNAME", "LOGNAME"]
             .iter()
             .filter_map(|v| std::env::var(v).ok())
+            .chain(host_name())
             .map(|n| n.trim().to_string())
             .filter(|n| n.chars().count() >= 3)
             .collect();
+        // The host name's first label too ("jons-pc" of "jons-pc.home.lan").
+        if let Some(short) = names
+            .iter()
+            .filter_map(|n| n.split_once('.'))
+            .map(|(first, _)| first.to_string())
+            .find(|f| f.chars().count() >= 3)
+        {
+            names.push(short);
+        }
+        names.sort_by_key(|n| n.to_ascii_lowercase());
+        names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
         Self { names, keep, shown: Vec::new() }
     }
 
@@ -40,8 +52,41 @@ impl Private {
     }
 }
 
+/// The PC's own name as the system has it, not only as the environment says (`HOSTNAME` is
+/// often unset on Linux, and a shell's isn't the launcher's).
+#[cfg(unix)]
+fn host_name() -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer and its length; gethostname writes at most that.
+    if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } != 0 {
+        return None;
+    }
+    let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+    Some(String::from_utf8_lossy(&buf[..end]).into_owned()).filter(|n| !n.is_empty())
+}
+
+/// The PC's DNS host name (`COMPUTERNAME` is its NetBIOS name, cut to 15 characters; under Wine
+/// this is the Linux host's name).
+#[cfg(windows)]
+fn host_name() -> Option<String> {
+    use windows::Win32::System::SystemInformation::ComputerNameDnsHostname;
+    use windows::Win32::System::SystemInformation::GetComputerNameExW;
+    let mut buf = [0u16; 256];
+    let mut len = buf.len() as u32;
+    // SAFETY: the buffer and its length in characters; the call writes at most that.
+    unsafe { GetComputerNameExW(ComputerNameDnsHostname, windows::core::PWSTR(buf.as_mut_ptr()), &mut len) }.ok()?;
+    let len = (len as usize).min(buf.len());
+    Some(String::from_utf16_lossy(&buf[..len])).filter(|n| !n.is_empty())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn host_name() -> Option<String> {
+    None
+}
+
 /// `text` with the private parts hidden: home folders (`C:\Users\<name>`, `/home/<name>`,
-/// also with doubled backslashes as debug output writes them), the names in `private`
+/// Wine's `Z:\home\<name>`, also with doubled backslashes as debug output writes them), Steam
+/// account ids in its folders (`userdata\<digits>`), the names in `private`
 /// wherever they appear (inside longer words too: `jon1987` is `<private>1987`), except
 /// within the player's own in-game name where it appears whole, public IPv4 addresses (`203.0.x.x`) other than those kept, and public IPv6 ones
 /// (`2001:db8:x`).
@@ -127,18 +172,32 @@ fn hide_homes(text: &str) -> String {
     let mut i = 0;
     while i < text.len() {
         let rest = &lower[i..];
-        let marker = ["users\\\\", "users\\", "users/", "home/"].into_iter().find(|m| rest.starts_with(m));
+        // Wine's view of a Linux home is `Z:\home\<name>`.
+        let home = ["users\\\\", "users\\", "users/", "home\\\\", "home\\", "home/"].into_iter().find(|m| rest.starts_with(m));
+        // Steam's folder of an account's own files is named by its account id.
+        let steam = ["userdata\\\\", "userdata\\", "userdata/"].into_iter().find(|m| rest.starts_with(m));
         let at_boundary = i == 0 || matches!(text.as_bytes()[i - 1], b'\\' | b'/');
-        if let (Some(m), true) = (marker, at_boundary) {
+        let ends = |from: usize| text[from..].find(['\\', '/', '"', '\'', '\n', '\r', ',', ';', ')', ']']).map_or(text.len(), |e| from + e);
+        if let (Some(m), true) = (home, at_boundary) {
             out.push_str(&text[i..i + m.len()]);
             i += m.len();
             // To the end of the folder's name, spaces and all ("Jo Smith").
-            let end = text[i..].find(['\\', '/', '"', '\'', '\n', '\r', ',', ';', ')', ']']).map_or(text.len(), |e| i + e);
+            let end = ends(i);
             if end > i {
                 out.push_str("<user>");
             }
             i = end;
             continue;
+        }
+        if let (Some(m), true) = (steam, at_boundary) {
+            let from = i + m.len();
+            let end = ends(from);
+            if end > from && text[from..end].bytes().all(|b| b.is_ascii_digit()) {
+                out.push_str(&text[i..from]);
+                out.push_str("<id>");
+                i = end;
+                continue;
+            }
         }
         let c = text[i..].chars().next().unwrap_or(' ');
         out.push(c);
@@ -222,6 +281,35 @@ mod tests {
         );
         // Not whole, the in-game name doesn't keep the account's name in it.
         assert_eq!(redact("Jonathans-PC", &private), "<private>athans-PC");
+    }
+
+    #[test]
+    fn wine_homes_and_steam_account_ids_are_hidden() {
+        let private = Private::default();
+        assert_eq!(redact(r"open Z:\home\jo smith\Games\x.ini", &private), r"open Z:\home\<user>\Games\x.ini");
+        assert_eq!(redact(r#""Z:\\home\\jo\\.steam""#, &private), r#""Z:\\home\\<user>\\.steam""#);
+        assert_eq!(redact("/home/jo/.local/share", &private), "/home/<user>/.local/share");
+        assert_eq!(
+            redact(
+                r"C:\Program Files (x86)\Steam\userdata\123456789\235600\remote, ~/.steam/steam/userdata/42/config",
+                &private
+            ),
+            r"C:\Program Files (x86)\Steam\userdata\<id>\235600\remote, ~/.steam/steam/userdata/<id>/config"
+        );
+        // Not an account id, nor a folder of that name.
+        assert_eq!(
+            redact(r"Steam\userdata\anonymous\x and myuserdata\123", &private),
+            r"Steam\userdata\anonymous\x and myuserdata\123"
+        );
+    }
+
+    #[test]
+    fn this_pcs_own_name_is_among_the_private_ones() {
+        let private = Private::of_this_pc(Vec::new());
+        if let Some(name) = super::host_name().filter(|n| n.trim().chars().count() >= 3) {
+            assert!(private.names.iter().any(|n| n.eq_ignore_ascii_case(name.trim())), "{name} in {:?}", private.names);
+            assert!(redact(&format!("on {name}"), &private).contains("<private>"));
+        }
     }
 
     #[test]
