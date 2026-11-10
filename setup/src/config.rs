@@ -233,7 +233,8 @@ impl Config {
                     let line = e.span().map_or(0, |span| s[..span.start.min(s.len())].lines().count());
                     error!("Can't parse {} (line {line}): {}", path.display(), e.message());
                     let backup = path.with_extension("toml.broken");
-                    if let Err(e) = fs::copy(&path, &backup) {
+                    // It may hold the password: only the user may read the copy, as the file.
+                    if let Err(e) = crate::write_private(&backup, s.as_bytes()) {
                         error!("Couldn't keep the unreadable config: {e}");
                     }
                     Config::default()
@@ -281,7 +282,8 @@ fn backup(path: &Path) -> std::io::Result<PathBuf> {
         .map(|i| path.with_file_name(if i == 1 { format!("{name}.old") } else { format!("{name}.old-{i}") }))
         .find(|p| !p.exists())
         .ok_or_else(|| std::io::Error::other("too many backups"))?;
-    fs::copy(path, &kept)?;
+    // The settings hold the password: only the user may read the backup (fs::copy kept 0644).
+    crate::write_private(&kept, &fs::read(path)?)?;
     Ok(kept)
 }
 

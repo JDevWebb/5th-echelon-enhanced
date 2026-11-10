@@ -475,9 +475,10 @@ pub mod pending {
             saved_at: identity::now(),
             tries: 0,
         };
+        // The report holds the game's log and the player's words: only the user may read it.
         let saved = head.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| {
-            std::fs::write(&body, report.encode_to_vec())?;
-            std::fs::write(&head, serde_json::to_vec(&header).unwrap_or_default())
+            setup::write_private(&body, &report.encode_to_vec())?;
+            setup::write_private(&head, &serde_json::to_vec(&header).unwrap_or_default())
         });
         if let Err(e) = saved {
             tracing::warn!("Couldn't keep the report to send later: {e}");
@@ -511,7 +512,7 @@ pub mod pending {
         }
         header.tries += 1;
         let (head, _) = paths()?;
-        let _ = std::fs::write(head, serde_json::to_vec(&header).unwrap_or_default());
+        let _ = setup::write_private(&head, &serde_json::to_vec(&header).unwrap_or_default());
         Some(header)
     }
 
