@@ -2163,13 +2163,23 @@ status() {
 
 # The version asked for: the start of a plain file, read without following
 # a link (the services own their folders, and could swap in a link, a pipe
-# or a folder), and then removed, whatever it is.
+# or a folder), and then gone, whatever it is (else the path unit starts this
+# again and again). Only a plain file is a request. A link or pipe is unlinked
+# (never followed); a folder is never walked by root (rm -rf in a folder its
+# user can change underneath): it's renamed aside, in place, and said.
 wanted=""
 for f in "$STATE_DIR/update-request" "$COORD_DIR/update-request"; do
-  if [ -e "$f" ] || [ -L "$f" ]; then
-    v="$(dd if="$f" bs=64 count=1 iflag=nofollow,nonblock status=none 2>/dev/null | head -1 | tr -d '[:space:]' || true)"
-    if [[ "$v" =~ $VERSION_RE ]]; then wanted="$v"; fi
-    rm -rf -- "$f" 2>/dev/null || true
+  if [ -d "$f" ] && [ ! -L "$f" ]; then
+    echo "update: $f is a folder, not a request: moved aside, not read"
+    mv -f -T -- "$f" "$f.refused-$now" 2>/dev/null || true
+  elif [ -e "$f" ] || [ -L "$f" ]; then
+    if [ -f "$f" ] && [ ! -L "$f" ]; then
+      v="$(dd if="$f" bs=64 count=1 iflag=nofollow,nonblock status=none 2>/dev/null | head -1 | tr -d '[:space:]' || true)"
+      if [[ "$v" =~ $VERSION_RE ]]; then wanted="$v"; fi
+    else
+      echo "update: $f isn't a plain file (a link, a pipe): removed, not read"
+    fi
+    rm -f -- "$f" 2>/dev/null || true
   fi
 done
 [ -n "$wanted" ] || exit 0
