@@ -5130,6 +5130,34 @@ async fn a_waiting_server_gets_a_message_at_once() {
     assert!(started.elapsed() < Duration::from_secs(5));
 }
 
+/// A server holds a few chat waits open at most (its relay holds one): past that it's refused,
+/// so it can't take the coordinator's connections from the rest. Other servers aren't held up.
+#[tokio::test]
+async fn a_server_holds_a_few_chat_waits_at_most() {
+    let t = start("chat-waits").await;
+    t.c.enable_chat();
+    t.c.chat_from_unverified();
+    let (a, b) = (t.join("server-a").await, t.join("server-b").await);
+    let kiwi = identity::Identity::generate();
+    t.changes(&a, json!([link(&kiwi, "server-a", "Kiwi")])).await;
+    let from = t.call("GET", "/v1/chat/wait?after=-1", Some(&b), None).await.1["last"].as_i64().unwrap();
+    t.call(
+        "POST",
+        "/v1/chat/send",
+        Some(&a),
+        Some(json!({ "room": "global", "from": kiwi.global_id(), "text": "hello" })),
+    )
+    .await;
+    let held: Vec<_> = (0..chat::MAX_WAITS_PER_SERVER).map(|_| t.c.chat.wait_slot("server-b").unwrap()).collect();
+    let path = format!("/v1/chat/wait?after={from}");
+    assert_eq!(t.call("GET", &path, Some(&b), None).await.0, StatusCode::TOO_MANY_REQUESTS);
+    let (status, v) = t.call("GET", &path, Some(&a), None).await;
+    assert_eq!((status, v["messages"][0]["body"].as_str()), (StatusCode::OK, Some("hello")), "another server");
+    drop(held);
+    let (status, v) = t.call("GET", &path, Some(&b), None).await;
+    assert_eq!((status, v["messages"][0]["body"].as_str()), (StatusCode::OK, Some("hello")), "{v}");
+}
+
 /// Chat shows senders by name, so only under their own: a player whose account elsewhere has
 /// another player's name can't post as them. And an identity's chat goes once it has no links.
 #[tokio::test]

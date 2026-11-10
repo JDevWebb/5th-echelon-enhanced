@@ -35,6 +35,11 @@ use crate::Shared;
 pub const WAIT: Duration = Duration::from_secs(25);
 /// The most messages in one answer.
 const MAX_ANSWER: i64 = 200;
+/// The most waits one server may hold open at once. A server's relay holds one (chat.rs in the
+/// server, a loop); a few more cover a restart while the last one's connection still waits.
+/// Past this a server only takes the coordinator's connections (shared by every server behind
+/// one proxy) for nothing.
+pub(crate) const MAX_WAITS_PER_SERVER: usize = 8;
 /// What's kept (seconds, and the newest so many).
 const GLOBAL_KEEP: i64 = 7 * 86_400;
 const GLOBAL_LAST: i64 = 500;
@@ -66,6 +71,42 @@ pub struct ChatState {
     /// messages from below a server's cursor, which then skipped them; seeing a new epoch, a
     /// server ahead of `since` goes back to it).
     run: std::sync::OnceLock<(u64, i64)>,
+    /// The waits each server holds open now.
+    waiting: std::sync::Arc<std::sync::Mutex<HashMap<String, usize>>>,
+}
+
+/// A server's place among its open waits, given back when the wait ends.
+pub(crate) struct WaitSlot {
+    waiting: std::sync::Arc<std::sync::Mutex<HashMap<String, usize>>>,
+    server: String,
+}
+
+impl ChatState {
+    /// A place for one more wait from `server`, or none (it holds [`MAX_WAITS_PER_SERVER`]).
+    pub(crate) fn wait_slot(&self, server: &str) -> Option<WaitSlot> {
+        let mut waiting = self.waiting.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let n = waiting.entry(server.to_string()).or_default();
+        if *n >= MAX_WAITS_PER_SERVER {
+            return None;
+        }
+        *n += 1;
+        Some(WaitSlot {
+            waiting: std::sync::Arc::clone(&self.waiting),
+            server: server.to_string(),
+        })
+    }
+}
+
+impl Drop for WaitSlot {
+    fn drop(&mut self) {
+        let mut waiting = self.waiting.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(n) = waiting.get_mut(&self.server) {
+            *n -= 1;
+            if *n == 0 {
+                waiting.remove(&self.server);
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -573,6 +614,9 @@ pub(crate) async fn wait(State(c): State<Shared>, headers: HeaderMap, Query(q): 
         let last: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM chat_messages").fetch_one(&c.pool).await.unwrap_or(0);
         return answer(Vec::new(), last);
     }
+    let Some(_slot) = c.chat.wait_slot(&server) else {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "too many waits from this server at once");
+    };
     let deadline = tokio::time::Instant::now() + WAIT;
     loop {
         let notified = c.chat.notify.notified();
