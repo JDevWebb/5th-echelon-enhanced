@@ -965,12 +965,21 @@ async fn login_totp(State(c): State<Shared>, Extension(client): Extension<Client
         c.failed_code(s.admin_id, &s.username, &client, "TOTP code").await;
         return fail(StatusCode::UNAUTHORIZED, "that code isn't right");
     };
-    let _ = sqlx::query("UPDATE admins SET totp_last_step = ? WHERE id = ?")
+    // The code is taken only if no other request took it (or a later one) meanwhile: two
+    // sent at once both read the last step before either wrote it, and both passed.
+    let taken = sqlx::query("UPDATE admins SET totp_last_step = ?1 WHERE id = ?2 AND totp_last_step < ?1")
         .bind(step)
         .bind(s.admin_id)
         .execute(&c.pool)
         .await;
-    second_factor_done(&c, &s, &client, "TOTP").await
+    match taken {
+        Ok(r) if r.rows_affected() == 1 => second_factor_done(&c, &s, &client, "TOTP").await,
+        Ok(_) => {
+            c.failed_code(s.admin_id, &s.username, &client, "TOTP code used already").await;
+            fail(StatusCode::UNAUTHORIZED, "that code isn't right")
+        }
+        Err(e) => internal(e),
+    }
 }
 
 async fn login_recovery(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Json(req): Json<CodeRequest>) -> Response {
