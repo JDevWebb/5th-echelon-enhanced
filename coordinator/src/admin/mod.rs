@@ -154,22 +154,17 @@ fn limits() -> &'static (Limit, Limit) {
     L.get_or_init(|| (Limit::new(20), Limit::new(600)))
 }
 
-/// Password sign-ins (and setup links) from everyone together in a minute: each costs an
-/// Argon2 check, and many addresses at once could otherwise keep the checks busy for good.
-const SIGN_INS_A_MINUTE: usize = 300;
-
-/// Whether one more password check may run now: per address, then for everyone.
+/// Whether one more password check may run now from this address. There's no count for
+/// everyone together: strangers could use it up and keep the admins out. The checks' own
+/// few turns (auth::hashing) keep a crowd from taking the processor.
 fn password_try(client: &Client) -> Result<(), Response> {
-    static EVERYONE: OnceLock<Limit> = OnceLock::new();
     if !limits().0.check(&crate::limit_key(client.ip)) {
         return Err(fail(StatusCode::TOO_MANY_REQUESTS, "too many attempts; wait a minute"));
-    }
-    if !EVERYONE.get_or_init(|| Limit::new(SIGN_INS_A_MINUTE)).check("everyone") {
-        return Err(fail(StatusCode::SERVICE_UNAVAILABLE, "too many sign-ins right now; try again in a minute"));
     }
     Ok(())
 }
 
+/// A password check that waited too long for its turn: the same answer whatever the name.
 fn busy() -> Response {
     fail(StatusCode::SERVICE_UNAVAILABLE, "the server is busy; try again in a minute")
 }
@@ -840,8 +835,11 @@ async fn login(State(c): State<Shared>, Extension(client): Extension<Client>, Js
     };
     let refused = || fail(StatusCode::UNAUTHORIZED, "wrong name or password");
     let Some((id, hash, disabled)) = row else {
-        // As slow as a real check, so names can't be told from timing.
-        let _ = auth::check_password_off(&req.password, DUMMY_HASH).await;
+        // As slow as a real check, so names can't be told from timing, and busy as a real
+        // one would be, so they can't be told from that either.
+        if auth::check_password_off(&req.password, DUMMY_HASH).await.is_none() {
+            return busy();
+        }
         c.audit(&username, Some(&client), "sign-in failed", "no such admin").await;
         return refused();
     };

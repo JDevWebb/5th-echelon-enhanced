@@ -33,12 +33,19 @@ const HASHERS: usize = 2;
 const HASH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Runs `work` on a blocking thread, one of [`HASHERS`]; `None` when it waited too long for
-/// its turn (or the thread failed).
+/// its turn (or the thread failed). The turn goes with the work and ends when it does: a
+/// request given up on (the client gone) leaves its hash running, and still counted.
 async fn hashing<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Option<T> {
-    static TURNS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
-    let turns = TURNS.get_or_init(|| tokio::sync::Semaphore::new(HASHERS));
-    let _turn = tokio::time::timeout(HASH_WAIT, turns.acquire()).await.ok()?.ok()?;
-    tokio::task::spawn_blocking(work).await.ok()
+    static TURNS: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    let turns = std::sync::Arc::clone(TURNS.get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(HASHERS))));
+    let turn = tokio::time::timeout(HASH_WAIT, turns.acquire_owned()).await.ok()?.ok()?;
+    tokio::task::spawn_blocking(move || {
+        let done = work();
+        drop(turn);
+        done
+    })
+    .await
+    .ok()
 }
 
 /// [`hash_password`] off the async runtime; `Err` when busy too.
