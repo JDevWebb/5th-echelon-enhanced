@@ -135,7 +135,7 @@ fn tick(app: &tauri::AppHandle) {
                     st.history_asked.remove("lobby");
                 }
                 st.status = Some(status);
-                st.friends = friends;
+                st.friends = c::clean_friends(friends);
                 st.online = online;
                 st.status_error = None;
             }
@@ -159,13 +159,8 @@ fn tick(app: &tauri::AppHandle) {
         match launcher::task::guarded(|| c::with_api(&cfg, |api| Box::pin(api.conversations()))) {
             Ok(list) => {
                 let mut st = chat.lock();
-                for conv in &list {
-                    st.rooms.names.insert(conv.with.clone(), conv.with_name.clone());
-                    if conv.unread > 0 && st.with.as_deref() != Some(conv.with.as_str()) {
-                        st.rooms.unseen_direct.insert(conv.with.clone(), conv.unread);
-                    }
-                }
-                st.conversations = list;
+                let with = st.with.clone();
+                st.conversations = st.rooms.take_conversations(list, with.as_deref());
                 drop(st);
                 let _ = app.emit("chat", ());
             }
@@ -222,6 +217,8 @@ fn tick(app: &tauri::AppHandle) {
             for m in messages {
                 c::keep(list, m);
             }
+            let open = st.with.clone();
+            st.rooms.prune(open.as_deref());
             drop(st);
             let _ = app.emit("chat", ());
         }

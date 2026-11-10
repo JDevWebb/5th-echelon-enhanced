@@ -293,6 +293,7 @@ impl Rooms {
     pub fn take(&mut self, messages: Vec<Message>, kept: bool, showing: impl Fn(Tab) -> bool, with: Option<&str>) -> bool {
         let mut attention = false;
         for m in messages {
+            let m = clean(m);
             if m.deletes != 0 {
                 let gone = m.deletes;
                 self.global.retain(|x| x.id != gone);
@@ -333,12 +334,105 @@ impl Rooms {
                 }
             }
         }
+        self.prune(with);
         attention
+    }
+
+    /// Notes the conversations' names (and unread counts, but for the one open, `with`) from
+    /// the server's list, cleaned ([`clean_conversations`]); the list to keep.
+    pub fn take_conversations(&mut self, list: Vec<Conversation>, with: Option<&str>) -> Vec<Conversation> {
+        let list = clean_conversations(list);
+        for c in &list {
+            self.names.insert(c.with.clone(), c.with_name.clone());
+            if c.unread > 0 && with != Some(c.with.as_str()) {
+                self.unseen_direct.insert(c.with.clone(), c.unread);
+            }
+        }
+        self.prune(with);
+        list
+    }
+
+    /// Keeps at most [`MAX_CONVERSATIONS`] direct conversations (the open one, `with`, always),
+    /// dropping those whose newest message is oldest, and names and unread counts for no more
+    /// than twice that: a server sending messages from ever more identities can't grow them
+    /// without end.
+    pub fn prune(&mut self, with: Option<&str>) {
+        while self.direct.len() > MAX_CONVERSATIONS {
+            let oldest = self
+                .direct
+                .iter()
+                .filter(|(other, _)| with != Some(other.as_str()))
+                .min_by_key(|(_, list)| list.last().map_or(i64::MIN, |m| m.id))
+                .map(|(other, _)| other.clone());
+            let Some(oldest) = oldest else { break };
+            self.direct.remove(&oldest);
+            self.unseen_direct.remove(&oldest);
+        }
+        if self.names.len() > 2 * MAX_CONVERSATIONS || self.unseen_direct.len() > 2 * MAX_CONVERSATIONS {
+            let direct = &self.direct;
+            self.names.retain(|other, _| direct.contains_key(other) || with == Some(other.as_str()));
+            self.unseen_direct.retain(|other, _| direct.contains_key(other));
+        }
     }
 }
 
-/// Adds `m` to `list` (by id, once), keeping the newest [`KEEP`].
+/// The longest name kept from the server (a player's, a server's), as the overlay keeps them.
+pub const MAX_NAME: usize = 32;
+pub const MAX_SERVER_NAME: usize = 64;
+/// The longest identity kept (they're far shorter: one longer isn't one).
+pub const MAX_IDENTITY: usize = 128;
+/// The most direct conversations kept; past it the one with the oldest message goes.
+pub const MAX_CONVERSATIONS: usize = 200;
+
+/// `m` as the server sent it, made safe to keep and show: names and the body without control
+/// or invisible characters, each no longer than the server lets players write them (a server
+/// may be anyone's).
+pub fn clean(mut m: Message) -> Message {
+    use hooks_config::text::clip;
+    m.from = clip(&m.from, MAX_IDENTITY);
+    m.to = clip(&m.to, MAX_IDENTITY);
+    m.from_name = clip(&m.from_name, MAX_NAME);
+    m.server_name = clip(&m.server_name, MAX_SERVER_NAME);
+    m.body = clip(&m.body, moderation::MAX_MESSAGE);
+    m
+}
+
+/// The server's conversations list, cleaned as [`clean`] does messages, at most
+/// [`MAX_CONVERSATIONS`] (the most recent, in the server's order).
+pub fn clean_conversations(mut list: Vec<Conversation>) -> Vec<Conversation> {
+    use hooks_config::text::clip;
+    if list.len() > MAX_CONVERSATIONS {
+        let mut newest: Vec<i64> = list.iter().map(|c| c.last).collect();
+        newest.sort_unstable_by(|a, b| b.cmp(a));
+        let oldest_kept = newest[MAX_CONVERSATIONS - 1];
+        let mut room = MAX_CONVERSATIONS;
+        list.retain(|c| {
+            let kept = room > 0 && c.last >= oldest_kept;
+            room -= usize::from(kept);
+            kept
+        });
+    }
+    for c in &mut list {
+        c.with = clip(&c.with, MAX_IDENTITY);
+        c.with_name = clip(&c.with_name, MAX_NAME);
+    }
+    list
+}
+
+/// The server's friends list for chat, cleaned as [`clean`] does messages.
+pub fn clean_friends(mut list: Vec<ChatFriend>) -> Vec<ChatFriend> {
+    use hooks_config::text::clip;
+    list.truncate(2 * MAX_CONVERSATIONS);
+    for f in &mut list {
+        f.identity = clip(&f.identity, MAX_IDENTITY);
+        f.name = clip(&f.name, MAX_NAME);
+    }
+    list
+}
+
+/// Adds `m` to `list` (by id, once, cleaned), keeping the newest [`KEEP`].
 pub fn keep(list: &mut Vec<Message>, m: Message) {
+    let m = clean(m);
     match list.binary_search_by_key(&m.id, |x| x.id) {
         Ok(i) => list[i] = m,
         Err(i) => list.insert(i, m),
@@ -398,7 +492,7 @@ impl Chat {
                     self.history_asked.remove("lobby");
                 }
                 self.status = Some(status);
-                self.friends = friends;
+                self.friends = clean_friends(friends);
                 self.online = online;
                 self.status_error = None;
             }
@@ -477,6 +571,7 @@ impl Chat {
                     for m in messages {
                         keep(list, m);
                     }
+                    self.rooms.prune(self.with.as_deref());
                 }
                 Err(e) => {
                     self.history_asked.remove(&what);
@@ -486,13 +581,7 @@ impl Chat {
         }
         match self.conversations_slot.poll() {
             Some(Ok(list)) => {
-                for c in &list {
-                    self.rooms.names.insert(c.with.clone(), c.with_name.clone());
-                    if c.unread > 0 && self.with.as_deref() != Some(c.with.as_str()) {
-                        self.rooms.unseen_direct.insert(c.with.clone(), c.unread);
-                    }
-                }
-                self.conversations = list;
+                self.conversations = self.rooms.take_conversations(list, self.with.as_deref());
             }
             Some(Err(e)) => self.trouble = Some(e),
             None => {}
@@ -1141,6 +1230,63 @@ mod tests {
             body: format!("m{id}"),
             ..Message::default()
         }
+    }
+
+    #[test]
+    fn what_the_server_sends_is_cleaned_and_clipped() {
+        let mut rooms = Rooms::default();
+        let m = Message {
+            from: "F".into(),
+            from_name: format!("Raven\u{202e}\n{}", "x".repeat(100)),
+            server_name: "s".repeat(500),
+            body: format!("hi\r\nthere{}", "y".repeat(5000)),
+            ..message(1, Room::Direct)
+        };
+        rooms.take(vec![m], false, |_| false, None);
+        let kept = &rooms.direct["F"][0];
+        assert!(kept.from_name.starts_with("Ravenx") && kept.from_name.chars().count() == MAX_NAME, "{}", kept.from_name);
+        assert_eq!(rooms.names["F"], kept.from_name);
+        assert_eq!(kept.server_name.len(), MAX_SERVER_NAME);
+        assert!(kept.body.starts_with("hithere") && kept.body.chars().count() == moderation::MAX_MESSAGE);
+        // History goes through keep, cleaned the same.
+        let mut list = Vec::new();
+        keep(
+            &mut list,
+            Message {
+                body: "a\u{0}b".into(),
+                ..message(2, Room::Global)
+            },
+        );
+        assert_eq!(list[0].body, "ab");
+    }
+
+    #[test]
+    fn conversations_kept_are_bounded() {
+        let mut rooms = Rooms::default();
+        let many: Vec<Message> = (0..MAX_CONVERSATIONS as i64 + 50)
+            .map(|i| Message {
+                from: format!("p{i}"),
+                ..message(i + 1, Room::Direct)
+            })
+            .collect();
+        rooms.take(many, false, |_| false, Some("p0"));
+        assert_eq!(rooms.direct.len(), MAX_CONVERSATIONS);
+        assert!(rooms.direct.contains_key("p0"), "the open one stays");
+        assert!(!rooms.direct.contains_key("p1"), "the oldest goes");
+        assert!(rooms.direct.contains_key(&format!("p{}", MAX_CONVERSATIONS + 49)));
+        assert!(rooms.unseen_direct.len() <= 2 * MAX_CONVERSATIONS && rooms.names.len() <= 2 * MAX_CONVERSATIONS + 50);
+
+        let list: Vec<Conversation> = (0..MAX_CONVERSATIONS as i64 + 10)
+            .map(|i| Conversation {
+                with: format!("c{i}"),
+                with_name: "N\u{7}ame".into(),
+                last: i,
+                ..Conversation::default()
+            })
+            .collect();
+        let kept = Rooms::default().take_conversations(list, None);
+        assert_eq!(kept.len(), MAX_CONVERSATIONS);
+        assert_eq!((kept[0].with.as_str(), kept[0].with_name.as_str()), ("c10", "Name"), "the newest, in the server's order");
     }
 
     #[test]
