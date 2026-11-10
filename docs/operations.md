@@ -356,7 +356,7 @@ Under **Admins and security**, limit the admin UI to address ranges (e.g. your h
 | Problem | What to do |
 |---|---|
 | Every admin locked out by the restrictions | `sudo bash install-server.sh --admin-open-access` clears them |
-| An admin lost their second factor | Another admin uses **Reset sign-in**, or on the machine: `sudo bash install-server.sh --reset-admin NAME`. Either gives a new setup link |
+| An admin lost their second factor | On the machine: `sudo bash install-server.sh --reset-admin NAME` clears their sign-in and gives a new setup link. Another admin's **Reset sign-in** clears it and signs them out (e.g. a lost laptop), but gives no link: the link comes from the console only, so one admin can't take over another's account |
 | Cloudflare shows error 525 | Caddy has no certificate for the name: install an Origin CA certificate (step 3) |
 | A TLS error before Cloudflare answers | The name is two levels deep, which Cloudflare's free certificate doesn't cover: use a one-level name (step 1) |
 | `ERR_HTTP2_PROTOCOL_ERROR` right after switching the record to proxied | Your computer still has the server's own address cached, and Caddy drops anything that isn't from Cloudflare. Flush your DNS cache (macOS: `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`) |

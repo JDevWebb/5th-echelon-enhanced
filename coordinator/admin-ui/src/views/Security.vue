@@ -91,7 +91,7 @@
             <td class="small muted">{{ fmt.ago(a.last_login) }}</td>
             <td class="r">
               <div v-if="a.username !== me.username" class="row end">
-                <button class="ghost small" type="button" @click="adminAction(a, 'reset', [`Reset ${a.username}'s sign-in?`, 'Their password, passkeys and authenticator are cleared and they\'re signed out. You get a new setup link for them.', 'Reset sign-in'])">Reset sign-in</button>
+                <button class="ghost small" type="button" @click="adminAction(a, 'reset', [`Reset ${a.username}'s sign-in?`, `Their password, passkeys and authenticator are cleared and they're signed out. Their new setup link comes from the server's console (sudo bash install-server.sh --reset-admin ${a.username}), not here.`, 'Reset sign-in'])">Reset sign-in</button>
                 <button v-if="a.disabled" class="ghost small" type="button" @click="adminAction(a, 'enable')">Enable</button>
                 <button v-else class="ghost small" type="button" @click="adminAction(a, 'disable', [`Disable ${a.username}?`, 'They\'re signed out and can\'t sign in until enabled.', 'Disable'])">Disable</button>
                 <button class="danger small" type="button" @click="adminAction(a, 'remove', [`Remove ${a.username}?`, 'Their account is deleted.', 'Remove'])">Remove</button>
@@ -191,6 +191,7 @@ async function adminAction(a, act, ask) {
   try {
     const r = await api('POST', `/admins/${a.id}/${act}`, {});
     if (r.link) await openModal(SetupLink, { who: a.username, link: r.link });
+    else if (r.message) await confirmBox('Done', r.message, 'OK');
     load();
   } catch (e) { toast(e.message, true); }
 }

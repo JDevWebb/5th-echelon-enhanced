@@ -3652,10 +3652,16 @@ async fn failed_sign_ins_lock_an_account_and_admins_cant_lock_everyone_out() {
     );
     let (status, ..) = admin_send(&r, "POST", "/api/admins/99999/disable", &rata, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "no such admin");
-    // Enabled again and reset: their sign-in is cleared, and a new setup link is the way back.
+    // Enabled again and reset: their sign-in is cleared, and a new setup link is the way back,
+    // from the console only: the admin resetting them doesn't get one (they could take the
+    // account over).
     admin_send(&r, "POST", &format!("/api/admins/{}/enable", id_of("kiwi")), &rata, None).await;
     let (status, v, _) = admin_send(&r, "POST", &format!("/api/admins/{}/reset", id_of("kiwi")), &rata, None).await;
     assert_eq!(status, StatusCode::OK, "{v}");
+    assert!(v.get("link").is_none() && !v.to_string().contains("#setup="), "{v}");
+    assert!(v["message"].as_str().unwrap().contains("--reset-admin kiwi"), "{v}");
+    let links: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM setup_tokens").fetch_one(&t.c.pool).await.unwrap();
+    assert_eq!(links, 0, "no link made that nobody sees");
     let (status, ..) = admin_send(&r, "POST", "/api/login", "", Some(json!({ "username": "kiwi", "password": password }))).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "a reset admin's old password");
 }

@@ -440,6 +440,22 @@ impl Coordinator {
         }
     }
 
+    /// Clears an admin's password, second factors, sessions, setup links and failures: they
+    /// can't sign in until they set up again with a new setup link.
+    async fn clear_sign_in(&self, id: i64) -> sqlx::Result<()> {
+        for sql in [
+            "UPDATE admins SET password_hash = NULL, totp_secret = NULL, totp_pending = NULL, failures = 0, locked_until = 0, code_failures = 0, code_locked_until = 0, disabled = 0 WHERE id = ?",
+            "DELETE FROM passkeys WHERE admin_id = ?",
+            "DELETE FROM recovery_codes WHERE admin_id = ?",
+            "DELETE FROM admin_sessions WHERE admin_id = ?",
+            "DELETE FROM setup_tokens WHERE admin_id = ?",
+            "DELETE FROM admin_sign_in_failures WHERE admin_id = ?",
+        ] {
+            sqlx::query(sql).bind(id).execute(&self.pool).await?;
+        }
+        Ok(())
+    }
+
     /// Adds an admin (or, with `reset`, clears an existing one's password,
     /// second factors and sessions) and answers a one-time setup link.
     pub async fn admin_setup_link(&self, username: &str, reset: bool) -> Result<String, String> {
@@ -457,16 +473,7 @@ impl Coordinator {
             (Some(_), false) => return Err(format!("{username} is an admin already; reset them to send a new setup link")),
             (None, true) => return Err(format!("{username} isn't an admin")),
             (Some(id), true) => {
-                for sql in [
-                    "UPDATE admins SET password_hash = NULL, totp_secret = NULL, totp_pending = NULL, failures = 0, locked_until = 0, code_failures = 0, code_locked_until = 0, disabled = 0 WHERE id = ?",
-                    "DELETE FROM passkeys WHERE admin_id = ?",
-                    "DELETE FROM recovery_codes WHERE admin_id = ?",
-                    "DELETE FROM admin_sessions WHERE admin_id = ?",
-                    "DELETE FROM setup_tokens WHERE admin_id = ?",
-                    "DELETE FROM admin_sign_in_failures WHERE admin_id = ?",
-                ] {
-                    sqlx::query(sql).bind(id).execute(&self.pool).await.map_err(|e| e.to_string())?;
-                }
+                self.clear_sign_in(id).await.map_err(|e| e.to_string())?;
                 id
             }
             (None, false) => sqlx::query_scalar("INSERT INTO admins (username, created_at) VALUES (?, ?) RETURNING id")
@@ -1584,9 +1591,16 @@ async fn admin_action(State(c): State<Shared>, Extension(client): Extension<Clie
             let _ = sqlx::query("DELETE FROM admin_sign_in_failures WHERE admin_id = ?").bind(id).execute(&c.pool).await;
             json!({})
         }
-        "reset" if id != s.admin_id => match c.admin_setup_link(&username, true).await {
-            Ok(link) => json!({ "link": link, "expires_in": SETUP_FOR }),
-            Err(e) => return fail(StatusCode::BAD_REQUEST, &e),
+        // Another admin's sign-in is cleared (they're signed out, and can't sign in), but the
+        // new setup link comes only from the server's console: handed to the admin resetting
+        // them, it let any admin take over any other's account.
+        "reset" if id != s.admin_id => match c.clear_sign_in(id).await {
+            Ok(()) => json!({
+                "message": format!(
+                    "{username}'s sign-in is cleared and they're signed out. Their new setup link is made on the server's console: sudo bash install-server.sh --reset-admin {username}"
+                ),
+            }),
+            Err(e) => return internal(e),
         },
         "reset" => return fail(StatusCode::BAD_REQUEST, "change your own sign-in under Your account"),
         "remove" => {
