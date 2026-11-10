@@ -80,6 +80,9 @@ const FAILURES_BEFORE_LOCK: i64 = 5;
 /// Failed sign-ins from everywhere together before the account itself waits: the backstop
 /// against guesses spread over many addresses.
 const FAILURES_BEFORE_ACCOUNT_LOCK: i64 = 50;
+/// Wrong second-factor codes from everywhere together (within a day) before the account's
+/// codes wait: low, as only someone with the password gets to try them.
+const CODE_FAILURES_BEFORE_LOCK: i64 = 5;
 const TOTP_TRIES: i64 = 5;
 
 /// The admin UI's settings.
@@ -453,7 +456,7 @@ impl Coordinator {
             (None, true) => return Err(format!("{username} isn't an admin")),
             (Some(id), true) => {
                 for sql in [
-                    "UPDATE admins SET password_hash = NULL, totp_secret = NULL, totp_pending = NULL, failures = 0, locked_until = 0, disabled = 0 WHERE id = ?",
+                    "UPDATE admins SET password_hash = NULL, totp_secret = NULL, totp_pending = NULL, failures = 0, locked_until = 0, code_failures = 0, code_locked_until = 0, disabled = 0 WHERE id = ?",
                     "DELETE FROM passkeys WHERE admin_id = ?",
                     "DELETE FROM recovery_codes WHERE admin_id = ?",
                     "DELETE FROM admin_sessions WHERE admin_id = ?",
@@ -537,6 +540,13 @@ impl Coordinator {
                 .await?;
             // This address's failures only: another's lock stays.
             sqlx::query("DELETE FROM admin_sign_in_failures WHERE admin_id = ? AND address = ?")
+                .bind(admin_id)
+                .bind(crate::limit_key(client.ip))
+                .execute(&self.pool)
+                .await?;
+            // Wrong codes are forgotten only when the last came from here (the admin's own
+            // slips); from elsewhere they stay, and fade a day after the last.
+            sqlx::query("UPDATE admins SET code_failures = 0, code_locked_until = 0 WHERE id = ? AND code_failed_from = ?")
                 .bind(admin_id)
                 .bind(crate::limit_key(client.ip))
                 .execute(&self.pool)
@@ -627,12 +637,18 @@ impl Coordinator {
     }
 
     /// One more try at a code (TOTP or recovery) on this session: refused past [`TOTP_TRIES`]
-    /// (the session ends), and while signing in, refused while the account waits after
-    /// failures (a correct code used to get through the lock, and clear it). A signed-in
-    /// admin confirming it's them isn't held up by others' failures.
+    /// (the session ends), and refused while the account's codes wait after wrong ones from
+    /// anywhere (each new sign-in had its own few tries, so a password could open many); while
+    /// signing in, refused too while the account waits after failed sign-ins (a correct code
+    /// used to get through the lock, and clear it).
     async fn code_try(&self, s: &Session, client: &Client) -> Result<(), Response> {
         // Past the password, the account is known: the wait can be said.
-        if s.stage != "full" && self.sign_in_waits(s.admin_id, client).await.map_err(internal)? {
+        let codes_wait: i64 = sqlx::query_scalar("SELECT code_locked_until FROM admins WHERE id = ?")
+            .bind(s.admin_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(internal)?;
+        if identity::now() < codes_wait || (s.stage != "full" && self.sign_in_waits(s.admin_id, client).await.map_err(internal)?) {
             return Err(fail(StatusCode::TOO_MANY_REQUESTS, "too many failed sign-ins; this account waits a while"));
         }
         let tries: i64 = sqlx::query_scalar("UPDATE admin_sessions SET totp_tries = totp_tries + 1 WHERE token_hash = ? RETURNING totp_tries")
@@ -712,6 +728,41 @@ impl Coordinator {
                 Some(client),
                 "account locked",
                 &format!("{everywhere} failed sign-ins from everywhere; waits {} minutes", wait / 60),
+            )
+            .await;
+        }
+        self.audit(username, Some(client), "sign-in failed", what).await;
+    }
+
+    /// A wrong second-factor code (TOTP or recovery) for `admin_id`, from anywhere: after
+    /// [`CODE_FAILURES_BEFORE_LOCK`] within a day, the account's codes wait (15 minutes,
+    /// doubling with each after, at most a day). Only someone with the password (or a session)
+    /// gets this far, so a stranger can't use it to lock an admin out.
+    async fn failed_code(&self, admin_id: i64, username: &str, client: &Client, what: &str) {
+        let now = identity::now();
+        let failures: i64 = sqlx::query_scalar(
+            "UPDATE admins SET code_failures = CASE WHEN code_failed_at < ?1 - 86400 THEN 1 ELSE code_failures + 1 END,
+                    code_failed_at = ?1, code_failed_from = ?2
+              WHERE id = ?3 RETURNING code_failures",
+        )
+        .bind(now)
+        .bind(crate::limit_key(client.ip))
+        .bind(admin_id)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+        if failures >= CODE_FAILURES_BEFORE_LOCK {
+            let wait = ((15 * 60_i64) << (failures - CODE_FAILURES_BEFORE_LOCK).min(6)).min(86_400);
+            let _ = sqlx::query("UPDATE admins SET code_locked_until = ? WHERE id = ?")
+                .bind(now + wait)
+                .bind(admin_id)
+                .execute(&self.pool)
+                .await;
+            self.audit(
+                username,
+                Some(client),
+                "account locked",
+                &format!("{failures} wrong codes; codes wait {} minutes", wait / 60),
             )
             .await;
         }
@@ -911,7 +962,7 @@ async fn login_totp(State(c): State<Shared>, Extension(client): Extension<Client
         .as_ref()
         .and_then(|(secret, last)| auth::totp_check(secret.as_deref()?, &req.code, identity::now(), *last));
     let Some(step) = step else {
-        c.failed(s.admin_id, &s.username, &client, "TOTP code").await;
+        c.failed_code(s.admin_id, &s.username, &client, "TOTP code").await;
         return fail(StatusCode::UNAUTHORIZED, "that code isn't right");
     };
     let _ = sqlx::query("UPDATE admins SET totp_last_step = ? WHERE id = ?")
@@ -943,7 +994,7 @@ async fn login_recovery(State(c): State<Shared>, Extension(client): Extension<Cl
     match used {
         Ok(r) if r.rows_affected() == 1 => second_factor_done(&c, &s, &client, "a recovery code").await,
         Ok(_) => {
-            c.failed(s.admin_id, &s.username, &client, "recovery code").await;
+            c.failed_code(s.admin_id, &s.username, &client, "recovery code").await;
             fail(StatusCode::UNAUTHORIZED, "that recovery code isn't right, or was used")
         }
         Err(e) => internal(e),
@@ -1500,7 +1551,7 @@ async fn admin_action(State(c): State<Shared>, Extension(client): Extension<Clie
             json!({})
         }
         "enable" => {
-            let _ = sqlx::query("UPDATE admins SET disabled = 0, failures = 0, locked_until = 0 WHERE id = ?")
+            let _ = sqlx::query("UPDATE admins SET disabled = 0, failures = 0, locked_until = 0, code_failures = 0, code_locked_until = 0 WHERE id = ?")
                 .bind(id)
                 .execute(&c.pool)
                 .await;

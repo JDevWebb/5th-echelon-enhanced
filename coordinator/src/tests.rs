@@ -4752,6 +4752,58 @@ async fn second_factor_codes_wait_with_the_account() {
     assert_eq!((status, v["stage"].as_str()), (StatusCode::OK, Some("full")), "{v}");
 }
 
+/// Wrong codes count for the account from everywhere: new sign-ins (each with its own few
+/// tries) don't give someone with the password more guesses, and another address's sign-in
+/// doesn't clear them; they fade a day after the last.
+#[tokio::test]
+async fn wrong_codes_count_for_the_account_across_sign_ins() {
+    let step = totp_step().await;
+    let t = start("admin-code-count").await;
+    let r = admin_router_at(&t, [192, 0, 2, 40]);
+    let token = t.c.admin_setup_link("pua", false).await.unwrap().split("#setup=").nth(1).unwrap().to_string();
+    let password = "correct horse battery staple";
+    let enroll = admin_send(&r, "POST", "/api/setup", "", Some(json!({ "token": token, "password": password })))
+        .await
+        .2
+        .unwrap();
+    let secret = admin_send(&r, "POST", "/api/me/totp/begin", &enroll, None).await.1["secret"].as_str().unwrap().to_string();
+    let (status, ..) = admin_send(&r, "POST", "/api/me/totp/confirm", &enroll, Some(json!({ "code": totp_code(&secret, step - 1) }))).await;
+    assert_eq!(status, StatusCode::OK);
+    let sign_in = |r: Router| async move {
+        admin_send(&r, "POST", "/api/login", "", Some(json!({ "username": "pua", "password": password })))
+            .await
+            .2
+            .unwrap()
+    };
+    for wrong in [3, 2] {
+        let half = sign_in(r.clone()).await;
+        for _ in 0..wrong {
+            let (status, ..) = admin_send(&r, "POST", "/api/login/totp", &half, Some(json!({ "code": "000000" }))).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+    }
+    let half = sign_in(r.clone()).await;
+    let (status, ..) = admin_send(&r, "POST", "/api/login/totp", &half, Some(json!({ "code": totp_code(&secret, step) }))).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "five wrong codes over two sign-ins: the right one waits too");
+    let elsewhere = admin_router_at(&t, [192, 0, 2, 41]);
+    let half = sign_in(elsewhere.clone()).await;
+    let (status, ..) = admin_send(&elsewhere, "POST", "/api/login/totp", &half, Some(json!({ "code": totp_code(&secret, step) }))).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "and from another address");
+    // A day after the last, and no longer waiting: counted from one again.
+    sqlx::query("UPDATE admins SET code_locked_until = 0, code_failed_at = code_failed_at - 86401 WHERE username = 'pua'")
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    let (status, ..) = admin_send(&elsewhere, "POST", "/api/login/totp", &half, Some(json!({ "code": "000000" }))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let failures: i64 = sqlx::query_scalar("SELECT code_failures FROM admins WHERE username = 'pua'").fetch_one(&t.c.pool).await.unwrap();
+    assert_eq!(failures, 1);
+    let (status, v, _) = admin_send(&elsewhere, "POST", "/api/login/totp", &half, Some(json!({ "code": totp_code(&secret, step) }))).await;
+    assert_eq!((status, v["stage"].as_str()), (StatusCode::OK, Some("full")), "{v}");
+    let failures: i64 = sqlx::query_scalar("SELECT code_failures FROM admins WHERE username = 'pua'").fetch_one(&t.c.pool).await.unwrap();
+    assert_eq!(failures, 0, "the last wrong code came from here: the admin's own slip");
+}
+
 /// A weak password at a setup link leaves the link usable, but no longer than it was.
 #[tokio::test]
 async fn a_setup_link_keeps_its_expiry_through_weak_passwords() {
