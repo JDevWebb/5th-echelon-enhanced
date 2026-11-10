@@ -45,6 +45,9 @@ const DATA_FROM_FRESH: Duration = Duration::from_secs(30);
 /// `FE_MAX_CONNECTIONS_PER_IP` lifts it, as for the load test's players).
 const MAX_PEERS: usize = 20_000;
 const MAX_PEERS_PER_IP: usize = 64;
+/// Relay ports held from one address at most: a household or a LAN party; accounts made on one
+/// address can't take every port, and with them everyone else's relay.
+const MAX_RELAYED_PER_IP: usize = 8;
 /// Relayed packets one player may send a second (a match is ~30 per peer).
 const MAX_PACKETS_PER_SECOND: u32 = 600;
 /// Two players the relay forwards between stay paired this long after their last packet
@@ -448,6 +451,18 @@ impl Table {
         (first..=last).find(|p| !self.by_vport.contains_key(p) && self.retired.get(p).is_none_or(|at| at.elapsed() > EXPIRY))
     }
 
+    /// A relay port for a new registration from `src`: a free one, while that address holds
+    /// fewer than [`MAX_RELAYED_PER_IP`] (registrations from `src` itself aside: they go).
+    fn free_vport_for(&self, src: SocketAddrV4) -> Option<u16> {
+        let held = self.by_ip.get(src.ip()).map_or(0, |ids| {
+            ids.iter().filter_map(|id| self.peers.get(id)).filter(|p| p.vport.is_some() && p.real != src).count()
+        });
+        if held >= quazal::prudp::many_per_ip().unwrap_or(MAX_RELAYED_PER_IP) {
+            return None;
+        }
+        self.free_vport()
+    }
+
     /// Takes a player out of the table, indexes and all.
     fn take(&mut self, id: Id) -> Option<Peer> {
         let p = self.peers.remove(&id)?;
@@ -475,23 +490,42 @@ impl Table {
         Some(p)
     }
 
+    /// Whether a player is registered from `ip` (which proved, with a cookie, that it receives
+    /// here).
+    pub fn registered_from(&self, ip: Ipv4Addr) -> bool {
+        self.by_ip.contains_key(&ip)
+    }
+
     /// Whether a probe from `src` for `name` may register: the table and
     /// each address have a limit (a refresh of an existing one always may).
     pub fn admits(&self, src: SocketAddrV4, name: &str) -> bool {
-        if self.by_name.contains_key(&name.to_lowercase()) {
+        if self.by_name.contains_key(&identity::name_key(name)) {
             return true;
         }
         let here = self.peers.values().filter(|p| p.real.ip() == src.ip()).count();
         self.peers.len() < MAX_PEERS && here < quazal::prudp::many_per_ip().unwrap_or(MAX_PEERS_PER_IP)
     }
 
-    /// Registers (or refreshes) the player behind `src` and answers its probe.
+    /// [`Self::register`], for tests that always get a relay port.
+    #[cfg(test)]
     pub fn probe(&mut self, src: SocketAddrV4, flags: u8, nonce: u32, mapping: Option<SocketAddrV4>, name: &str, now: Instant) -> Message {
+        self.register(src, flags, nonce, mapping, name, now).expect("registered")
+    }
+
+    /// Registers (or refreshes) the player behind `src` and answers its probe. `None`, and
+    /// nothing changed, for a player who wants or needs the relay when there's no relay port
+    /// for them (all taken, or their address holds its share): registered direct instead,
+    /// their own address went to everyone they play with.
+    pub fn register(&mut self, src: SocketAddrV4, flags: u8, nonce: u32, mapping: Option<SocketAddrV4>, name: &str, now: Instant) -> Option<Message> {
         // The router port mapping the client reports is only its word: a mapping on another
         // address than the one this probe came from would have this player advertised (and
         // relayed packets routed) at someone else's address.
         let mapping = mapping.filter(|m| m.ip() == src.ip());
-        let key = if name.is_empty() { format!("@{src}") } else { name.to_lowercase() };
+        let key = if name.is_empty() { format!("@{src}") } else { identity::name_key(name) };
+        let known = self.by_name.get(&key).and_then(|id| self.peers.get(id));
+        if (known.is_some_and(|o| o.relayed) || self.wants_relay(src, flags, mapping)) && known.and_then(|o| o.vport).or_else(|| self.free_vport_for(src)).is_none() {
+            return None;
+        }
         let old = self.by_name.get(&key).copied().and_then(|id| self.take(id).map(|p| (id, p)));
         // Someone else registered from this address before (a restarted game
         // with another account): that registration is stale.
@@ -505,10 +539,11 @@ impl Table {
         // (the hook asks before it tells the game anything).
         let relayed = old.as_ref().is_some_and(|(_, o)| o.relayed) || self.wants_relay(src, flags, mapping);
         let vport = if relayed {
-            old.as_ref().and_then(|(_, o)| o.vport).or_else(|| self.free_vport())
+            old.as_ref().and_then(|(_, o)| o.vport).or_else(|| self.free_vport_for(src))
         } else {
             None
         };
+        // Checked above, before anything was taken out.
         let relayed = relayed && vport.is_some();
         let id = old.as_ref().map_or_else(
             || {
@@ -568,7 +603,7 @@ impl Table {
             self.by_vport.insert(v, id);
         }
         self.peers.insert(id, peer);
-        Message::ProbeReply {
+        Some(Message::ProbeReply {
             nonce,
             observed: src,
             advertise,
@@ -577,7 +612,7 @@ impl Table {
             relay_ports: self.cfg.relay_ports,
             cookie: [0; 16],
             tag,
-        }
+        })
     }
 
     /// [`Self::route`], for a packet that must carry its sender's `tag`.
@@ -827,7 +862,7 @@ impl Table {
 
     /// Pairs two registered players: the server put them together (it had one probe the other).
     pub fn introduce(&mut self, a: &str, b: &str, now: Instant) {
-        let (Some(a), Some(b)) = (self.by_name.get(&a.to_lowercase()).copied(), self.by_name.get(&b.to_lowercase()).copied()) else {
+        let (Some(a), Some(b)) = (self.by_name.get(&identity::name_key(a)).copied(), self.by_name.get(&identity::name_key(b)).copied()) else {
             return;
         };
         if a != b {
@@ -839,7 +874,7 @@ impl Table {
     /// both here, they're paired; one here, the other's packets for them are let through as
     /// if the matchmaking server had been asked (either way round).
     pub fn introduced(&mut self, a: &str, b: &str, now: Instant) {
-        let id = |name: &str| self.by_name.get(&name.to_lowercase()).copied();
+        let id = |name: &str| self.by_name.get(&identity::name_key(name)).copied();
         match (id(a), id(b)) {
             (Some(_), Some(_)) => self.introduce(a, b, now),
             (Some(here), None) => self.remote_decided(b, here, true, now),
@@ -851,14 +886,14 @@ impl Table {
     /// Notes `name`'s round trip to this server, as its game measured it.
     pub fn note_rtt(&mut self, name: &str, rtt_ms: Option<u16>) {
         let Some(ms) = rtt_ms else { return };
-        if let Some(p) = self.by_name.get(&name.to_lowercase()).and_then(|id| self.peers.get_mut(id)) {
+        if let Some(p) = self.by_name.get(&identity::name_key(name)).and_then(|id| self.peers.get_mut(id)) {
             p.rtt_ms = Some(ms);
         }
     }
 
     /// How `guest`'s game and `host`'s reach each other, when the guest is registered.
     pub fn path(&self, guest: &str, host: &str) -> Option<Path> {
-        let peer = |name: &str| self.by_name.get(&name.to_lowercase()).and_then(|id| self.peers.get(id));
+        let peer = |name: &str| self.by_name.get(&identity::name_key(name)).and_then(|id| self.peers.get(id));
         let g = peer(guest)?;
         let h = peer(host);
         Some(Path {
@@ -893,7 +928,7 @@ impl Table {
     /// Whether `name`'s game probed at or after `since`.
     pub fn probed_since(&self, name: &str, since: Instant) -> bool {
         self.by_name
-            .get(&name.to_lowercase())
+            .get(&identity::name_key(name))
             .and_then(|id| self.peers.get(id))
             .is_some_and(|p| p.probed_at >= since)
     }
@@ -987,7 +1022,7 @@ impl Table {
     /// The address `name`'s game should advertise, if it probed from `ip`
     /// (the address its matchmaking connection comes from).
     pub fn advertised_for(&self, name: &str, ip: IpAddr) -> Option<SocketAddrV4> {
-        let p = self.peers.get(self.by_name.get(&name.to_lowercase())?)?;
+        let p = self.peers.get(self.by_name.get(&identity::name_key(name))?)?;
         (IpAddr::V4(*p.real.ip()) == ip).then_some(p.advertise)
     }
 
@@ -1140,7 +1175,7 @@ pub fn path_detail(guest: &str, host: &str) -> Option<serde_json::Value> {
 fn remote_path(guest: &str, host: &str) -> Option<(Path, Vec<Option<String>>)> {
     let local = |name: &str| -> Option<(SocketAddrV4, bool, Option<u16>)> {
         let t = TABLE.get()?.lock().ok()?;
-        let p = t.peers.get(t.by_name.get(&name.to_lowercase())?)?;
+        let p = t.peers.get(t.by_name.get(&identity::name_key(name))?)?;
         Some((p.real, p.relayed, p.rtt_ms))
     };
     let entry = |name: &str| {
@@ -1191,7 +1226,7 @@ pub fn relay_ip() -> Option<Ipv4Addr> {
 /// here, or the game may still be registering).
 pub fn registration(name: &str) -> Option<Option<bool>> {
     let table = TABLE.get()?;
-    let key = name.to_lowercase();
+    let key = identity::name_key(name);
     let local = {
         let t = table.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         t.by_name.get(&key).and_then(|id| t.peers.get(id)).map(|p| p.relayed)
@@ -1240,7 +1275,7 @@ pub fn relay_range() -> Option<(Ipv4Addr, (u16, u16))> {
 /// `name`'s round trip to this server, as their game last measured it.
 pub fn ping_of(name: &str) -> Option<u16> {
     let t = TABLE.get()?.lock().ok()?;
-    t.peers.get(t.by_name.get(&name.to_lowercase())?)?.rtt_ms
+    t.peers.get(t.by_name.get(&identity::name_key(name))?)?.rtt_ms
 }
 
 /// The address `name` should advertise, when the NAT helper runs and that
@@ -1549,8 +1584,8 @@ fn ids() -> std::sync::MutexGuard<'static, HashMap<String, u32>> {
 /// `name`'s game (account `user_id`) signed in.
 pub fn game_signed_in(name: &str, user_id: u32) {
     if TABLE.get().is_some() {
-        signed_in().insert(name.to_lowercase(), Instant::now());
-        ids().insert(name.to_lowercase(), user_id);
+        signed_in().insert(identity::name_key(name), Instant::now());
+        ids().insert(identity::name_key(name), user_id);
     }
 }
 
@@ -1564,7 +1599,7 @@ fn nat_off() -> std::sync::MutexGuard<'static, std::collections::HashSet<String>
 
 /// `name`'s game signed in to the API with its NAT traversal off, or not.
 pub fn game_nat_off(name: &str, off: bool) {
-    let key = name.to_lowercase();
+    let key = identity::name_key(name);
     let mut all = nat_off();
     if off {
         if all.len() < 100_000 {
@@ -1578,7 +1613,7 @@ pub fn game_nat_off(name: &str, off: bool) {
 /// `name`'s game went online (opened or joined a room): it should be registered with the
 /// helper soon (see [`PROBE_WITHIN`]), unless its NAT traversal is off.
 pub fn game_went_online(name: &str) {
-    let key = name.to_lowercase();
+    let key = identity::name_key(name);
     if TABLE.get().is_some() && signed_in().contains_key(&key) && !nat_off().contains(&key) {
         awaiting().entry(key).or_insert_with(Instant::now);
     }
@@ -1586,10 +1621,10 @@ pub fn game_went_online(name: &str) {
 
 /// `name`'s game signed out (or its connection timed out): nothing to wait for.
 pub fn game_signed_out(name: &str) {
-    awaiting().remove(&name.to_lowercase());
-    missed().remove(&name.to_lowercase());
-    signed_in().remove(&name.to_lowercase());
-    ids().remove(&name.to_lowercase());
+    awaiting().remove(&identity::name_key(name));
+    missed().remove(&identity::name_key(name));
+    signed_in().remove(&identity::name_key(name));
+    ids().remove(&identity::name_key(name));
 }
 
 /// Whether nothing came from either of a player's connections to the server (`heard`: their
@@ -1602,7 +1637,7 @@ fn went_quiet(heard: [Option<Instant>; 2], since: Instant) -> bool {
 /// their own connection stalled, not just the relayed traffic. False when the server can't
 /// tell (their game isn't signed in here).
 fn player_quiet(name: &str, since: Instant) -> bool {
-    let Some(id) = ids().get(&name.to_lowercase()).copied() else { return false };
+    let Some(id) = ids().get(&identity::name_key(name)).copied() else { return false };
     went_quiet([quazal::last_heard(id), crate::clients::last_api_call(id)], since)
 }
 
@@ -1616,7 +1651,7 @@ fn player_quiet(name: &str, since: Instant) -> bool {
 fn lapsed_while_signed_in(gone: &[(String, Instant)], now: Instant) -> Vec<(String, u64)> {
     let signed_in = signed_in();
     gone.iter()
-        .filter(|(name, probed)| signed_in.get(&name.to_lowercase()).is_some_and(|since| since <= probed))
+        .filter(|(name, probed)| signed_in.get(&identity::name_key(name)).is_some_and(|since| since <= probed))
         .map(|(name, probed)| (name.clone(), now.duration_since(*probed).as_secs()))
         .collect()
 }
@@ -1792,8 +1827,8 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
                 );
                 // Told once a sign-in, in the game's overlay: players who play through the relay
                 // can't reach this game, nor it them, and its joins to them fail.
-                if missed().insert(name.to_lowercase()) {
-                    if let Some(&user) = ids().get(&name.to_lowercase()) {
+                if missed().insert(identity::name_key(&name)) {
+                    if let Some(&user) = ids().get(&identity::name_key(&name)) {
                         let (title, text) = server_api::notices::unregistered_notice();
                         crate::reports::tell(user, title, text, None);
                     }
@@ -1969,7 +2004,10 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
                     Some((k, sig)) => identity::verify_bytes(k, &nat_proto::present_message(nonce, &name, day), sig),
                     None => true,
                 };
-                if allowed && crate::relay_pass::valid(&name, day, &signature, IpAddr::V4(*src.ip()), key) && signed(&session) {
+                // An address a player registered from proved it receives here (its probes took a
+                // cookie); a forged source is any other.
+                let proven = table.lock().is_ok_and(|t| t.registered_from(*src.ip()));
+                if allowed && crate::relay_pass::valid(&name, day, &signature, IpAddr::V4(*src.ip()), key, proven) && signed(&session) {
                     let grant = Message::TicketGrant {
                         nonce,
                         ticket: ticket_on(keys, &name, today(), key),
@@ -2035,7 +2073,16 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
                     continue;
                 }
                 let new = t.advertised_for(&name, IpAddr::V4(*src.ip())).is_none();
-                let mut reply = t.probe(src, flags, nonce, mapping, &name, now);
+                let Some(mut reply) = t.register(src, flags, nonce, mapping, &name, now) else {
+                    // Not direct instead: their address would go to everyone they play with.
+                    if crate::clients::worth_saying(&format!("nat-full/{}", src.ip())) {
+                        warn!(
+                            logger,
+                            "NAT helper: no relay port for {name} at {src} (all taken, or its address holds its share); not registered (said once an hour)"
+                        );
+                    }
+                    continue;
+                };
                 t.note_rtt(&name, rtt_ms);
                 if let Message::ProbeReply { cookie: c, .. } = &mut reply {
                     *c = cookie_for(keys, src, &name, bucket);
@@ -2479,7 +2526,7 @@ mod tests {
         let now = Instant::now();
         let mut t = Table::new(
             NatConfig {
-                relay: RelayMode::All,
+                relay: RelayMode::Auto,
                 ..NatConfig::default()
             },
             Ipv4Addr::new(192, 0, 2, 1),
@@ -2498,9 +2545,10 @@ mod tests {
         assert_eq!(t.asks().len(), MAX_ASKS_PER_SECOND as usize, "a few more the next second");
 
         // Many players at one address, each asking about one: a few from there a second.
+        // (Direct, with their router's mappings: one address holds only a few relay ports.)
         let later = now + Duration::from_secs(5);
         let at = |i: usize| SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 9), 1000 + u16::try_from(i).unwrap());
-        let many: Vec<Message> = (0..40).map(|i| t.probe(at(i), 0, 1, None, &format!("m{i}"), later)).collect();
+        let many: Vec<Message> = (0..40).map(|i| t.probe(at(i), probe_flags::HAS_MAPPING, 1, Some(at(i)), &format!("m{i}"), later)).collect();
         for (i, m) in many.iter().enumerate() {
             t.route_tagged(at(i), tag(m), others[i], 10, later);
         }
@@ -2543,6 +2591,59 @@ mod tests {
             assert!(t.route_tagged(a(&format!("176.0.198.61:{port}")), tag(&ps), th_adv, 10, later).is_some());
         }
         assert_eq!(t.who_sent(a("176.0.198.61:47861")), "an unregistered port of playskill (registered from port 47868)");
+    }
+
+    /// A player the relay is for gets a relay port or nothing: never registered direct, their
+    /// address handed out, when the ports are all taken or their address holds its share.
+    #[test]
+    fn without_a_relay_port_a_player_who_needs_one_isnt_registered_direct() {
+        let now = Instant::now();
+        let mut t = Table::new(
+            NatConfig {
+                relay: RelayMode::Auto,
+                relay_pairs: false,
+                relay_ports: (40000, 40001),
+                ..NatConfig::default()
+            },
+            Ipv4Addr::new(192, 0, 2, 1),
+        );
+        assert!(advertise(&t.register(a("198.51.100.1:1"), 0, 1, None, "one", now).unwrap()).1);
+        assert!(advertise(&t.register(a("198.51.100.2:1"), 0, 1, None, "two", now).unwrap()).1);
+        assert!(
+            t.register(a("198.51.100.3:1"), probe_flags::WANT_RELAY, 1, None, "three", now).is_none(),
+            "asked for the relay"
+        );
+        assert!(t.register(a("198.51.100.3:1"), 0, 1, None, "three", now).is_none(), "no mapping: needs it");
+        assert!(t.advertised_for("three", IpAddr::from([198, 51, 100, 3])).is_none(), "not registered");
+        // A player with a mapping is direct as ever, and a relayed one keeps its port.
+        let mapped = a("198.51.100.4:3074");
+        assert!(!advertise(&t.register(mapped, probe_flags::HAS_MAPPING, 1, Some(mapped), "four", now).unwrap()).1);
+        assert!(advertise(&t.register(a("198.51.100.1:1"), 0, 2, None, "one", now).unwrap()).1);
+
+        // One address holds a few at most.
+        let mut t = table(RelayMode::All);
+        for i in 0..MAX_RELAYED_PER_IP {
+            let port = u16::try_from(i + 1).unwrap();
+            assert!(t
+                .register(SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 7), port), 0, 1, None, &format!("p{i}"), now)
+                .is_some());
+        }
+        assert!(t.register(a("198.51.100.7:999"), 0, 1, None, "one-more", now).is_none(), "the address holds its share");
+        assert!(t.register(a("198.51.100.7:1"), 0, 2, None, "p0", now).is_some(), "a refresh keeps its port");
+        assert!(t.register(a("198.51.100.8:1"), 0, 1, None, "elsewhere", now).is_some());
+    }
+
+    /// A name is one registration however it's written: the ticket and cookie checks read it
+    /// trimmed, and so does the table.
+    #[test]
+    fn a_name_with_spaces_round_it_is_the_same_registration() {
+        let now = Instant::now();
+        let mut t = table(RelayMode::All);
+        let first = advertise(&t.probe(a("198.51.100.7:1"), 0, 1, None, "Kiwi", now)).0;
+        let again = advertise(&t.probe(a("198.51.100.7:2"), 0, 1, None, " kiwi ", now)).0;
+        assert_eq!(first, again, "the same relay port");
+        assert_eq!(t.len(), 1);
+        assert!(t.advertised_for("KIWI ", IpAddr::from([198, 51, 100, 7])).is_some());
     }
 
     #[test]

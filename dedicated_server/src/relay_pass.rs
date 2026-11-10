@@ -10,6 +10,13 @@
 //! a signature check, so a helper checks at most [`CHECKS_PER_ADDRESS`] from one address in
 //! [`ADDRESS_WINDOW`], and [`CHECKS_PER_SECOND`] in all; the game shows its pass again at its
 //! next probe, so one not checked is only late.
+//!
+//! A pass needs no round trip (nat_proto's TicketPresent carries no cookie), so its source may
+//! be forged, and forged ones could spend everyone's [`CHECKS_PER_SECOND`]. Addresses that have
+//! proved they receive here (a player registered from there, which took a cookie) have
+//! [`PROVEN_CHECKS_PER_SECOND`] of their own besides, which forged sources (any address but
+//! those) never reach. What's left: forging one player's address can still spend that
+//! address's [`CHECKS_PER_ADDRESS`], putting off its ticket; that needs a cookie in the present.
 
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -21,6 +28,8 @@ pub const KEY_FILE: &str = "relay-pass.key";
 const PASS_DAYS: u32 = 7;
 /// The most passes a helper checks a second, from everyone (a backstop).
 const CHECKS_PER_SECOND: u64 = 1000;
+/// More a second, for addresses that proved they receive here only (see the module's notes).
+const PROVEN_CHECKS_PER_SECOND: u64 = 200;
 /// The most passes checked from one address in [`ADDRESS_WINDOW`].
 const CHECKS_PER_ADDRESS: u32 = 5;
 const ADDRESS_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
@@ -73,9 +82,16 @@ pub fn issue(name: &str, key: Option<&nat_proto::SessionKey>) -> Option<Vec<u8>>
 }
 
 /// Whether `signature` is a pass for `name` signed on `day` with a key this helper takes, and
-/// still good today.
-pub fn valid(name: &str, day: u32, signature: &[u8; 64], from: std::net::IpAddr, key: Option<&nat_proto::SessionKey>) -> bool {
-    may_check_from(from, std::time::Instant::now()) && valid_on(name, day, signature, today(), key)
+/// still good today. `proven`: `from` has proved it receives here (a player registered from
+/// there), so it may also use [`PROVEN_CHECKS_PER_SECOND`].
+pub fn valid(name: &str, day: u32, signature: &[u8; 64], from: std::net::IpAddr, key: Option<&nat_proto::SessionKey>, proven: bool) -> bool {
+    // What costs nothing first: a pass that can't hold spends no address's checks.
+    plausible(name, day, today()) && may_check_from(from, std::time::Instant::now()) && valid_on(name, day, signature, today(), key, proven)
+}
+
+/// Whether a pass for `name` from `day` could hold today, before its signature is checked.
+fn plausible(name: &str, day: u32, today: u32) -> bool {
+    !name.is_empty() && name.chars().count() <= 64 && day <= today && today - day < PASS_DAYS && ACCEPTED.get().is_some_and(|k| !k.is_empty())
 }
 
 /// Whether `from` may have one more pass checked now ([`CHECKS_PER_ADDRESS`]).
@@ -99,9 +115,9 @@ fn may_check_from(from: std::net::IpAddr, now: std::time::Instant) -> bool {
     entry.1 <= CHECKS_PER_ADDRESS
 }
 
-fn valid_on(name: &str, day: u32, signature: &[u8; 64], today: u32, key: Option<&nat_proto::SessionKey>) -> bool {
+fn valid_on(name: &str, day: u32, signature: &[u8; 64], today: u32, key: Option<&nat_proto::SessionKey>, proven: bool) -> bool {
     let Some(keys) = ACCEPTED.get().filter(|k| !k.is_empty()) else { return false };
-    if name.is_empty() || day > today || today - day >= PASS_DAYS || !may_check() {
+    if name.is_empty() || day > today || today - day >= PASS_DAYS || !(may_check(&EVERYONE, CHECKS_PER_SECOND) || (proven && may_check(&PROVEN, PROVEN_CHECKS_PER_SECOND))) {
         return false;
     }
     let message = message(name, day, key);
@@ -109,23 +125,29 @@ fn valid_on(name: &str, day: u32, signature: &[u8; 64], today: u32, key: Option<
     keys.iter().any(|key| identity::verify(key, &message, &signature))
 }
 
-/// Whether one more check fits this second's [`CHECKS_PER_SECOND`].
-fn may_check() -> bool {
-    // The second in the high bits, the count in the low 20.
-    static WINDOW: AtomicU64 = AtomicU64::new(0);
-    let second = u64::try_from(identity::now().max(0)).unwrap_or(0);
-    let mut current = WINDOW.load(Ordering::Relaxed);
+/// This second's checks for everyone ([`CHECKS_PER_SECOND`]) and for proven addresses
+/// ([`PROVEN_CHECKS_PER_SECOND`]): the second in the high bits, the count in the low 20.
+static EVERYONE: AtomicU64 = AtomicU64::new(0);
+static PROVEN: AtomicU64 = AtomicU64::new(0);
+
+/// Whether one more check fits this second's `max` in `window`.
+fn may_check(window: &AtomicU64, max: u64) -> bool {
+    may_check_at(window, max, u64::try_from(identity::now().max(0)).unwrap_or(0))
+}
+
+fn may_check_at(window: &AtomicU64, max: u64, second: u64) -> bool {
+    let mut current = window.load(Ordering::Relaxed);
     loop {
         let (at, count) = (current >> 20, current & 0xf_ffff);
         let next = if at == second {
-            if count >= CHECKS_PER_SECOND {
+            if count >= max {
                 return false;
             }
             current + 1
         } else {
             (second << 20) | 1
         };
-        match WINDOW.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+        match window.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
             Ok(_) => return true,
             Err(seen) => current = seen,
         }
@@ -148,20 +170,40 @@ mod tests {
         };
         let day = 20_400;
         let pass = sign(&matchmaking, "Kiwi", day, None);
-        assert!(valid_on("Kiwi", day, &pass, day, None));
-        assert!(valid_on("kiwi", day, &pass, day + 6, None), "the same name, any case, the seventh day");
-        assert!(!valid_on("Kiwi", day, &pass, day + 7, None), "a week old");
-        assert!(!valid_on("Kiwi", day, &pass, day - 1, None), "dated ahead");
-        assert!(!valid_on("Tank", day, &pass, day, None), "another name");
-        assert!(!valid_on("Kiwi", day + 1, &pass, day + 1, None), "another day than signed");
-        assert!(!valid_on("Kiwi", day, &sign(&stranger, "Kiwi", day, None), day, None), "a key not trusted");
+        assert!(valid_on("Kiwi", day, &pass, day, None, false));
+        assert!(valid_on("kiwi", day, &pass, day + 6, None, false), "the same name, any case, the seventh day");
+        assert!(!valid_on("Kiwi", day, &pass, day + 7, None, false), "a week old");
+        assert!(!valid_on("Kiwi", day, &pass, day - 1, None, false), "dated ahead");
+        assert!(!valid_on("Tank", day, &pass, day, None, false), "another name");
+        assert!(!valid_on("Kiwi", day + 1, &pass, day + 1, None, false), "another day than signed");
+        assert!(!valid_on("Kiwi", day, &sign(&stranger, "Kiwi", day, None), day, None, false), "a key not trusted");
         // A pass for a session key holds with that key only, and never as a keyless one.
         let (k1, k2) = ([1u8; 32], [2u8; 32]);
         let keyed = sign(&matchmaking, "Kiwi", day, Some(&k1));
-        assert!(valid_on("Kiwi", day, &keyed, day, Some(&k1)));
-        assert!(!valid_on("Kiwi", day, &keyed, day, Some(&k2)), "another key");
-        assert!(!valid_on("Kiwi", day, &keyed, day, None), "without its key");
-        assert!(!valid_on("Kiwi", day, &pass, day, Some(&k1)), "a keyless pass with a key");
+        assert!(valid_on("Kiwi", day, &keyed, day, Some(&k1), false));
+        assert!(!valid_on("Kiwi", day, &keyed, day, Some(&k2), false), "another key");
+        assert!(!valid_on("Kiwi", day, &keyed, day, None, false), "without its key");
+        assert!(!valid_on("Kiwi", day, &pass, day, Some(&k1), false), "a keyless pass with a key");
+    }
+
+    /// Forged sources that spend everyone's checks leave those of addresses that proved they
+    /// receive here; a pass that can't hold spends nothing.
+    #[test]
+    fn proven_addresses_keep_checks_of_their_own() {
+        let (everyone, proven) = (AtomicU64::new(0), AtomicU64::new(0));
+        let second = 1_000_000;
+        for _ in 0..CHECKS_PER_SECOND {
+            assert!(may_check_at(&everyone, CHECKS_PER_SECOND, second));
+        }
+        assert!(!may_check_at(&everyone, CHECKS_PER_SECOND, second), "spent");
+        assert!(may_check_at(&proven, PROVEN_CHECKS_PER_SECOND, second), "the proven ones' own");
+        assert!(may_check_at(&everyone, CHECKS_PER_SECOND, second + 1), "the next second");
+        let _ = ACCEPTED.set(vec![identity::Identity::from_secret(&[7; 32]).global_id()]);
+        assert!(plausible("Kiwi", 100, 100));
+        assert!(!plausible("", 100, 100), "no name");
+        assert!(!plausible("Kiwi", 100, 100 + PASS_DAYS), "too old");
+        assert!(!plausible("Kiwi", 101, 100), "dated ahead");
+        assert!(!plausible(&"x".repeat(65), 100, 100), "no such name");
     }
 
     #[test]
