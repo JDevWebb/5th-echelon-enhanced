@@ -14,6 +14,19 @@ pub const QUAZAL_DEFAULT_LOCAL_PORT: u16 = 3074;
 
 // Re-export public functions from submodules.
 pub use discover::try_locate_server;
+/// A stand-in for an account's password in this launcher's own caches (which account and
+/// password a token or a refusal was for), so they tell a changed password without holding
+/// it: keyed by a random value made once per run, so it's no use outside this process and
+/// can't be looked up against a list of common passwords.
+pub fn secret_fingerprint(secret: &str) -> String {
+    use sha2::Digest as _;
+    static KEY: std::sync::LazyLock<[u8; 32]> = std::sync::LazyLock::new(rand::random);
+    let mut h = sha2::Sha256::new();
+    h.update(*KEY);
+    h.update(secret.as_bytes());
+    format!("{:x}", h.finalize())
+}
+
 /// What this launcher signs in to servers as: they refuse launchers older than they allow.
 pub const CLIENT: &str = concat!("launcher/", env!("FE_RELEASE"));
 

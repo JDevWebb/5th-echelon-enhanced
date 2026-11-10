@@ -80,10 +80,9 @@ impl Drop for Feed {
 /// The server and account chat is for, to tell when they change (the password too: the feed
 /// signs in with the one it started with, as `flow::api_session` keys its token).
 pub fn feed_key(cfg: &Config) -> Option<String> {
-    use sha2::Digest as _;
     let p = cfg.current_profile().filter(|p| !p.server.is_empty() && p.has_account())?;
     let secret = p.user.secret().unwrap_or_default();
-    Some(format!("{}\n{}\n{:x}", p.api_server_url(), p.user.username, sha2::Sha256::digest(secret.as_bytes())))
+    Some(format!("{}\n{}\n{}", p.api_server_url(), p.user.username, crate::network::secret_fingerprint(&secret)))
 }
 
 /// A call to chat as the current account; signed in again once if the server stopped taking

@@ -140,8 +140,7 @@ pub fn forget_account_check() {
 /// ten minutes only added to the server's log (Wingduck, Oceania, 2026-10-06:
 /// refused 17 times in two and a half hours).
 fn checked_account(url: &str, username: &str, secret: &str, check: impl FnOnce() -> AccountFact) -> AccountFact {
-    use sha2::Digest as _;
-    let key = format!("{url}\n{username}\n{:x}", sha2::Sha256::digest(secret.as_bytes()));
+    let key = format!("{url}\n{username}\n{}", crate::network::secret_fingerprint(secret));
     let mut last = LAST_ACCOUNT_CHECK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some((k, at, fact)) = last.as_ref() {
         let settled = matches!(fact, AccountFact::Outdated(_) | AccountFact::Banned(_));
@@ -162,14 +161,13 @@ static API_TOKEN: Mutex<Option<(String, String)>> = Mutex::new(None);
 /// The current account's server (its API address) and a session token for it, kept as the
 /// friends list keeps it; `fresh` signs in again (the server stopped taking the kept one).
 pub fn api_session(cfg: &Config, fresh: bool) -> Result<(String, String), String> {
-    use sha2::Digest as _;
     let Some(profile) = cfg.current_profile().filter(|p| !p.server.is_empty() && p.has_account()) else {
         return Err("Set up an account on a server first.".into());
     };
     let url = profile.api_server_url().to_string();
     let username = profile.user.username.clone();
     let secret = profile.user.secret().unwrap_or_default();
-    let key = format!("{url}\n{username}\n{:x}", sha2::Sha256::digest(secret.as_bytes()));
+    let key = format!("{url}\n{username}\n{}", crate::network::secret_fingerprint(&secret));
     if !fresh {
         let kept = API_TOKEN
             .lock()

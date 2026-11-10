@@ -79,8 +79,7 @@ fn held() -> std::sync::MutexGuard<'static, HashMap<String, Held>> {
 
 /// The key for `account` with `secret` on `server`: never the secret itself.
 fn account_key(server: &str, account: &str, secret: &str) -> String {
-    use sha2::Digest as _;
-    format!("{server}\n{}\n{:x}", account.to_lowercase(), sha2::Sha256::digest(secret.as_bytes()))
+    format!("{server}\n{}\n{}", account.to_lowercase(), super::secret_fingerprint(secret))
 }
 
 /// Why a sign-in to `server` as `account` with `secret` may not be tried now, if it may not.
