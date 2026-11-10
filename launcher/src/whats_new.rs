@@ -118,6 +118,10 @@ pub const RELEASES: &[Release] = &[
                 rest: " reaches the match you're in, not a party of your own.",
             },
             Fix {
+                lead: "Chat in a match reaches every player",
+                rest: ": the game sent a player's lines to the host only; the host now passes them on, team chat to the team. Thanks to mpw, who wrote it.",
+            },
+            Fix {
                 lead: "A game started again is let in straight away",
                 rest: ", instead of waiting up to a minute for its old connection to the server to time out.",
             },
