@@ -190,6 +190,68 @@ pub fn text_fits(len: u32, cap: u32) -> bool {
     (1..=MAX_TEXT).contains(&len) && len <= cap
 }
 
+/// How many lines one sender may have passed on in [`RATE_WINDOW_MS`]; more are shown on the host,
+/// as the game shows them, but not passed on, so one player can't make the host flood the others.
+pub const RATE_LINES: usize = 4;
+/// The window [`RATE_LINES`] counts in, in milliseconds.
+pub const RATE_WINDOW_MS: u64 = 2_000;
+
+/// What [`RateLimit::check`] says of a line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rate {
+    /// Pass it on.
+    Pass,
+    /// Over the limit: the first line dropped since this sender's last one passed on (log it).
+    FirstDropped,
+    /// Over the limit, and already told.
+    Dropped,
+}
+
+/// The relay's per-sender limit: at most [`RATE_LINES`] lines passed on per [`RATE_WINDOW_MS`]
+/// from each sender. Keeps no more than [`MAX_PEERS`] senders (the one heard from longest ago
+/// goes first).
+#[derive(Debug, Default)]
+pub struct RateLimit {
+    /// Each sender, its recent lines passed on (times in ms, oldest first) and whether a drop was told.
+    senders: Vec<(u32, Vec<u64>, bool)>,
+}
+
+impl RateLimit {
+    pub const fn new() -> Self {
+        Self { senders: Vec::new() }
+    }
+
+    /// Whether a line from `sender` at `now_ms` (on a clock that doesn't go back) may go on;
+    /// counts it when it does.
+    pub fn check(&mut self, sender: u32, now_ms: u64) -> Rate {
+        let index = match self.senders.iter().position(|(peer, ..)| *peer == sender) {
+            Some(index) => index,
+            None => {
+                if self.senders.len() >= MAX_PEERS {
+                    let oldest = (0..self.senders.len()).min_by_key(|&i| self.senders[i].1.last().copied().unwrap_or(0));
+                    if let Some(oldest) = oldest {
+                        self.senders.swap_remove(oldest);
+                    }
+                }
+                self.senders.push((sender, Vec::with_capacity(RATE_LINES), false));
+                self.senders.len() - 1
+            }
+        };
+        let (_, times, told) = &mut self.senders[index];
+        times.retain(|&t| now_ms.saturating_sub(t) < RATE_WINDOW_MS);
+        if times.len() < RATE_LINES {
+            times.push(now_ms);
+            *told = false;
+            Rate::Pass
+        } else if *told {
+            Rate::Dropped
+        } else {
+            *told = true;
+            Rate::FirstDropped
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,5 +409,32 @@ mod tests {
         assert!(!text_fits(0, 16), "empty");
         assert!(!text_fits(MAX_TEXT + 1, 0x100), "longer than the game sends");
         assert!(!text_fits(20, 16), "past its buffer");
+    }
+
+    #[test]
+    fn a_sender_gets_four_lines_in_two_seconds() {
+        let mut limit = RateLimit::new();
+        for i in 0..RATE_LINES as u64 {
+            assert_eq!(limit.check(1, 100 * i), Rate::Pass);
+        }
+        assert_eq!(limit.check(1, 500), Rate::FirstDropped);
+        assert_eq!(limit.check(1, 600), Rate::Dropped, "told once");
+        // Another sender has its own count.
+        assert_eq!(limit.check(2, 600), Rate::Pass);
+        // The first line is out of the window at 2 s.
+        assert_eq!(limit.check(1, RATE_WINDOW_MS), Rate::Pass);
+        assert_eq!(limit.check(1, RATE_WINDOW_MS + 1), Rate::FirstDropped, "told again after a line went on");
+        assert_eq!(limit.check(1, 10_000), Rate::Pass);
+    }
+
+    #[test]
+    fn the_limit_keeps_no_more_senders_than_a_match() {
+        let mut limit = RateLimit::new();
+        for peer in 0..(MAX_PEERS as u32 * 3) {
+            assert_eq!(limit.check(peer, u64::from(peer)), Rate::Pass);
+        }
+        assert_eq!(limit.senders.len(), MAX_PEERS);
+        // The newest are kept.
+        assert!(limit.senders.iter().any(|(peer, ..)| *peer == MAX_PEERS as u32 * 3 - 1));
     }
 }

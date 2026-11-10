@@ -18,12 +18,19 @@
 //! stack to the send and destroys it right after, so a send has written what it needs by the time
 //! it returns, and the display only reads the message. Lines the game itself wouldn't send (empty,
 //! longer than its 0x90 characters) aren't passed on, every read of the game's memory is checked
-//! first, and the log names peers only by number, never a name or a line.
+//! first, and the log names peers only by number, never a name or a line. Each sender's lines go
+//! on at most 4 in 2 s (`chat_relay::RateLimit`); more still show on the host, as the game shows
+//! them, but go no further, so one player can't make the host flood everyone else.
 
 use std::ffi::c_void;
+use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::PoisonError;
+use std::time::Instant;
 
 use hooks_addresses::chat_relay;
+use hooks_addresses::chat_relay::Rate;
+use hooks_addresses::chat_relay::RateLimit;
 use hooks_addresses::chat_relay::Sites;
 use hooks_addresses::chat_relay::Skip;
 use retour::static_detour;
@@ -36,6 +43,10 @@ static_detour! {
 }
 
 static SITES: OnceLock<Sites> = OnceLock::new();
+/// Each sender's recent lines passed on, so no one player can make the host flood the others.
+static LIMIT: Mutex<RateLimit> = Mutex::new(RateLimit::new());
+/// The clock the limit counts by.
+static STARTED: OnceLock<Instant> = OnceLock::new();
 
 /// The chat display, `thiscall(manager, message)`.
 type Display = unsafe extern "thiscall" fn(*mut c_void, *mut c_void);
@@ -112,6 +123,19 @@ fn relay(manager: *mut c_void, message: *mut c_void) {
     match chat_relay::relay_targets(sender, own, &listed) {
         Ok(targets) if targets.is_empty() => {}
         Ok(targets) => {
+            let now = STARTED.get_or_init(Instant::now).elapsed().as_millis() as u64;
+            match LIMIT.lock().unwrap_or_else(PoisonError::into_inner).check(sender, now) {
+                Rate::Pass => {}
+                Rate::FirstDropped => {
+                    debug!(
+                        "chat-relay: peer {sender} sent more than {} lines in {} ms -> its lines not passed on until it slows down",
+                        chat_relay::RATE_LINES,
+                        chat_relay::RATE_WINDOW_MS
+                    );
+                    return;
+                }
+                Rate::Dropped => return,
+            }
             let sent = unsafe { send(sites, manager, message, &targets) };
             debug!("chat-relay: a line from peer {sender} passed on to peers {targets:?} ({sent} sent)");
         }
