@@ -37,6 +37,8 @@ imgui = { workspace = true }
 nat_proto = { path = "../nat_proto" }
 rand = { workspace = true }
 region = { workspace = true }
+# The overlay's HTTPS fetches of the server's info; the versions tonic's TLS already brings.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 server_api = { path = "../api", package = "api" }
@@ -48,6 +50,7 @@ tonic = { workspace = true, features = ["tls-ring", "tls-webpki-roots"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url = { workspace = true, features = ["serde"] }
+webpki-roots = "1"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 dll-syringe = "0.17"

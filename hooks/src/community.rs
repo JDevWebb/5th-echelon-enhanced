@@ -823,11 +823,11 @@ fn change_now(change: FriendChange, id: &str, identity: &str, name: &str) {
 const LOOKED_AT: [&str; 3] = ["join-now", "choose-match", "report-player"];
 
 fn refresh_now() {
-    let host = crate::config::get().and_then(|c| c.api_server.host_str().map(String::from));
+    let host = crate::config::get().and_then(|c| HttpApi::of(&c.api_server));
     let started = Instant::now();
     let lists = crate::api::relationships();
     let response_time = started.elapsed();
-    let server = host.as_deref().and_then(|h| http_get_json::<ServerInfo>(h, "/api/info")).map(|i| ServerInfo {
+    let server = host.as_ref().and_then(|h| http_get_json::<ServerInfo>(h, "/api/info")).map(|i| ServerInfo {
         name: clip(&i.name, MAX_TEXT),
         version: clip(&i.version, MAX_NAME),
         revision: clip(&i.revision, MAX_NAME),
@@ -845,7 +845,7 @@ fn refresh_now() {
             .collect(),
     });
     let playing = host
-        .as_deref()
+        .as_ref()
         .and_then(|h| http_get_json::<server_api::playing::Playing>(h, "/api/playing"))
         .map(server_api::playing::Playing::checked);
 
@@ -971,13 +971,13 @@ fn describe(a: &friends::Activity) -> String {
     clip(&line, MAX_TEXT)
 }
 
-/// A GET to the server's HTTP API (port 80), decoded as JSON. Errors are
-/// logged and give `None`: the overlay shows what it has.
+/// A GET to the server's HTTP API (port 80, or HTTPS when the game's API is), decoded as JSON.
+/// Errors are logged and give `None`: the overlay shows what it has.
 /// A request failing is said once it has failed [`FAILURES_TOLD`] times in a row, and its
 /// answering again after that.
-fn http_get_json<T: for<'de> Deserialize<'de>>(host: &str, path: &str) -> Option<T> {
+fn http_get_json<T: for<'de> Deserialize<'de>>(api: &HttpApi, path: &str) -> Option<T> {
     use std::sync::atomic::Ordering;
-    match http_get(host, path) {
+    match http_get(api, path) {
         Ok(body) => {
             let failed = FAILURES.swap(0, Ordering::Relaxed);
             if failed >= FAILURES_TOLD {
@@ -994,15 +994,63 @@ fn http_get_json<T: for<'de> Deserialize<'de>>(host: &str, path: &str) -> Option
     }
 }
 
-fn http_get(host: &str, path: &str) -> std::io::Result<Vec<u8>> {
-    let addr = (host, 80)
+/// Where the server's HTTP API is: its host, and the HTTPS port when the game's API is on HTTPS
+/// (the same name and port, a server behind the installer's Caddy), else `None` for port 80.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HttpApi {
+    host: String,
+    tls_port: Option<u16>,
+}
+
+impl HttpApi {
+    fn of(api_server: &url::Url) -> Option<Self> {
+        let host = api_server.host_str()?.trim_start_matches('[').trim_end_matches(']').to_string();
+        let tls_port = (api_server.scheme() == "https").then(|| api_server.port_or_known_default().unwrap_or(443));
+        Some(Self { host, tls_port })
+    }
+}
+
+/// The TLS settings for the HTTPS API, made once: the same roots the game's API connection
+/// trusts (webpki's), with ring as tonic has it.
+fn tls_config() -> std::io::Result<std::sync::Arc<rustls::ClientConfig>> {
+    static CONFIG: OnceLock<Result<std::sync::Arc<rustls::ClientConfig>, String>> = OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            let roots = rustls::RootCertStore {
+                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+            };
+            rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .map(|b| std::sync::Arc::new(b.with_root_certificates(roots).with_no_client_auth()))
+                .map_err(|e| e.to_string())
+        })
+        .clone()
+        .map_err(std::io::Error::other)
+}
+
+fn http_get(api: &HttpApi, path: &str) -> std::io::Result<Vec<u8>> {
+    let host = api.host.as_str();
+    let addr = (host, api.tls_port.unwrap_or(80))
         .to_socket_addrs()?
         .next()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no address"))?;
-    let mut stream = TcpStream::connect_timeout(&addr, HTTP_TIMEOUT)?;
+    let stream = TcpStream::connect_timeout(&addr, HTTP_TIMEOUT)?;
     stream.set_read_timeout(Some(HTTP_TIMEOUT))?;
     stream.set_write_timeout(Some(HTTP_TIMEOUT))?;
+    match api.tls_port {
+        // An HTTPS API: the info comes over HTTPS too, checked against the server's certificate.
+        Some(_) => {
+            let name = rustls::pki_types::ServerName::try_from(host.to_string()).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+            let connection = rustls::ClientConnection::new(tls_config()?, name).map_err(std::io::Error::other)?;
+            http_exchange(rustls::StreamOwned::new(connection, stream), host, path)
+        }
+        None => http_exchange(stream, host, path),
+    }
+}
+
+fn http_exchange(mut stream: impl Read + Write, host: &str, path: &str) -> std::io::Result<Vec<u8>> {
     write!(stream, "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")?;
+    stream.flush()?;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     let deadline = Instant::now() + HTTP_DEADLINE;
@@ -1011,7 +1059,12 @@ fn http_get(host: &str, path: &str) -> std::io::Result<Vec<u8>> {
         if Instant::now() >= deadline {
             return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "the server took too long"));
         }
-        let n = stream.read(&mut chunk)?;
+        let n = match stream.read(&mut chunk) {
+            Ok(n) => n,
+            // A TLS server closing without saying so first, after its answer.
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof && !buf.is_empty() => 0,
+            Err(e) => return Err(e),
+        };
         if n == 0 {
             break;
         }
@@ -1053,6 +1106,15 @@ fn content_length(head: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_server_info_comes_over_https_when_the_api_does() {
+        let of = |url: &str| super::HttpApi::of(&url.parse().unwrap()).unwrap();
+        assert_eq!(of("https://scbl.jdevwebb.net/").tls_port, Some(443));
+        assert_eq!(of("https://play.example.org:8443").tls_port, Some(8443));
+        assert_eq!(of("http://192.168.1.20:50051").tls_port, None, "plain HTTP stays on port 80");
+        assert_eq!(of("http://[::1]:50051").host, "::1");
+    }
+
     #[test]
     fn every_feature_asked_about_is_kept() {
         // Each `f == "..."` the offers check: kept from the server's list, or never offered.
