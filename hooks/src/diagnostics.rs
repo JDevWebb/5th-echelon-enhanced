@@ -110,8 +110,9 @@ pub fn start(config: &hooks_config::Config) {
     // The player's in-game name: the server knows it, so it stays in the lines sent.
     let username = config.user.username.clone();
     // The same agreement covers the game's log when something goes wrong (the launcher's
-    // question says so): the server may ask for it.
-    let full_logs = true;
+    // question and its What's new say so): the server may ask for it. Only with that agreement:
+    // the player turning the diagnostics off returned above, so nothing is kept or sent then.
+    let full_logs = config.send_diagnostics;
     rt.spawn(async move {
         // The server's own addresses aren't the player's: kept, the rest hidden.
         let mut keep = Vec::new();
