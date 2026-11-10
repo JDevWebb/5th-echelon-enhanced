@@ -260,9 +260,18 @@ fn fstring(at: usize) -> Option<String> {
     // The game's strings are 8-bit (its name getter copies `count` bytes); read as 16-bit,
     // "gbox1" came out as "执硯1ല" (the gamebox, 2026-11-05).
     let bytes: Option<Vec<u8>> = (0..count as usize).map(|i| read::<u8>(data + i)).collect();
-    let bytes = bytes?;
+    nickname(&bytes?)
+}
+
+/// The longest player name kept from the game (as the overlay keeps the server's).
+const MAX_NAME: usize = 32;
+
+/// A name from the game's bytes, up to its NUL. Another player chooses it and it goes on to the
+/// server (witness reports, the roster, recordings), so it's cleaned as every other string the
+/// server gets is: no control or invisible characters, at most [`MAX_NAME`].
+fn nickname(bytes: &[u8]) -> Option<String> {
     let text = bytes.split(|b| *b == 0).next().unwrap_or_default();
-    Some(String::from_utf8_lossy(text).into_owned()).filter(|s| !s.is_empty())
+    Some(hooks_config::text::clip(&String::from_utf8_lossy(text), MAX_NAME)).filter(|s| !s.is_empty())
 }
 
 /// What a character's controller says, when it's a CharacterControl.
@@ -583,5 +592,19 @@ pub fn start(mut watchers: Vec<Box<dyn Watcher>>) {
     });
     if let Err(e) = spawned {
         warn!("Characters: couldn't start ({e})");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::nickname;
+
+    #[test]
+    fn a_name_from_the_game_is_cleaned_and_clipped() {
+        assert_eq!(nickname(b"gbox1\0junk").as_deref(), Some("gbox1"));
+        assert_eq!(nickname(b"a\x1b[31mb\nc\0").as_deref(), Some("a[31mbc"));
+        assert_eq!(nickname(&[b'x'; 63]).map(|n| n.len()), Some(super::MAX_NAME));
+        assert_eq!(nickname(b"\0"), None);
+        assert_eq!(nickname(b" \t\0"), None);
     }
 }
