@@ -50,7 +50,7 @@ About two thirds of upstream's lines are data and tools rather than the programs
 | `dedicated_server/src/news_upstream.json` | Upstream's news, kept to recognise it |
 | `docs/research/splinter_cell_blacklist.md`, `docs/research/quazal.md` | Upstream's research notes |
 
-**Wholly this project's** (MIT): `coordinator/` (except `admin-ui/src/lib/world.js` and the fonts), `launcher-slint/` (except the fonts and avatars), `identity/`, `hwid/`, `replay/`, `moderation/`, `geo/`, `stat_boards/`, `nat_proto/`, `portmap/`, `api/`, `tools/testbot/` (with Matthias Walther's contributions), `tools/map_geometry/`, `build/`, `docker/`, `.github/`, `scripts/` (except `ddls/` and `launch.bat`), `docs/` (except the two research notes above), and most of `setup/`, `launcher/`, `dedicated_server/src/` and `hooks/src/`.
+**Wholly this project's** (MIT): `coordinator/` (except `admin-ui/src/lib/world.js` and the fonts), `launcher-slint/` (except the fonts and the developer's picture), `identity/`, `hwid/`, `replay/`, `moderation/`, `geo/`, `stat_boards/`, `nat_proto/`, `portmap/`, `api/`, `tools/testbot/` (with Matthias Walther's contributions), `tools/map_geometry/`, `build/`, `docker/`, `.github/`, `scripts/` (except `ddls/` and `launch.bat`), `docs/` (except the two research notes above), and most of `setup/`, `launcher/`, `dedicated_server/src/` and `hooks/src/`.
 
 ## 4. Third-party material
 
@@ -61,7 +61,7 @@ About two thirds of upstream's lines are data and tools rather than the programs
 | `hooks/fonts/*.ttf`, `launcher-slint/ui/fonts/*.ttf`, `coordinator/admin-ui/src/assets/fonts/*.ttf` | IBM Plex Sans, Sans Condensed and Mono, under the SIL Open Font License 1.1 (`hooks/fonts/OFL-*.txt`, `launcher-slint/ui/fonts/OFL-*.txt`, `coordinator/admin-ui/public/fonts-license.txt`) |
 | `coordinator/admin-ui/src/lib/world.js` | The land outline of [Natural Earth](https://www.naturalearthdata.com) (public domain), via [world-atlas](https://github.com/topojson/world-atlas) (ISC licence) |
 | GeoIP data downloaded at run time | [DB-IP](https://db-ip.com)'s IP to City Lite, under CC BY 4.0; the admin UI credits it |
-| `launcher-slint/ui/assets/avatars/` | The GitHub profile pictures of the people the launcher's About page credits, each theirs, shown to credit them |
+| `launcher-slint/ui/assets/avatars/jdevwebb.png` | JDevWebb's profile picture, on the launcher's About page (the others it credits are shown by their initials) |
 | Libraries fetched by Cargo and npm (tokio, tonic, egui, Dear ImGui via imgui-rs, Vue, three.js and others) | Their own licences; they aren't part of this repository, but the release binaries include them |
 
 ## No warranty, and what this isn't
