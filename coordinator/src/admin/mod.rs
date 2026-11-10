@@ -74,8 +74,12 @@ const RECENT: i64 = 10 * 60;
 /// A setup link works this long.
 pub const SETUP_FOR: i64 = 24 * 3600;
 const CHALLENGE_FOR: i64 = 5 * 60;
-/// Failed sign-ins before an account is locked for a while.
+/// Failed sign-ins from one address (an IPv6 /64) before that address is locked out of the
+/// account for a while; others aren't held up by a stranger's guesses.
 const FAILURES_BEFORE_LOCK: i64 = 5;
+/// Failed sign-ins from everywhere together before the account itself waits: the backstop
+/// against guesses spread over many addresses.
+const FAILURES_BEFORE_ACCOUNT_LOCK: i64 = 50;
 const TOTP_TRIES: i64 = 5;
 
 /// The admin UI's settings.
@@ -459,6 +463,7 @@ impl Coordinator {
                     "DELETE FROM recovery_codes WHERE admin_id = ?",
                     "DELETE FROM admin_sessions WHERE admin_id = ?",
                     "DELETE FROM setup_tokens WHERE admin_id = ?",
+                    "DELETE FROM admin_sign_in_failures WHERE admin_id = ?",
                 ] {
                     sqlx::query(sql).bind(id).execute(&self.pool).await.map_err(|e| e.to_string())?;
                 }
@@ -500,6 +505,11 @@ impl Coordinator {
             .await?;
         sqlx::query("DELETE FROM webauthn_challenges WHERE expires_at < ?").bind(now).execute(&self.pool).await?;
         sqlx::query("DELETE FROM setup_tokens WHERE expires_at < ?").bind(now).execute(&self.pool).await?;
+        // An address's failures are forgotten a day after its last, once it no longer waits.
+        sqlx::query("DELETE FROM admin_sign_in_failures WHERE locked_until < ?1 AND last_at < ?1 - 86400")
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -528,6 +538,12 @@ impl Coordinator {
             sqlx::query("UPDATE admins SET last_login = ?, failures = 0, locked_until = 0 WHERE id = ?")
                 .bind(now)
                 .bind(admin_id)
+                .execute(&self.pool)
+                .await?;
+            // This address's failures only: another's lock stays.
+            sqlx::query("DELETE FROM admin_sign_in_failures WHERE admin_id = ? AND address = ?")
+                .bind(admin_id)
+                .bind(crate::limit_key(client.ip))
                 .execute(&self.pool)
                 .await?;
         }
@@ -619,16 +635,10 @@ impl Coordinator {
     /// (the session ends), and while signing in, refused while the account waits after
     /// failures (a correct code used to get through the lock, and clear it). A signed-in
     /// admin confirming it's them isn't held up by others' failures.
-    async fn code_try(&self, s: &Session) -> Result<(), Response> {
-        if s.stage != "full" {
-            let locked_until: i64 = sqlx::query_scalar("SELECT locked_until FROM admins WHERE id = ?")
-                .bind(s.admin_id)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(internal)?;
-            if identity::now() < locked_until {
-                return Err(fail(StatusCode::TOO_MANY_REQUESTS, "too many failed sign-ins; this account waits a while"));
-            }
+    async fn code_try(&self, s: &Session, client: &Client) -> Result<(), Response> {
+        // Past the password, the account is known: the wait can be said.
+        if s.stage != "full" && self.sign_in_waits(s.admin_id, client).await.map_err(internal)? {
+            return Err(fail(StatusCode::TOO_MANY_REQUESTS, "too many failed sign-ins; this account waits a while"));
         }
         let tries: i64 = sqlx::query_scalar("UPDATE admin_sessions SET totp_tries = totp_tries + 1 WHERE token_hash = ? RETURNING totp_tries")
             .bind(&s.token_hash)
@@ -642,19 +652,63 @@ impl Coordinator {
         Ok(())
     }
 
-    /// A failed sign-in for `admin_id`: after a few, the account waits.
+    /// Whether `admin_id` waits after failed sign-ins, for this client's address or for
+    /// everyone (the backstop).
+    async fn sign_in_waits(&self, admin_id: i64, client: &Client) -> sqlx::Result<bool> {
+        let until: i64 = sqlx::query_scalar(
+            "SELECT MAX(a.locked_until, COALESCE((SELECT f.locked_until FROM admin_sign_in_failures f WHERE f.admin_id = a.id AND f.address = ?), 0))
+               FROM admins a WHERE a.id = ?",
+        )
+        .bind(crate::limit_key(client.ip))
+        .bind(admin_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .unwrap_or(0);
+        Ok(identity::now() < until)
+    }
+
+    /// A failed sign-in for `admin_id`: after a few from one address, that address waits (15
+    /// minutes, doubling with each failure after, at most a day); after many from everywhere,
+    /// the account does.
     async fn failed(&self, admin_id: i64, username: &str, client: &Client, what: &str) {
         let now = identity::now();
-        let failures: i64 = sqlx::query_scalar("UPDATE admins SET failures = failures + 1 WHERE id = ? RETURNING failures")
+        let wait = |failures: i64, threshold: i64| ((15 * 60_i64) << (failures - threshold).min(6)).min(86_400);
+        let address = crate::limit_key(client.ip);
+        let here: i64 = sqlx::query_scalar(
+            "INSERT INTO admin_sign_in_failures (admin_id, address, failures, last_at) VALUES (?1, ?2, 1, ?3)
+             ON CONFLICT (admin_id, address) DO UPDATE SET failures = failures + 1, last_at = ?3 RETURNING failures",
+        )
+        .bind(admin_id)
+        .bind(&address)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+        if here >= FAILURES_BEFORE_LOCK {
+            let wait = wait(here, FAILURES_BEFORE_LOCK);
+            let _ = sqlx::query("UPDATE admin_sign_in_failures SET locked_until = ? WHERE admin_id = ? AND address = ?")
+                .bind(now + wait)
+                .bind(admin_id)
+                .bind(&address)
+                .execute(&self.pool)
+                .await;
+            self.audit(
+                username,
+                Some(client),
+                "sign-in locked for an address",
+                &format!("{here} failed sign-ins from {address}; it waits {} minutes", wait / 60),
+            )
+            .await;
+        }
+        let everywhere: i64 = sqlx::query_scalar("UPDATE admins SET failures = failures + 1 WHERE id = ? RETURNING failures")
             .bind(admin_id)
             .fetch_one(&self.pool)
             .await
             .unwrap_or(0);
-        if failures >= FAILURES_BEFORE_LOCK {
-            // 15 minutes, doubling with each failure after, at most a day.
-            let wait = (15 * 60_i64) << (failures - FAILURES_BEFORE_LOCK).min(6);
+        if everywhere >= FAILURES_BEFORE_ACCOUNT_LOCK {
+            let wait = wait(everywhere, FAILURES_BEFORE_ACCOUNT_LOCK);
             let _ = sqlx::query("UPDATE admins SET locked_until = ? WHERE id = ?")
-                .bind(now + wait.min(86_400))
+                .bind(now + wait)
                 .bind(admin_id)
                 .execute(&self.pool)
                 .await;
@@ -662,7 +716,7 @@ impl Coordinator {
                 username,
                 Some(client),
                 "account locked",
-                &format!("{failures} failed sign-ins; waits {} minutes", wait.min(86_400) / 60),
+                &format!("{everywhere} failed sign-ins from everywhere; waits {} minutes", wait / 60),
             )
             .await;
         }
@@ -776,7 +830,7 @@ async fn login(State(c): State<Shared>, Extension(client): Extension<Client>, Js
     // Anyone can try a name, and failures are kept 400 days: only as much of it as a name can
     // be (admins' names are at most 32 characters).
     let username: String = req.username.trim().chars().filter(|c| !c.is_control()).take(40).collect();
-    let row: Option<(i64, Option<String>, i64, i64)> = match sqlx::query_as("SELECT id, password_hash, disabled, locked_until FROM admins WHERE username = ?")
+    let row: Option<(i64, Option<String>, i64)> = match sqlx::query_as("SELECT id, password_hash, disabled FROM admins WHERE username = ?")
         .bind(&username)
         .fetch_optional(&c.pool)
         .await
@@ -785,21 +839,29 @@ async fn login(State(c): State<Shared>, Extension(client): Extension<Client>, Js
         Err(e) => return internal(e),
     };
     let refused = || fail(StatusCode::UNAUTHORIZED, "wrong name or password");
-    let Some((id, hash, disabled, locked_until)) = row else {
+    let Some((id, hash, disabled)) = row else {
         // As slow as a real check, so names can't be told from timing.
         let _ = auth::check_password_off(&req.password, DUMMY_HASH).await;
         c.audit(&username, Some(&client), "sign-in failed", "no such admin").await;
         return refused();
     };
-    if identity::now() < locked_until {
-        return fail(StatusCode::TOO_MANY_REQUESTS, "too many failed sign-ins; this account waits a while");
-    }
+    let waits = match c.sign_in_waits(id, &client).await {
+        Ok(w) => w,
+        Err(e) => return internal(e),
+    };
     // An admin still setting up has no password yet: checked against a hash all the same, or
     // their answer came back many times faster and told their name.
     let valid = match auth::check_password_off(&req.password, hash.as_deref().unwrap_or(DUMMY_HASH)).await {
         Some(valid) => valid && hash.is_some(),
         None => return busy(),
     };
+    // Waiting after failed sign-ins: answered as a wrong password (a different answer told
+    // that the name is an admin's, and the lock could be seen), the right one included. The
+    // audit log says why.
+    if waits {
+        c.audit(&username, Some(&client), "sign-in refused", "waits after failed sign-ins").await;
+        return refused();
+    }
     if !valid || disabled != 0 {
         c.failed(id, &username, &client, "password").await;
         return refused();
@@ -839,7 +901,7 @@ async fn login_totp(State(c): State<Shared>, Extension(client): Extension<Client
         Ok(_) => return fail(StatusCode::UNAUTHORIZED, "sign in with your password first"),
         Err(e) => return internal(e),
     };
-    if let Err(r) = c.code_try(&s).await {
+    if let Err(r) = c.code_try(&s, &client).await {
         return r;
     }
     let row: Option<(Option<String>, i64)> = sqlx::query_as("SELECT totp_secret, totp_last_step FROM admins WHERE id = ?")
@@ -871,7 +933,7 @@ async fn login_recovery(State(c): State<Shared>, Extension(client): Extension<Cl
         Ok(_) => return fail(StatusCode::UNAUTHORIZED, "sign in with your password first"),
         Err(e) => return internal(e),
     };
-    if let Err(r) = c.code_try(&s).await {
+    if let Err(r) = c.code_try(&s, &client).await {
         return r;
     }
     let used = sqlx::query("UPDATE recovery_codes SET used_at = ? WHERE admin_id = ? AND code_hash = ? AND used_at IS NULL")
@@ -1444,6 +1506,7 @@ async fn admin_action(State(c): State<Shared>, Extension(client): Extension<Clie
                 .bind(id)
                 .execute(&c.pool)
                 .await;
+            let _ = sqlx::query("DELETE FROM admin_sign_in_failures WHERE admin_id = ?").bind(id).execute(&c.pool).await;
             json!({})
         }
         "reset" if id != s.admin_id => match c.admin_setup_link(&username, true).await {

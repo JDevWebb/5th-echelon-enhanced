@@ -336,7 +336,8 @@ The admin UI is served by the coordinator on its own port (127.0.0.2:8701, a loo
 - removing a person's stats.
 
 **Failed sign-ins:**
-- Five in a row lock the account for 15 minutes, doubling after each further failure.
+- Five from one address lock that address out of the account for 15 minutes, doubling after each further failure; the admin can still sign in from elsewhere. Fifty from everywhere together lock the account itself the same way.
+- A locked sign-in is answered as a wrong password (so nobody learns which names are admins); the audit log has it as "sign-in refused".
 - Sign-in attempts are also limited per address.
 
 **Everything is in the audit log** for 400 days: sign-ins, failures and changes.

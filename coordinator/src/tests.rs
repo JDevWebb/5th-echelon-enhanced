@@ -3603,13 +3603,29 @@ async fn failed_sign_ins_lock_an_account_and_admins_cant_lock_everyone_out() {
     let password = "correct horse battery staple";
     admin_send(&r, "POST", "/api/setup", "", Some(json!({ "token": token, "password": password }))).await;
 
-    // Five wrong passwords: the account waits, even for the right one.
+    // Five wrong passwords: this address waits, even for the right one, answered as a wrong
+    // password (a locked account isn't told from a wrong name); the audit log says why.
     for _ in 0..5 {
         let (status, ..) = admin_send(&r, "POST", "/api/login", "", Some(json!({ "username": "kiwi", "password": "not the password" }))).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
     let (status, v, cookie) = admin_send(&r, "POST", "/api/login", "", Some(json!({ "username": "kiwi", "password": password }))).await;
-    assert_eq!((status, cookie), (StatusCode::TOO_MANY_REQUESTS, None), "{v}");
+    assert_eq!((status, v["error"].as_str(), cookie), (StatusCode::UNAUTHORIZED, Some("wrong name or password"), None), "{v}");
+    let refusals: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit WHERE admin = 'kiwi' AND event = 'sign-in refused'")
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(refusals, 1);
+    // From another address the admin still signs in: a stranger's guesses lock only their own.
+    let elsewhere = admin_router_at(&t, [192, 0, 2, 13]);
+    let (status, v, _) = admin_send(&elsewhere, "POST", "/api/login", "", Some(json!({ "username": "kiwi", "password": password }))).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    // Many from everywhere together: the account itself waits.
+    sqlx::query("UPDATE admins SET failures = 49 WHERE username = 'kiwi'").execute(&t.c.pool).await.unwrap();
+    admin_send(&elsewhere, "POST", "/api/login", "", Some(json!({ "username": "kiwi", "password": "not the password" }))).await;
+    let (status, v, _) = admin_send(&elsewhere, "POST", "/api/login", "", Some(json!({ "username": "kiwi", "password": password }))).await;
+    assert_eq!((status, v["error"].as_str()), (StatusCode::UNAUTHORIZED, Some("wrong name or password")), "{v}");
+    sqlx::query("UPDATE admins SET locked_until = 0, failures = 0 WHERE username = 'kiwi'").execute(&t.c.pool).await.unwrap();
     // A name that doesn't exist answers as a wrong password does.
     let (status, v, _) = admin_send(&r, "POST", "/api/login", "", Some(json!({ "username": "nobody", "password": password }))).await;
     assert_eq!((status, v["error"].as_str()), (StatusCode::UNAUTHORIZED, Some("wrong name or password")));
