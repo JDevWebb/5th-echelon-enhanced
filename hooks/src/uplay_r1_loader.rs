@@ -189,8 +189,7 @@ unsafe extern "cdecl" fn UPLAY_GetNextEvent(event: *mut UplayEvent) -> bool {
 
     if let Some(evt) = EVENTS
         .get()
-        .map(Mutex::lock)
-        .map(std::result::Result::unwrap)
+        .map(|events| events.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
         .as_deref()
         .map(mpsc::Receiver::try_recv)
         .and_then(std::result::Result::ok)

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::PoisonError;
 
 use hooks_config::Config;
 use hooks_config::Hook;
@@ -57,14 +58,14 @@ fn resolve_protocol_method(protocol_id: u32, method_id: u32) -> String {
 impl RmcMessage {
     fn get_for_pointer(ptr: *const c_void) -> std::sync::MappedMutexGuard<'static, RmcMessage> {
         let map_mutx = RMC_MESSAGES.get_or_init(|| Mutex::new(HashMap::new()));
-        std::sync::MutexGuard::map(map_mutx.lock().unwrap(), |map: &mut HashMap<usize, RmcMessage>| {
+        std::sync::MutexGuard::map(map_mutx.lock().unwrap_or_else(PoisonError::into_inner), |map: &mut HashMap<usize, RmcMessage>| {
             map.entry(ptr as usize).or_insert(RmcMessage { protocol_id: 0, method_id: 0 })
         })
     }
 
     fn remove_from_pointer(ptr: *const c_void) {
         let map_mutx = RMC_MESSAGES.get_or_init(|| Mutex::new(HashMap::new()));
-        map_mutx.lock().unwrap().remove(&(ptr as usize));
+        map_mutx.lock().unwrap_or_else(PoisonError::into_inner).remove(&(ptr as usize));
     }
 }
 

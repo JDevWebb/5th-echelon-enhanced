@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::PoisonError;
 
 use server_api::chat::chat_client::ChatClient;
 use server_api::friends::friends_client::FriendsClient;
@@ -82,15 +83,15 @@ const UNREACHABLE_WAITS: [u64; 6] = [5, 15, 30, 60, 120, 300];
 /// Holds signing in for `wait`, saying why.
 fn hold_login(wait: std::time::Duration, why: String) {
     error!("{why}; not signing in again for {} s", wait.as_secs());
-    *LOGIN_HOLD.lock().unwrap() = Some((std::time::Instant::now() + wait, why));
+    *LOGIN_HOLD.lock().unwrap_or_else(PoisonError::into_inner) = Some((std::time::Instant::now() + wait, why));
 }
 
 /// The refusal standing, if any: calls give up before reaching the server.
 fn refusal() -> Result<(), Error> {
-    if let Some(why) = REFUSED.lock().unwrap().clone() {
+    if let Some(why) = REFUSED.lock().unwrap_or_else(PoisonError::into_inner).clone() {
         return Err(Error::Refused(why));
     }
-    if BACK_OFF_UNTIL.lock().unwrap().is_some_and(|t| std::time::Instant::now() < t) {
+    if BACK_OFF_UNTIL.lock().unwrap_or_else(PoisonError::into_inner).is_some_and(|t| std::time::Instant::now() < t) {
         return Err(Error::Refused("too many sign-ins; trying again later".into()));
     }
     Ok(())
@@ -140,7 +141,7 @@ macro_rules! connect {
         refusal()?;
         let channel = create_channel().await?;
         $client::with_interceptor(channel, move |mut req: tonic::Request<_>| {
-            let guard = TOKEN.lock().unwrap();
+            let guard = TOKEN.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(token) = (*guard).as_ref() {
                 tracing::debug!("Adding auth token");
                 req.metadata_mut().insert("authorization", token.clone());
@@ -200,7 +201,7 @@ where
     F: Fn() -> Fut,
     Fut: Future<Output = Result<T, Error>>,
 {
-    let used = TOKEN.lock().unwrap().clone();
+    let used = TOKEN.lock().unwrap_or_else(PoisonError::into_inner).clone();
     match call().await {
         Err(e) if is_signed_out(&e) => {
             info!("Signed out by the server");
@@ -298,7 +299,7 @@ pub fn fair_play_check(check: &str, detail: &str, value: f64, wine: bool) {
 
 /// Whether the game is signed in to its server (a token to call with).
 pub fn has_token() -> bool {
-    TOKEN.lock().unwrap().is_some()
+    TOKEN.lock().unwrap_or_else(PoisonError::into_inner).is_some()
 }
 
 /// Sends the server a crash or freeze from the last run's log (crash_report.rs).
@@ -489,15 +490,20 @@ fn hardware() -> &'static hwid::Hardware {
 
 async fn login_async(username: &str, password: &str) -> Result<(), Error> {
     {
-        let mut guard = CREDS.lock().unwrap();
+        let mut guard = CREDS.lock().unwrap_or_else(PoisonError::into_inner);
         // Other details than those refused: tried at once.
         if guard.as_ref().is_some_and(|(u, p)| u != username || p != password) {
-            *WRONG.lock().unwrap() = 0;
-            let _ = LOGIN_HOLD.lock().unwrap().take();
+            *WRONG.lock().unwrap_or_else(PoisonError::into_inner) = 0;
+            let _ = LOGIN_HOLD.lock().unwrap_or_else(PoisonError::into_inner).take();
         }
         *guard = Some((String::from(username), String::from(password)));
     }
-    if let Some((until, why)) = LOGIN_HOLD.lock().unwrap().clone().filter(|(until, _)| std::time::Instant::now() < *until) {
+    if let Some((until, why)) = LOGIN_HOLD
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+        .filter(|(until, _)| std::time::Instant::now() < *until)
+    {
         let _ = until;
         return Err(Error::Refused(why));
     }
@@ -505,7 +511,7 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
     // No connection at all is the server out of reach too: the same growing wait.
     if let Err(e) = create_channel().await {
         let tries = {
-            let mut n = UNREACHABLE.lock().unwrap();
+            let mut n = UNREACHABLE.lock().unwrap_or_else(PoisonError::into_inner);
             *n += 1;
             *n
         };
@@ -569,7 +575,7 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
         Err(status) if matches!(status.code(), tonic::Code::FailedPrecondition | tonic::Code::PermissionDenied) => {
             error!("The server refused this client: {}; not signing in again until the game restarts", status.message());
             crate::community::say(status.message().to_string(), true);
-            *REFUSED.lock().unwrap() = Some(status.message().to_string());
+            *REFUSED.lock().unwrap_or_else(PoisonError::into_inner) = Some(status.message().to_string());
             return Err(status.into());
         }
         // Too many sign-ins: a long wait. The server merely busy (its database, for a moment)
@@ -581,7 +587,7 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
                 BUSY_BACK_OFF
             };
             error!("Sign-in refused: {}; trying again in {} s", status.message(), wait.as_secs());
-            *BACK_OFF_UNTIL.lock().unwrap() = Some(std::time::Instant::now() + wait);
+            *BACK_OFF_UNTIL.lock().unwrap_or_else(PoisonError::into_inner) = Some(std::time::Instant::now() + wait);
             return Err(status.into());
         }
         // The server never answered: a timeout, or the connection dropped or reset. Not a
@@ -593,7 +599,7 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
             ) =>
         {
             let tries = {
-                let mut n = UNREACHABLE.lock().unwrap();
+                let mut n = UNREACHABLE.lock().unwrap_or_else(PoisonError::into_inner);
                 *n += 1;
                 *n
             };
@@ -608,12 +614,12 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
         Err(status) if matches!(status.code(), tonic::Code::Unauthenticated | tonic::Code::NotFound) => {
             error!("Sign-in failed: {}", status.message());
             let tries = {
-                let mut n = WRONG.lock().unwrap();
+                let mut n = WRONG.lock().unwrap_or_else(PoisonError::into_inner);
                 *n += 1;
                 *n
             };
             if tries >= WRONG_TRIES {
-                *WRONG.lock().unwrap() = 0;
+                *WRONG.lock().unwrap_or_else(PoisonError::into_inner) = 0;
                 hold_login(WRONG_WAIT, format!("The server refused this account's details {tries} times"));
             }
             return Err(status.into());
@@ -624,17 +630,17 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
         }
     };
     // Through to the server: each hold starts over.
-    *UNREACHABLE.lock().unwrap() = 0;
+    *UNREACHABLE.lock().unwrap_or_else(PoisonError::into_inner) = 0;
     if !response.error.is_empty() {
         error!("Login error: {}", response.error);
         return Err(Error::LoginFailure);
     } else if !response.token.is_empty() {
         info!("Login successful");
-        *WRONG.lock().unwrap() = 0;
-        let _ = LOGIN_HOLD.lock().unwrap().take();
+        *WRONG.lock().unwrap_or_else(PoisonError::into_inner) = 0;
+        let _ = LOGIN_HOLD.lock().unwrap_or_else(PoisonError::into_inner).take();
         crate::uplay_r1_loader::signed_in();
         {
-            let mut guard = TOKEN.lock().unwrap();
+            let mut guard = TOKEN.lock().unwrap_or_else(PoisonError::into_inner);
             *guard = Some(response.token.parse()?);
         }
         // The NAT helper registers this game under our name only with this ticket.
@@ -643,7 +649,7 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
         crate::hooks::set_relay_pass(&response.relay_pass);
         // The game copies it into a 64-byte buffer: only a short, plain id is taken.
         match response.user.map(|u| u.id).filter(|id| !id.is_empty()) {
-            Some(id) if is_plain_id(&id) => *ACCOUNT_ID.lock().unwrap() = Some(id),
+            Some(id) if is_plain_id(&id) => *ACCOUNT_ID.lock().unwrap_or_else(PoisonError::into_inner) = Some(id),
             Some(_) => error!("The server sent an account id the game can't take; keeping the one from the settings"),
             None => {}
         }
@@ -656,7 +662,7 @@ pub use hooks_config::text::is_plain_id;
 /// The account id the server knows us by, once signed in. The game should
 /// use this, not whatever the settings file says.
 pub fn account_id() -> Option<String> {
-    ACCOUNT_ID.lock().unwrap().clone()
+    ACCOUNT_ID.lock().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
 /// A change to how we stand to another player.
@@ -711,7 +717,7 @@ pub fn change_friend(change: FriendChange, id: &str, identity: &str) -> Result<(
 
 /// The name we signed in with, once login has been attempted.
 pub fn username() -> Option<String> {
-    CREDS.lock().unwrap().as_ref().map(|(username, _)| username.clone())
+    CREDS.lock().unwrap_or_else(PoisonError::into_inner).as_ref().map(|(username, _)| username.clone())
 }
 
 #[instrument(skip(password))]
@@ -735,7 +741,7 @@ pub async fn event() -> Result<EventResponse, Error> {
 /// Sends the game's diagnostics (diagnostics.rs). Not before the game signed in: there's
 /// nobody to send them as.
 pub async fn client_log(lines: Vec<ClientLogLine>, dropped: u32, full_logs: bool) -> Result<server_api::misc::ClientLogResponse, Error> {
-    if TOKEN.lock().unwrap().is_none() {
+    if TOKEN.lock().unwrap_or_else(PoisonError::into_inner).is_none() {
         return Err(Error::NotConnected);
     }
     signed_in(|| {
@@ -753,7 +759,7 @@ pub async fn client_log(lines: Vec<ClientLogLine>, dropped: u32, full_logs: bool
 /// with the token it has (no signing in again), given up after `limit` so the quit is never
 /// held up. Never from the DLL's unload (the loader lock: nothing that waits).
 pub fn closing(limit: std::time::Duration) {
-    if TOKEN.lock().unwrap().is_none() {
+    if TOKEN.lock().unwrap_or_else(PoisonError::into_inner).is_none() {
         return;
     }
     let Ok(rt) = runtime() else { return };
@@ -799,7 +805,7 @@ pub fn set_build(path: &std::path::Path) {
 /// Signs in again with the saved credentials.
 #[instrument]
 pub async fn relogin() -> bool {
-    let used = TOKEN.lock().unwrap().clone();
+    let used = TOKEN.lock().unwrap_or_else(PoisonError::into_inner).clone();
     relogin_after(used).await
 }
 
@@ -809,17 +815,17 @@ pub async fn relogin() -> bool {
 /// authorization" on eu1, seconds after each sign-in).
 async fn relogin_after(used: Option<MetadataValue<Ascii>>) -> bool {
     let _one = RELOGIN.lock().await;
-    let now = TOKEN.lock().unwrap().clone();
+    let now = TOKEN.lock().unwrap_or_else(PoisonError::into_inner).clone();
     if now.is_some() && now != used {
         return true;
     }
-    let Some((username, password)) = CREDS.lock().unwrap().clone() else {
+    let Some((username, password)) = CREDS.lock().unwrap_or_else(PoisonError::into_inner).clone() else {
         return false;
     };
     info!("Signing in again");
     let ok = login_async(&username, &password).await.is_ok();
     if !ok {
-        let _ = TOKEN.lock().unwrap().take();
+        let _ = TOKEN.lock().unwrap_or_else(PoisonError::into_inner).take();
     }
     ok
 }

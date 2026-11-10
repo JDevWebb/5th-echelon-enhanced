@@ -453,7 +453,7 @@ fn get_adapters_info(adapter_info: *mut IP_ADAPTER_INFO, sizepointer: *mut u32) 
         }
 
         let data = &*(std::ptr::from_ref::<[i8]>(&(*adapter_info).IpAddressList.IpAddress.String) as *const [u8]);
-        debug!("{:?}", CStr::from_bytes_until_nul(data).unwrap());
+        debug!("{:?}", CStr::from_bytes_until_nul(data).ok());
     }
 
     res
@@ -461,6 +461,10 @@ fn get_adapters_info(adapter_info: *mut IP_ADAPTER_INFO, sizepointer: *mut u32) 
 
 #[instrument(skip_all)]
 fn gethostbyname(name: *const c_char) -> *mut HOSTENT {
+    // A null name is the caller's mistake: Winsock answers it, there's nothing here to compare.
+    if name.is_null() {
+        return unsafe { GethostbynameHook.call(name) };
+    }
     let given_host = unsafe { CStr::from_ptr(name) };
     info!("called with {:?}", given_host);
     let ent = unsafe { GethostbynameHook.call(name) };
@@ -470,12 +474,16 @@ fn gethostbyname(name: *const c_char) -> *mut HOSTENT {
         error!("error calling gethostname");
         return ent;
     }
-    let hostname = CStr::from_bytes_until_nul(&hostname).unwrap();
+    let Ok(hostname) = CStr::from_bytes_until_nul(&hostname) else {
+        return ent;
+    };
     if hostname != given_host {
         warn!("given host doesn't match {:?}", hostname);
         return ent;
     }
-    let cfg = config::get().unwrap();
+    let Some(cfg) = config::get() else {
+        return ent;
+    };
 
     if cfg.networking.ip_address.is_none() {
         return ent;

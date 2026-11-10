@@ -41,20 +41,33 @@ impl SaveHandle {
         Box::into_raw(boxed)
     }
 
+    /// The handle [`Self::into_mut_ptr`] gave, back; None (said in the log) for a null or
+    /// misaligned one, which no panic may answer: this runs inside the game's call.
     #[allow(clippy::unnecessary_box_returns)]
-    fn from_mut_ptr(ptr: *mut SaveHandle) -> Box<SaveHandle> {
+    fn from_mut_ptr(ptr: *mut SaveHandle) -> Option<Box<SaveHandle>> {
         if ptr.is_null() || !ptr.is_aligned() {
-            error!("{ptr:?} is invalid");
-            panic!("{ptr:?} is invalid");
+            error!("The game passed an invalid save handle {ptr:?}");
+            return None;
         }
-        unsafe { Box::from_raw(ptr) }
+        Some(unsafe { Box::from_raw(ptr) })
+    }
+
+    /// The handle the game passed, to use in place; None (said in the log) for a null or
+    /// misaligned one.
+    unsafe fn in_place<'a>(ptr: *mut SaveHandle) -> Option<&'a mut SaveHandle> {
+        if ptr.is_null() || !ptr.is_aligned() {
+            error!("The game passed an invalid save handle {ptr:?}");
+            return None;
+        }
+        ptr.as_mut()
     }
 }
 
 #[forwardable_export]
 unsafe extern "cdecl" fn UPLAY_SAVE_Close(out_save_handle: *mut SaveHandle) -> bool {
-    let out_save_handle = out_save_handle.as_mut().unwrap();
-    let mut out_save_handle = SaveHandle::from_mut_ptr(out_save_handle);
+    let Some(mut out_save_handle) = SaveHandle::from_mut_ptr(out_save_handle) else {
+        return false;
+    };
     let _file = out_save_handle.raw_handle.take().map(|h| File::from_raw_handle(h));
     true
 }
@@ -142,11 +155,13 @@ unsafe extern "cdecl" fn UPLAY_SAVE_Read(
     out_num_of_bytes_read: *mut usize,
     overlapped: *mut UplayOverlapped,
 ) -> bool {
-    // if save_handle.is_null() || !save_handle.is_aligned() {
-    //     error!("Invalid save_handle {save_handle:?}");
-    //     return false;
-    // }
-    let save_handle = save_handle.as_mut().unwrap();
+    let Some(save_handle) = SaveHandle::in_place(save_handle) else {
+        return false;
+    };
+    if out_buffer.is_null() || (*out_buffer).is_null() || out_num_of_bytes_read.is_null() {
+        error!("The game passed nowhere to read save slot {} into", save_handle.slot_id);
+        return false;
+    }
 
     let res = if let Some(raw_handle) = (save_handle).raw_handle.take() {
         let mut file = File::from_raw_handle(raw_handle);
@@ -197,12 +212,14 @@ unsafe extern "cdecl" fn UPLAY_SAVE_Remove(slot_id: usize, overlapped: *mut Upla
 
 #[forwardable_export]
 unsafe extern "cdecl" fn UPLAY_SAVE_SetName(save_handle: *mut SaveHandle, name: *const i8) -> bool {
-    // if save_handle.is_null() || !save_handle.is_aligned() {
-    //     error!("Invalid save_handle {save_handle:?}");
-    //     return false;
-    // }
-    let save_handle = save_handle.as_mut().unwrap();
+    let Some(save_handle) = SaveHandle::in_place(save_handle) else {
+        return false;
+    };
     let slot_id = (save_handle).slot_id;
+    if name.is_null() {
+        error!("The game passed no name for save slot {slot_id}");
+        return false;
+    }
     let mut path: PathBuf = cfg.save.get_savegame_path(slot_id);
     path.set_extension("meta");
     let name = std::ffi::CStr::from_ptr(name);
@@ -217,11 +234,13 @@ unsafe extern "cdecl" fn UPLAY_SAVE_SetName(save_handle: *mut SaveHandle, name: 
 
 #[forwardable_export]
 unsafe extern "cdecl" fn UPLAY_SAVE_Write(save_handle: *mut SaveHandle, num_of_bytes_to_write: usize, buffer: *const *const u8, overlapped: *mut UplayOverlapped) -> bool {
-    // if save_handle.is_null() || !save_handle.is_aligned() {
-    //     error!("Invalid save_handle {save_handle:?}");
-    //     return false;
-    // }
-    let save_handle = save_handle.as_mut().unwrap();
+    let Some(save_handle) = SaveHandle::in_place(save_handle) else {
+        return false;
+    };
+    if buffer.is_null() || (*buffer).is_null() {
+        error!("The game passed nothing to write to save slot {}", save_handle.slot_id);
+        return false;
+    }
 
     let res = if let Some(raw_handle) = (save_handle).raw_handle.take() {
         let mut file = File::from_raw_handle(raw_handle);
@@ -265,7 +284,7 @@ fn get_savegames() -> Result<Vec<UplaySave>> {
         .filter(|f| f.file_type().is_ok_and(|ft| ft.is_file()))
         .filter(|f| f.path().extension().is_some_and(|e| e == std::ffi::OsStr::new("sav")))
         .filter_map(|f| {
-            let size = f.metadata().unwrap().len();
+            let size = f.metadata().ok()?.len();
             #[allow(clippy::cast_possible_truncation)]
             let size = size as usize;
             f.path()
