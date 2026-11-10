@@ -14,5 +14,6 @@ INSERT INTO crash_marks (signature, status, fixed_in, note, marked_by, marked_at
     ('Blacklist_DX11_game.exe+0xa72c73', 'fixed', '0.5.0', 'A player''s navigation disrupted while holding no item (disruption-fix)', 'setup', 1794182400),
     ('Blacklist_DX11_game.exe+0x6a88ce', 'fixed', '0.5.0', 'A destroyed tagging device''s reset (tagging-device-fix)', 'setup', 1794182400),
     ('Blacklist_DX11_game.exe+0x6f205a', 'fixed', '0.5.0', 'Co-op: the AI''s zone test with a player without a character (perception-fix)', 'setup', 1794182400),
+    ('Blacklist_DX11_game.exe+0xb116b5', 'fixed', '0.5.0', 'Customize Gear and the hub: a gear item with no object, left out and its name logged (gear-list-fix); which item, not known yet', 'setup', 1794182400),
     ('xaudio2.dll+0x3da72', 'known', '', 'The audio driver', 'setup', 1794182400),
     ('Blacklist_DX11_game.exe+0x1a41f20', 'watching', '', 'Sound engine: an attenuation curve''s stale keys (once, 2026-11-08); no safe guard', 'setup', 1794182400);

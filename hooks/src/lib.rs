@@ -48,6 +48,7 @@ mod file_check;
 mod fix_stats;
 mod follow_unblock;
 mod game_state;
+mod gear_list_fix;
 mod hooks;
 mod host_migration;
 mod load_order_fix;

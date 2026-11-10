@@ -790,6 +790,7 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
             "voice-device-fix",
             "tagging-device-fix",
             "perception-fix",
+            "gear-list-fix",
             "disruption-fix",
             "load-order-fix",
             "migration-fix",
@@ -803,6 +804,7 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
         crate::voice_device_fix::guard_voice_devices();
         crate::tagging_device_fix::guard_tagging_devices();
         crate::perception_fix::guard_perception();
+        crate::gear_list_fix::guard_gear_list();
         crate::disruption_fix::guard_disruption();
         // Before load_order_fix: umd_read_fix checks the read-sequence sync's code as the game
         // has it, and load_order_fix then patches two reads inside that sync. Each read the

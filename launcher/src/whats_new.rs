@@ -43,7 +43,7 @@ pub struct Release {
 pub const RELEASES: &[Release] = &[
     Release {
         version: "0.5.0",
-        thanks: &["Tea_bag", "Cloud", "Ghost_Leader", "curryman", "omar", "Agent1", "EitherBat2025", "Gex", "Ronis", "Sem", "Sokolev", "mpw"],
+        thanks: &["Tea_bag", "Cloud", "Ghost_Leader", "curryman", "omar", "Agent1", "EitherBat2025", "Gex", "Ronis", "Sem", "Sokolev", "mpw", "Jester"],
         new: &[
             Item {
                 title: "A new look",
@@ -107,7 +107,7 @@ pub const RELEASES: &[Release] = &[
             },
             Fix {
                 lead: "Crashes fixed",
-                rest: ": when a spy destroyed tagging devices with EMP or the overcharge suit, on the way back to the lobby after a match (most often after Play SvM), when a player's navigation was disrupted while holding no item, and in co-op a minute or two after a mission ended.",
+                rest: ": when a spy destroyed tagging devices with EMP or the overcharge suit, on the way back to the lobby after a match (most often after Play SvM), when a player's navigation was disrupted while holding no item, in co-op a minute or two after a mission ended, and on Customize Gear or loading the hub.",
             },
             Fix {
                 lead: "A join that can't work says why",

@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use hooks_addresses::crash_fixes::disruption;
+use hooks_addresses::crash_fixes::gear_list;
 use hooks_addresses::crash_fixes::load_order;
 use hooks_addresses::crash_fixes::migration;
 use hooks_addresses::crash_fixes::particle;
@@ -93,6 +94,10 @@ fn check(path: &Path) -> bool {
     report(
         "perception-fix",
         perception::locate(&img).map(|s| format!("hook {:#010x}, no {:#010x}, continue {:#010x}", s.hook, s.skip, s.cont)),
+    );
+    report(
+        "gear-list-fix",
+        gear_list::locate(&img).map(|s| format!("hook {:#010x}, continue {:#010x}, next name {:#010x}", s.hook, s.cont, s.skip)),
     );
     report(
         "disruption-fix",

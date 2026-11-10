@@ -424,7 +424,7 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disable_autoclimb: bool,
     /// Turns off the fixes for the game's own crashes and hangs (hooks' `scheme_pool_fix`, `particle_fix`, `storm_fix`,
-    /// `voice_device_fix`, `tagging_device_fix`, `perception_fix`, `disruption_fix`, `umd_read_fix`, `load_order_fix`, `migration_fix`), which are on otherwise. Not shown in the launcher: for ruling them out when something goes wrong.
+    /// `voice_device_fix`, `tagging_device_fix`, `perception_fix`, `gear_list_fix`, `disruption_fix`, `umd_read_fix`, `load_order_fix`, `migration_fix`), which are on otherwise. Not shown in the launcher: for ruling them out when something goes wrong.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disable_crash_fixes: bool,
     /// Turns off only `umd_read_fix` (package reads off a UMD's recorded read sequence), for comparing with and without it.
