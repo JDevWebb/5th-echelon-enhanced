@@ -34,6 +34,18 @@ pub fn clean(text: &str, max: usize) -> String {
         .to_string()
 }
 
+/// A chat message's text as it's checked and sent: control characters gone (a line break or
+/// a tab a space), and zero-width and bidi ones (which hide or reorder what's shown).
+pub fn clean_message(text: &str) -> String {
+    text.chars()
+        .filter_map(|c| match c {
+            '\n' | '\r' | '\t' => Some(' '),
+            c if c.is_control() || links::invisible(c) => None,
+            c => Some(c),
+        })
+        .collect()
+}
+
 /// The longest message, in characters.
 pub const MAX_MESSAGE: usize = 500;
 
@@ -117,7 +129,8 @@ impl Rules {
     /// Checks a chat message: refused for a link (a Discord invite excepted) or its length, else
     /// sent with offending words masked.
     pub fn check_message(&self, text: &str) -> Result<Checked, Refused> {
-        let text = text.trim();
+        let cleaned = clean_message(text);
+        let text = cleaned.trim();
         if text.is_empty() {
             return Err(Refused::Empty);
         }
@@ -262,6 +275,14 @@ mod tests {
     /// The slurs these tests need, kept reversed so they aren't written out in the source.
     fn rev(s: &str) -> String {
         s.chars().rev().collect()
+    }
+
+    #[test]
+    fn a_message_loses_control_and_invisible_characters() {
+        let c = rules().check_message("gg\u{202e}pw\u{200b} nice\u{7}\nshot\u{e0041}\u{3164}").unwrap();
+        assert_eq!(c.text, "ggpw nice shot");
+        assert_eq!(rules().check_message("\u{200b}\u{202e}\u{0}"), Err(Refused::Empty), "nothing to show");
+        assert_eq!(clean_message("tab\there, caf\u{e9} \u{1f600}"), "tab here, caf\u{e9} \u{1f600}", "printable text stays");
     }
 
     #[test]

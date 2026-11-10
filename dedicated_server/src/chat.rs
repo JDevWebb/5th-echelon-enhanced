@@ -137,7 +137,10 @@ impl Kept {
             from_name: text("from_name", 32),
             server_name: text("server_name", 64),
             to: v["to"].as_str().unwrap_or_default().to_string(),
-            body: v["body"].as_str().unwrap_or_default().chars().take(moderation::MAX_MESSAGE).collect(),
+            body: moderation::clean_message(v["body"].as_str().unwrap_or_default())
+                .chars()
+                .take(moderation::MAX_MESSAGE)
+                .collect(),
             deletes: v["deletes"].as_i64().unwrap_or_default(),
         })
     }

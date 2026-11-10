@@ -82,9 +82,27 @@ fn normalise(text: &str) -> String {
     s.trim().to_string()
 }
 
-/// Zero-width and bidi characters, which hide or reorder what's shown.
+/// Zero-width and bidi characters, which hide or reorder what's shown, and the blank ones
+/// that show nothing (Hangul fillers, tags, the Mongolian vowel separator).
 pub(crate) fn invisible(c: char) -> bool {
-    matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{feff}' | '\u{00ad}')
+    matches!(
+        c,
+        '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{feff}'
+            | '\u{00ad}'
+            | '\u{034f}'
+            | '\u{061c}'
+            | '\u{115f}'
+            | '\u{1160}'
+            | '\u{180e}'
+            | '\u{3164}'
+            | '\u{ffa0}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{e0000}'..='\u{e007f}'
+    )
 }
 
 /// Letters from other scripts that look like Latin ones, read as those (Cyrillic and Greek).

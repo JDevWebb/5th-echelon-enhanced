@@ -1235,7 +1235,9 @@ impl Users for MyUsers {
         let request = request.into_inner();
         let username = request.username;
         let password = request.password;
-        let client = request.client;
+        // Kept in session events and the database, and shown to admins: one line of what can
+        // be read (a real client's name is never longer, nor has anything else).
+        let client = moderation::clean(&request.client, 128);
         let build = request.build;
         let (hardware, vm) = (request.hardware, request.vm);
         let nat_key: Option<nat_proto::SessionKey> = request.nat_key.as_slice().try_into().ok();
@@ -1525,7 +1527,7 @@ impl Users for MyUsers {
         }
         // Before the password changes: an outdated launcher changes nothing.
         crate::hardware::note(person.id, &request.hardware, &request.vm, peer);
-        self.admit(person.id, &person.username, &request.client, &request.build).await?;
+        self.admit(person.id, &person.username, &moderation::clean(&request.client, 128), &request.build).await?;
         if !self.storage.use_key_login(person.id, request.time).await.map_err(internal)? {
             return Err(refused("That signature was already used"));
         }
