@@ -2930,10 +2930,7 @@ async fn admins_read_resolve_and_delete_reports() {
     // What leaves the network: a second factor lately.
     let (status, v) = admin_call(&r, "PUT", "/api/alerts/reports", &cookie, Some(json!({ "mode": "all" }))).await;
     assert_eq!((status, v["reverify"].as_bool()), (StatusCode::FORBIDDEN, Some(true)));
-    assert_eq!(
-        admin_call(&r, "PUT", "/api/alerts/reports", &fresh, Some(json!({ "mode": "all" }))).await.0,
-        StatusCode::OK
-    );
+    assert_eq!(admin_call(&r, "PUT", "/api/alerts/reports", &fresh, Some(json!({ "mode": "all" }))).await.0, StatusCode::OK);
     assert_eq!(
         admin_call(&r, "PUT", "/api/alerts/reports", &fresh, Some(json!({ "mode": "loud" }))).await.0,
         StatusCode::BAD_REQUEST
@@ -3613,7 +3610,11 @@ async fn failed_sign_ins_lock_an_account_and_admins_cant_lock_everyone_out() {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
     let (status, v, cookie) = admin_send(&r, "POST", "/api/login", "", Some(json!({ "username": "kiwi", "password": password }))).await;
-    assert_eq!((status, v["error"].as_str(), cookie), (StatusCode::UNAUTHORIZED, Some("wrong name or password"), None), "{v}");
+    assert_eq!(
+        (status, v["error"].as_str(), cookie),
+        (StatusCode::UNAUTHORIZED, Some("wrong name or password"), None),
+        "{v}"
+    );
     let refusals: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit WHERE admin = 'kiwi' AND event = 'sign-in refused'")
         .fetch_one(&t.c.pool)
         .await
@@ -3628,7 +3629,10 @@ async fn failed_sign_ins_lock_an_account_and_admins_cant_lock_everyone_out() {
     admin_send(&elsewhere, "POST", "/api/login", "", Some(json!({ "username": "kiwi", "password": "not the password" }))).await;
     let (status, v, _) = admin_send(&elsewhere, "POST", "/api/login", "", Some(json!({ "username": "kiwi", "password": password }))).await;
     assert_eq!((status, v["error"].as_str()), (StatusCode::UNAUTHORIZED, Some("wrong name or password")), "{v}");
-    sqlx::query("UPDATE admins SET locked_until = 0, failures = 0 WHERE username = 'kiwi'").execute(&t.c.pool).await.unwrap();
+    sqlx::query("UPDATE admins SET locked_until = 0, failures = 0 WHERE username = 'kiwi'")
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
     // A name that doesn't exist answers as a wrong password does.
     let (status, v, _) = admin_send(&r, "POST", "/api/login", "", Some(json!({ "username": "nobody", "password": password }))).await;
     assert_eq!((status, v["error"].as_str()), (StatusCode::UNAUTHORIZED, Some("wrong name or password")));
@@ -4811,11 +4815,17 @@ async fn wrong_codes_count_for_the_account_across_sign_ins() {
         .unwrap();
     let (status, ..) = admin_send(&elsewhere, "POST", "/api/login/totp", &half, Some(json!({ "code": "000000" }))).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    let failures: i64 = sqlx::query_scalar("SELECT code_failures FROM admins WHERE username = 'pua'").fetch_one(&t.c.pool).await.unwrap();
+    let failures: i64 = sqlx::query_scalar("SELECT code_failures FROM admins WHERE username = 'pua'")
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
     assert_eq!(failures, 1);
     let (status, v, _) = admin_send(&elsewhere, "POST", "/api/login/totp", &half, Some(json!({ "code": totp_code(&secret, step) }))).await;
     assert_eq!((status, v["stage"].as_str()), (StatusCode::OK, Some("full")), "{v}");
-    let failures: i64 = sqlx::query_scalar("SELECT code_failures FROM admins WHERE username = 'pua'").fetch_one(&t.c.pool).await.unwrap();
+    let failures: i64 = sqlx::query_scalar("SELECT code_failures FROM admins WHERE username = 'pua'")
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
     assert_eq!(failures, 0, "the last wrong code came from here: the admin's own slip");
 }
 
