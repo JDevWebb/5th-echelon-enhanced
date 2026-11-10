@@ -24,11 +24,17 @@ const MAX_HELD: usize = 64 * 1024 * 1024;
 const LASTS: Duration = Duration::from_secs(600);
 /// Uploads waiting at most (everyone's).
 const MAX_PENDING: usize = 1000;
+/// Uploads waiting from one address (an IPv6 /64) at most: a household or a LAN party,
+/// each game an upload an hour, never comes near it; accounts made on one address can't
+/// take everyone's [`MAX_PENDING`].
+const MAX_PENDING_PER_ADDRESS: usize = 8;
 /// A player's next upload at the soonest (the game sends one an hour).
 const EVERY: Duration = Duration::from_secs(300);
 
 struct Pending {
     user: u32,
+    /// The address the game asked from ([`crate::rate_limit::bucket_of`]).
+    from: std::net::IpAddr,
     size: usize,
     secret: String,
     at: Instant,
@@ -56,9 +62,9 @@ pub enum Refused {
     Busy,
 }
 
-/// `user`'s game asks to upload `size` bytes of `type_id`: the pending id and the secret of
-/// its one-time address.
-pub fn begin(user: u32, type_id: u32, size: u32) -> Result<(u64, String), Refused> {
+/// `user`'s game, at address `from`, asks to upload `size` bytes of `type_id`: the pending id
+/// and the secret of its one-time address.
+pub fn begin(user: u32, from: std::net::IpAddr, type_id: u32, size: u32) -> Result<(u64, String), Refused> {
     if type_id != SHADOWNET {
         return Err(Refused::Type);
     }
@@ -72,7 +78,8 @@ pub fn begin(user: u32, type_id: u32, size: u32) -> Result<(u64, String), Refuse
     if st.last.contains_key(&user) {
         return Err(Refused::TooSoon);
     }
-    if st.pending.len() >= MAX_PENDING {
+    let from = crate::rate_limit::bucket_of(from);
+    if st.pending.len() >= MAX_PENDING || st.pending.values().filter(|p| p.from == from).count() >= MAX_PENDING_PER_ADDRESS {
         return Err(Refused::Busy);
     }
     let id = rand::random::<u64>() | 1;
@@ -81,6 +88,7 @@ pub fn begin(user: u32, type_id: u32, size: u32) -> Result<(u64, String), Refuse
         id,
         Pending {
             user,
+            from,
             size,
             secret: secret.clone(),
             at: Instant::now(),
@@ -155,15 +163,27 @@ pub fn finish(user: u32, id: u64, ok: bool) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
 
+    const HOME: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 50));
+
+    #[test]
+    fn one_address_holds_a_few_uploads_at_most() {
+        let from = std::net::IpAddr::from([198, 51, 100, 7]);
+        for user in 0..MAX_PENDING_PER_ADDRESS as u32 {
+            assert!(begin(930_000 + user, from, SHADOWNET, 2).is_ok());
+        }
+        assert_eq!(begin(930_100, from, SHADOWNET, 2), Err(Refused::Busy), "the address is full");
+        assert!(begin(930_101, std::net::IpAddr::from([198, 51, 100, 8]), SHADOWNET, 2).is_ok(), "another isn't");
+    }
+
     #[test]
     fn an_upload_goes_once_to_its_own_address() {
         let user = 910_001;
-        assert_eq!(begin(user, 0x8000_0002, 10), Err(Refused::Type));
-        assert_eq!(begin(user, SHADOWNET, 0), Err(Refused::Size));
-        assert_eq!(begin(user, SHADOWNET, (MAX_UPLOAD + 1) as u32), Err(Refused::Size));
+        assert_eq!(begin(user, HOME, 0x8000_0002, 10), Err(Refused::Type));
+        assert_eq!(begin(user, HOME, SHADOWNET, 0), Err(Refused::Size));
+        assert_eq!(begin(user, HOME, SHADOWNET, (MAX_UPLOAD + 1) as u32), Err(Refused::Size));
         let body = br#"{"Loadout:Items":{}}"#.to_vec();
-        let (id, secret) = begin(user, SHADOWNET, body.len() as u32).unwrap();
-        assert_eq!(begin(user, SHADOWNET, 10), Err(Refused::TooSoon), "one at a time, not too often");
+        let (id, secret) = begin(user, HOME, SHADOWNET, body.len() as u32).unwrap();
+        assert_eq!(begin(user, HOME, SHADOWNET, 10), Err(Refused::TooSoon), "one at a time, not too often");
         assert_eq!(receive(&path(id, "0000"), body.clone()), "404 Not Found", "the secret");
         assert_eq!(receive(&path(id, &secret), b"{short".to_vec()), "400 Bad Request", "the size asked for");
         assert_eq!(receive(&path(id, &secret), vec![0xff; body.len()]), "400 Bad Request", "JSON text only");
@@ -183,7 +203,7 @@ mod tests {
     #[test]
     fn a_failed_upload_keeps_nothing() {
         let user = 910_002;
-        let (id, secret) = begin(user, SHADOWNET, 2).unwrap();
+        let (id, secret) = begin(user, HOME, SHADOWNET, 2).unwrap();
         assert_eq!(receive(&path(id, &secret), b"{}".to_vec()), "200 OK");
         assert_eq!(finish(user, id, false), None);
     }

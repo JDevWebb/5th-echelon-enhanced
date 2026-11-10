@@ -115,7 +115,7 @@ impl<CI> UserStorageProtocolServerTrait<CI> for UserStorageProtocolServerImpl {
         let Some(host) = ctx.settings.get("storage_host").cloned() else {
             return Err(Error::AccessDenied);
         };
-        match crate::uploads::begin(user_id, request.content_key.type_id, request.size) {
+        match crate::uploads::begin(user_id, ci.address().ip(), request.content_key.type_id, request.size) {
             Ok((pending_id, secret)) => {
                 info!(logger, "User {user_id} uploads {} bytes of content type {:#x}", request.size, request.content_key.type_id);
                 Ok(SaveContentAndGetUploadInfoResponse {

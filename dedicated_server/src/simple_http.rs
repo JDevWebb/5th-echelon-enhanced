@@ -472,7 +472,7 @@ mod tests {
         std::thread::spawn(move || serve_many(&logger(), addr, &HashMap::new()));
         std::thread::sleep(Duration::from_millis(100));
         let body = r#"{"Challenges":{}}"#;
-        let (id, secret) = crate::uploads::begin(920_001, crate::uploads::SHADOWNET, body.len() as u32).unwrap();
+        let (id, secret) = crate::uploads::begin(920_001, std::net::IpAddr::from([192, 0, 2, 51]), crate::uploads::SHADOWNET, body.len() as u32).unwrap();
         let path = crate::uploads::path(id, &secret);
         // As curl sends it: waits for 100 Continue, then the raw body.
         let mut s = TcpStream::connect(addr).unwrap();
