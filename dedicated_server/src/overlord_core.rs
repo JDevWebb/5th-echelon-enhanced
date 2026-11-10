@@ -137,6 +137,100 @@ pub fn new_protocol<T: 'static>() -> Box<dyn Protocol<T>> {
 mod tests {
     use super::*;
 
+    /// A value as the reply carries it.
+    enum V {
+        I(i64),
+        F(f64),
+        S(&'static str),
+    }
+    use V::F;
+    use V::I;
+    use V::S;
+
+    /// The configuration the game is sent, in the order it's sent: a copy of the table in
+    /// `handle`, kept here so a changed value fails the test too.
+    const CONFIG: &[(&str, V)] = &[
+        ("VER_SERVER_STAGE", I(10)),
+        ("2593515025", I(1)),
+        ("2626349757", I(1)),
+        ("NC_CONNECTION_TICKET_TIMEOUT", F(10.0)),
+        ("NC_CONNECTION_HANDSHAKING_TIMEOUT", F(5.0)),
+        ("314486871", I(1)),
+        ("3759634546", I(1)),
+        ("NC_MAIN_PORT_RANGE", I(32)),
+        ("2449304206", I(1)),
+        ("OVERLORD_VERSION", S("0.8.0.0")),
+        ("2685611256", I(1)),
+        ("3376331533", I(1)),
+        ("VER_SERVER_CODE", I(3007)),
+        ("FILESERVICE_UNLOCKS_UPLOAD_ENABLED", I(1)),
+        ("2739184075", I(1)),
+        ("2942435614", I(1)),
+        ("SN_FRIENDCHALLENGES_MAX_READ_INTERVAL", F(900.0)),
+        ("NC_CONNECTION_JOIN_TIMEOUT", F(15.0)),
+        ("1027449109", I(1)),
+        ("4175756708", I(1)),
+        ("NC_CONNECTION_INACTIVITY_THRESHOLD", F(8.0)),
+        ("FILESERVICE_ADMIN_RDVID", I(1119)),
+        ("SN_WEEKLYCHALLENGES_ENABLE", I(1)),
+        ("1597953054", I(1)),
+        ("2156388390", I(1)),
+        ("3785106560", I(1)),
+        ("STATS_WRITE_INTERVAL", F(1.0)),
+        ("3835530207", I(1)),
+        ("1492891464", I(1)),
+        ("SN_DAILYCHALLENGES_ENABLE", I(1)),
+        ("2505766166", I(1)),
+        ("11866509", I(1)),
+        ("SN_FRIENDCHALLENGES_ENABLE", I(1)),
+        ("FILESERVICE_UNLOCKS_UPLOAD_INTERVAL", F(3600.0)),
+        ("2524360986", I(1)),
+        ("721797971", I(1)),
+        ("1525666223", I(1)),
+        ("COMMUNITYEVENT_DOUBLECASH", I(0)),
+        ("UPLAY_MAX_RANK_LIMITED_MODE", I(5)),
+        ("SN_GONEDARKCHALLENGES_ENABLE", I(1)),
+        ("_OSDK_VERSION", S("1.4.16.32918")),
+        ("NC_MAIN_PORT", I(13000)),
+        ("COMMUNITYEVENT_DOUBLEXP", I(0)),
+        ("3804368594", I(1)),
+        ("NC_CONNECTION_CLOSING_TIMEOUT", F(2.0)),
+        ("NC_CONNECTION_ESTABLISHED_TIMEOUT", F(10.0)),
+    ];
+
+    /// A Quazal string: its length with the closing NUL (u16, little-endian), its bytes, NUL.
+    fn string(out: &mut Vec<u8>, s: &str) {
+        out.extend_from_slice(&u16::try_from(s.len() + 1).unwrap().to_le_bytes());
+        out.extend_from_slice(s.as_bytes());
+        out.push(0);
+    }
+
+    /// The reply, written out by hand from the layout the game reads (what a server of
+    /// Ubisoft's sent): the number of entries (u32, little-endian), then each entry's name
+    /// (a string) and value (a variant: a type byte, 1 for an i64, 2 for an f64, 4 for a
+    /// string, then the value, little-endian).
+    fn expected_reply() -> Vec<u8> {
+        let mut out = u32::try_from(CONFIG.len()).unwrap().to_le_bytes().to_vec();
+        for (name, value) in CONFIG {
+            string(&mut out, name);
+            match value {
+                I(v) => {
+                    out.push(1);
+                    out.extend_from_slice(&v.to_le_bytes());
+                }
+                F(v) => {
+                    out.push(2);
+                    out.extend_from_slice(&v.to_le_bytes());
+                }
+                S(v) => {
+                    out.push(4);
+                    string(&mut out, v);
+                }
+            }
+        }
+        out
+    }
+
     #[test]
     /// Tests the `handle` method for method ID 1 (fetch_config).
     ///
@@ -164,7 +258,12 @@ mod tests {
             )
             .unwrap();
 
-        let expected = include_bytes!("../../testdata/overlord_core_config.bin");
+        let expected = expected_reply();
+        // The start, checked by hand too: 46 entries, then the first name (17 bytes with its
+        // NUL) and its value (an i64, 10).
+        assert_eq!(expected[..6], [46, 0, 0, 0, 17, 0]);
+        assert_eq!(expected[6..23], *b"VER_SERVER_STAGE\0");
+        assert_eq!(expected[23..32], [1, 10, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(expected.len(), resp.len());
         assert_eq!(
             expected.as_slice(),
