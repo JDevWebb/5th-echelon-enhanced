@@ -2556,13 +2556,18 @@ RestartSec=10
 StateDirectory=5th-echelon-standby
 StateDirectoryMode=0700
 NoNewPrivileges=yes
-ProtectSystem=full
+# Root (it runs systemctl and backup.sh's restore), so fenced in: it writes only its own
+# state, the coordinator's folder (restoring it) and the backups' records (their lock).
+ProtectSystem=strict
+ReadWritePaths=-$COORD_DIR -$BACKUP_STATE
 ProtectHome=yes
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target
@@ -2637,12 +2642,19 @@ RestartSec=10
 StateDirectory=5th-echelon-mm-standby
 StateDirectoryMode=0700
 NoNewPrivileges=yes
+# Root (it runs systemctl and backup.sh's restore), so fenced in: it writes only the folder
+# the game server's state is in (it moves that state aside and back, beside it, so the
+# folder holding it; the backups' records are there too).
+ProtectSystem=strict
+ReadWritePaths=$(dirname "$STATE_DIR") -$BACKUP_STATE
 ProtectHome=yes
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target
