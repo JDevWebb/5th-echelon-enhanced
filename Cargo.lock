@@ -1492,10 +1492,8 @@ dependencies = [
  "hmac",
  "identity",
  "libc",
- "md-5",
  "moderation",
  "nat_proto",
- "num_enum",
  "quazal",
  "quazal-macros",
  "rand 0.9.2",
@@ -1526,10 +1524,8 @@ dependencies = [
 name = "dedicated_server_config"
 version = "0.2.5"
 dependencies = [
- "color-eyre",
  "eyre",
  "quazal",
- "rand 0.9.2",
  "serde",
  "slog",
  "thiserror 2.0.17",
@@ -2686,7 +2682,6 @@ dependencies = [
  "toml 0.9.8",
  "tonic",
  "tracing",
- "tracing-appender",
  "tracing-subscriber",
  "url",
  "windows 0.54.0",
@@ -2719,7 +2714,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "thiserror 2.0.17",
  "toml 0.9.8",
  "tracing",
  "url",
@@ -4656,7 +4650,6 @@ dependencies = [
  "hmac",
  "md-5",
  "miniz_oxide",
- "num-traits",
  "num_enum",
  "quazal-macros",
  "rand 0.9.2",
@@ -6559,18 +6552,6 @@ dependencies = [
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",
-]
-
-[[package]]
-name = "tracing-appender"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3566e8ce28cc0a3fe42519fc80e6b4c943cc4c8cef275620eb8dac2d3d4e06cf"
-dependencies = [
- "crossbeam-channel",
- "thiserror 1.0.69",
- "time",
- "tracing-subscriber",
 ]
 
 [[package]]
