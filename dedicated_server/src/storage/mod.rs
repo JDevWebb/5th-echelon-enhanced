@@ -2131,6 +2131,19 @@ impl Storage {
         .await?)
     }
 
+    /// Every live game session's members (participants, and guests who joined a public match):
+    /// session, account, name and identity ("" when not linked), for chat's joins and leaves.
+    pub async fn lobby_members(&self) -> Result<Vec<(u32, u32, String, String)>> {
+        Ok(sqlx::query_as(
+            "SELECT g.id, u.id, COALESCE(u.username, ''), COALESCE(u.global_id, '') FROM game_sessions g
+             JOIN (SELECT game_id, user_id FROM participants UNION SELECT game_id, user_id FROM guests) m ON m.game_id = g.id
+             JOIN users u ON u.id = m.user_id
+             WHERE g.destroyed_at IS NULL",
+        )
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     /// `user_id`'s identity (global id), if their account is linked to one.
     pub async fn global_id_of(&self, user_id: u32) -> Result<Option<String>> {
         Ok(sqlx::query_scalar::<_, Option<String>>("SELECT global_id FROM users WHERE id = ?")

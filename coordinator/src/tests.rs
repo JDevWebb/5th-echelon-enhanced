@@ -5254,6 +5254,35 @@ async fn heartbeats_carry_the_client_builds_servers_take() {
     assert_eq!(beat().await["allowed"], json!([]));
 }
 
+/// A message typed in the game (its overlay) says so to every server reading it, kept with it;
+/// one from a server that doesn't say (an older one) is the launcher's.
+#[tokio::test]
+async fn chat_keeps_whether_a_message_came_from_the_game() {
+    let t = start("chat-from-game").await;
+    let a = t.join("server-a").await;
+    let kiwi = identity::Identity::generate();
+    t.changes(&a, json!([link(&kiwi, "server-a", "Kiwi")])).await;
+    t.c.enable_chat();
+    t.c.chat_from_unverified();
+    let from = t.call("GET", "/v1/chat/wait?after=-1", Some(&a), None).await.1["last"].as_i64().unwrap();
+    let lobby = |text: &str| json!({ "room": "lobby", "from": kiwi.global_id(), "session": 5, "text": text });
+    let mut typed = lobby("ready");
+    typed["from_game"] = true.into();
+    let (status, v) = t.call("POST", "/v1/chat/send", Some(&a), Some(typed)).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["message"]["from_game"], true, "as sent");
+    let (_, v) = t.call("POST", "/v1/chat/send", Some(&a), Some(lobby("start it"))).await;
+    assert_eq!(v["message"]["from_game"], false, "none said: the launcher");
+    let v = t.call("GET", &format!("/v1/chat/wait?after={from}"), Some(&a), None).await.1;
+    let read: Vec<(String, bool)> = v["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| (m["body"].as_str().unwrap().to_string(), m["from_game"].as_bool().unwrap()))
+        .collect();
+    assert_eq!(read, [("ready".to_string(), true), ("start it".to_string(), false)], "kept with each");
+}
+
 /// Chat (docs/chat.md): only with `--chat`, only from servers running the signed release, a
 /// server only for its own players; Global to every server, a direct message only to the two
 /// friends' servers, a lobby only to its own server; links refused, slurs masked, a pace kept;

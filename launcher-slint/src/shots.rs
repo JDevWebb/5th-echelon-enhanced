@@ -1181,6 +1181,7 @@ fn chat_view(messages: Vec<serde_json::Value>, trouble: &str, read_only: bool, w
         "state": "open", "trouble": if trouble.is_empty() { serde_json::Value::Null } else { trouble.into() },
         "read_only": read_only, "may_post_global": true, "global_wait": "", "lobby": true,
         "messages": messages,
+        "lobby_events": [{ "id": 1, "at": 1_790_000_000 + 7 * 60, "time": "14:07", "day": "Today", "name": "Orrin", "joined": true, "mine": false }],
         "conversations": [conv("K7QF2M9DAAAA", "Kestrel", 2, true, true), conv("M4RL0WAAAAAA", "Marlow", 0, true, true),
             conv("QU1LL0NAAAAA", "Quillon", 0, false, true), conv("T4MS1NAAAAAA", "Tamsin", 0, false, false)],
         "online": online, "with_name": with_name, "unread": 2,
@@ -1258,7 +1259,12 @@ fn chat_direct(w: &AppWindow) {
 fn chat_lobby(w: &AppWindow) {
     let m = vec![
         said(101, 8, "K7QF2M9DAAAA", "Kestrel", "mercs: me and Marlow. spies: you two", false, true, false),
-        said(102, 8, "0RR1NAAAAAAA", "Orrin", "ready", false, false, false),
+        {
+            // Typed in the game's overlay.
+            let mut m = said(102, 8, "0RR1NAAAAAAA", "Orrin", "ready", false, false, false);
+            m["from_game"] = true.into();
+            m
+        },
         said(103, 9, "N1GHTAAAAAAA", "Nightshade", "ready, start it", true, false, false),
     ];
     chat_page(w, "lobby", None, chat_view(m, "the server didn't answer", true, ""), None, None);

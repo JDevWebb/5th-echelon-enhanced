@@ -1385,6 +1385,7 @@ impl Bot {
                 room: room.into(),
                 to: to.into(),
                 text: text.into(),
+                from_game: false,
             }))
             .await?
             .into_inner())
@@ -1406,7 +1407,17 @@ impl Bot {
         while tokio::time::Instant::now() < deadline {
             let left = deadline - tokio::time::Instant::now();
             let mut client = server_api::chat::chat_client::ChatClient::new(self.api.clone());
-            let Ok(answer) = tokio::time::timeout(left, client.wait(self.authed(server_api::chat::WaitRequest { after, wait_seconds: 0 }))).await else {
+            let Ok(answer) = tokio::time::timeout(
+                left,
+                client.wait(self.authed(server_api::chat::WaitRequest {
+                    after,
+                    wait_seconds: 0,
+                    events: false,
+                    after_event: 0,
+                })),
+            )
+            .await
+            else {
                 break;
             };
             let answer = answer?.into_inner();

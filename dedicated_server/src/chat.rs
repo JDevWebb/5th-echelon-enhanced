@@ -25,6 +25,7 @@ use server_api::chat::Empty;
 use server_api::chat::FriendsResponse;
 use server_api::chat::HistoryRequest;
 use server_api::chat::HistoryResponse;
+use server_api::chat::LobbyEvent;
 use server_api::chat::MarkReadRequest;
 use server_api::chat::Message;
 use server_api::chat::MessageRequest;
@@ -117,6 +118,8 @@ struct Kept {
     body: String,
     /// For a deletion: the message it deletes (0: none).
     deletes: i64,
+    /// Typed in the game (its overlay); an older coordinator says nothing: the launcher.
+    from_game: bool,
 }
 
 impl Kept {
@@ -142,6 +145,7 @@ impl Kept {
                 .take(moderation::MAX_MESSAGE)
                 .collect(),
             deletes: v["deletes"].as_i64().unwrap_or_default(),
+            from_game: v["from_game"].as_bool().unwrap_or_default(),
         })
     }
 
@@ -159,6 +163,7 @@ impl Kept {
             mine: self.from == me,
             mentions_me: !my_name.is_empty() && self.from != me && self.body.to_lowercase().contains(&mention),
             deletes: self.deletes,
+            from_game: self.from_game,
         }
     }
 }
@@ -268,6 +273,145 @@ fn take(answer: &Value) {
     }
     drop(all);
     arrived().notify_waiters();
+}
+
+/// How often the lobbies' members are looked at, for who joined and left.
+const LOBBY_LOOK_EVERY: Duration = Duration::from_secs(2);
+/// The joins and leaves kept, of all lobbies here together.
+const LOBBY_EVENTS_KEPT: usize = 1000;
+
+/// Who joined or left a lobby (or match) here, for its players' waits: in memory, for the
+/// lobby's life only (dropped when it ends), never stored or sent to the coordinator.
+#[derive(Debug, Clone, PartialEq)]
+struct Joined {
+    id: u64,
+    at: i64,
+    lobby: u32,
+    user: u32,
+    name: String,
+    identity: String,
+    joined: bool,
+}
+
+/// The lobbies' members as last seen, and what changed.
+#[derive(Default)]
+struct Lobbies {
+    /// Each live lobby's members: account, and (name, identity).
+    members: std::collections::BTreeMap<u32, std::collections::BTreeMap<u32, (String, String)>>,
+    events: VecDeque<Joined>,
+    /// The next event's id: from the time this server started (in milliseconds), so a client's
+    /// cursor from before a restart is below the new ones.
+    next: u64,
+    looked: bool,
+}
+
+impl Lobbies {
+    /// Takes the lobbies' members now (lobby, account, name, identity): who joined or left since
+    /// the last look. None the first time (who's there already didn't just join); a lobby new
+    /// since, its members all joined; a lobby gone, its events go with it. Says whether any came.
+    fn look(&mut self, now: i64, members: Vec<(u32, u32, String, String)>) -> bool {
+        let mut seen: std::collections::BTreeMap<u32, std::collections::BTreeMap<u32, (String, String)>> = std::collections::BTreeMap::new();
+        for (lobby, user, name, identity) in members {
+            seen.entry(lobby).or_default().insert(user, (name, identity));
+        }
+        let old = std::mem::replace(&mut self.members, seen);
+        if !std::mem::replace(&mut self.looked, true) {
+            if self.next == 0 {
+                self.next = u64::try_from(now).unwrap_or_default() * 1000;
+            }
+            return false;
+        }
+        let before = self.events.len();
+        let mut add = |lobby: u32, user: u32, (name, identity): &(String, String), joined: bool, events: &mut VecDeque<Joined>| {
+            self.next += 1;
+            events.push_back(Joined {
+                id: self.next,
+                at: now,
+                lobby,
+                user,
+                name: hooks_text(name, 32),
+                identity: identity.clone(),
+                joined,
+            });
+        };
+        for (lobby, now_in) in &self.members {
+            let was_in = old.get(lobby);
+            for (user, who) in now_in {
+                if was_in.is_none_or(|w| !w.contains_key(user)) {
+                    add(*lobby, *user, who, true, &mut self.events);
+                }
+            }
+            for (user, who) in was_in.into_iter().flatten() {
+                if !now_in.contains_key(user) {
+                    add(*lobby, *user, who, false, &mut self.events);
+                }
+            }
+        }
+        let added = self.events.len() > before;
+        let live = &self.members;
+        self.events.retain(|e| live.contains_key(&e.lobby));
+        while self.events.len() > LOBBY_EVENTS_KEPT {
+            self.events.pop_front();
+        }
+        added
+    }
+
+    /// `lobby`'s joins and leaves after `after`, for a player (`user`) who doesn't see `blocked`.
+    fn for_player(&self, lobby: Option<u32>, after: u64, user: u32, blocked: &[String]) -> Vec<LobbyEvent> {
+        let Some(lobby) = lobby else { return Vec::new() };
+        self.events
+            .iter()
+            .filter(|e| e.lobby == lobby && e.id > after && (e.identity.is_empty() || !blocked.contains(&e.identity)))
+            .map(|e| LobbyEvent {
+                id: e.id,
+                at: e.at,
+                lobby: e.lobby,
+                name: e.name.clone(),
+                identity: e.identity.clone(),
+                joined: e.joined,
+                mine: e.user == user,
+            })
+            .collect()
+    }
+}
+
+fn lobbies() -> &'static Mutex<Lobbies> {
+    static LOBBIES: std::sync::OnceLock<Mutex<Lobbies>> = std::sync::OnceLock::new();
+    LOBBIES.get_or_init(Mutex::default)
+}
+
+static LOBBY_WATCH_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// Starts looking at the lobbies' members (once), while chat is on, for who joins and leaves.
+pub fn start_lobby_watch(storage: Arc<Storage>, logger: Logger) {
+    if LOBBY_WATCH_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    tokio::spawn(async move {
+        let mut failed = false;
+        loop {
+            tokio::time::sleep(LOBBY_LOOK_EVERY).await;
+            if !ON.load(Ordering::Relaxed) {
+                // Off: the next look starts afresh, not with everyone joining.
+                *lobbies().lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Lobbies::default();
+                continue;
+            }
+            match storage.lobby_members().await {
+                Ok(members) => {
+                    failed = false;
+                    let came = lobbies().lock().unwrap_or_else(std::sync::PoisonError::into_inner).look(identity::now(), members);
+                    if came {
+                        arrived().notify_waiters();
+                    }
+                }
+                Err(e) => {
+                    if !std::mem::replace(&mut failed, true) {
+                        warn!(logger, "Chat: the lobbies' members couldn't be read: {e}");
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// What a player is, as chat sees them.
@@ -435,6 +579,10 @@ impl Chat for MyChat {
             return refused("rules", why.says().into());
         }
         let mut body = json!({ "from": c.me, "text": r.text });
+        // Typed in the game: said only when so, for an older coordinator's sake.
+        if r.from_game {
+            body["from_game"] = true.into();
+        }
         match room {
             Room::Global => body["room"] = "global".into(),
             Room::Direct => {
@@ -477,6 +625,8 @@ impl Chat for MyChat {
         };
         let r = request.into_inner();
         let after = r.after;
+        // Who joins and leaves the lobby, for a client that asks (an older one doesn't).
+        let (events_wanted, after_event) = (r.events, r.after_event);
         let hold = match r.wait_seconds {
             0 => WAIT,
             s => Duration::from_secs(u64::from(s)).min(WAIT),
@@ -509,13 +659,32 @@ impl Chat for MyChat {
                 let mine: Vec<Message> = fits.iter().map(|m| m.to_message(&c.me, &c.name)).collect();
                 (mine, newest)
             };
-            if !messages.is_empty() {
+            let events = if events_wanted {
+                lobbies()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .for_player(c.lobby, after_event, c.user, &blocked)
+            } else {
+                Vec::new()
+            };
+            let last_event = events.last().map_or(after_event, |e| e.id);
+            if !messages.is_empty() || !events.is_empty() {
                 let last = messages.last().map_or(newest, |m| m.id);
-                return Ok(Response::new(WaitResponse { messages, last }));
+                return Ok(Response::new(WaitResponse {
+                    messages,
+                    last,
+                    events,
+                    last_event,
+                }));
             }
             // Nothing for this player in what came: past it all next time.
             if tokio::time::timeout_at(deadline, notified).await.is_err() {
-                return Ok(Response::new(WaitResponse { messages: vec![], last: newest }));
+                return Ok(Response::new(WaitResponse {
+                    messages: vec![],
+                    last: newest,
+                    events: vec![],
+                    last_event,
+                }));
             }
         }
     }
@@ -702,5 +871,65 @@ mod tests {
         let shown = m.to_message("me", "Tank");
         assert!(shown.mentions_me && !shown.mine);
         assert!(Kept::from_json(&json!({ "id": 1, "room": "elsewhere", "conv": "x", "from": "y" })).is_none());
+    }
+
+    #[test]
+    fn a_message_typed_in_the_game_says_so_and_an_older_coordinators_doesnt() {
+        let lobby = format!("lobby:{}:7", crate::federation::server_id());
+        let mut v = kept_message(1, "lobby", &lobby, "kiwi", "");
+        let m = Kept::from_json(&v).unwrap();
+        assert!(!m.from_game, "an older coordinator's: from the launcher");
+        assert!(!m.to_message("me", "Tank").from_game);
+        v["from_game"] = true.into();
+        let m = Kept::from_json(&v).unwrap();
+        assert!(m.from_game);
+        assert!(m.to_message("me", "Tank").from_game, "passed on to the player");
+    }
+
+    fn member(lobby: u32, user: u32, name: &str) -> (u32, u32, String, String) {
+        (lobby, user, name.into(), format!("id-{name}"))
+    }
+
+    #[test]
+    fn joins_and_leaves_come_from_the_lobbies_members() {
+        let mut l = Lobbies::default();
+        // The first look: who's there already didn't just join.
+        assert!(!l.look(1000, vec![member(7, 1, "Tank"), member(7, 2, "Kiwi")]));
+        assert!(l.events.is_empty());
+        // Orrin joins 7; Kiwi leaves it.
+        assert!(l.look(1002, vec![member(7, 1, "Tank"), member(7, 3, "Orrin")]));
+        let seen = l.for_player(Some(7), 0, 1, &[]);
+        let said: Vec<(&str, bool)> = seen.iter().map(|e| (e.name.as_str(), e.joined)).collect();
+        assert_eq!(said, vec![("Orrin", true), ("Kiwi", false)]);
+        assert!(seen.iter().all(|e| e.lobby == 7 && e.at == 1002 && !e.mine));
+        // Nothing new: none, and nothing again after the last one taken.
+        assert!(!l.look(1004, vec![member(7, 1, "Tank"), member(7, 3, "Orrin")]));
+        assert!(l.for_player(Some(7), seen[1].id, 1, &[]).is_empty());
+        // A new lobby: its members joined; the player's own join is theirs (`mine`).
+        assert!(l.look(1006, vec![member(7, 1, "Tank"), member(7, 3, "Orrin"), member(8, 4, "Pell")]));
+        let eight = l.for_player(Some(8), 0, 4, &[]);
+        assert_eq!(eight.len(), 1);
+        assert!(eight[0].joined && eight[0].mine);
+        // Only the player's own lobby's, never another's, and none without a lobby.
+        assert!(l.for_player(Some(7), 0, 1, &[]).iter().all(|e| e.lobby == 7));
+        assert!(l.for_player(None, 0, 1, &[]).is_empty());
+        // Someone the player blocked: left out.
+        assert_eq!(l.for_player(Some(7), 0, 1, &["id-Orrin".into()]).len(), 1);
+        // Lobby 7 ends: its joins and leaves go with it, kept for no longer than the lobby.
+        assert!(!l.look(1008, vec![member(8, 4, "Pell")]));
+        assert!(l.for_player(Some(7), 0, 1, &[]).is_empty());
+        assert_eq!(l.for_player(Some(8), 0, 4, &[]).len(), 1);
+    }
+
+    #[test]
+    fn event_ids_follow_on_after_a_restart() {
+        let mut before = Lobbies::default();
+        before.look(1000, vec![]);
+        before.look(1001, vec![member(7, 1, "Tank")]);
+        let last = before.events.back().unwrap().id;
+        let mut after = Lobbies::default();
+        after.look(1100, vec![]);
+        after.look(1101, vec![member(7, 2, "Kiwi")]);
+        assert!(after.events.back().unwrap().id > last, "a client's cursor from before is below the new ones");
     }
 }

@@ -77,6 +77,9 @@ message Message {
     // A deletion, not a message: drop the message with this id (by its sender or an admin).
     // Nothing else in it is to be shown.
     int64 deletes = 11;
+    // Typed in the game (its overlay), not the launcher. Not set by older servers and clients:
+    // the launcher, then.
+    bool from_game = 12;
 }
 
 message SendRequest {
@@ -84,6 +87,8 @@ message SendRequest {
     // For a direct message: the friend's identity.
     string to = 2;
     string text = 3;
+    // Typed in the game (its overlay), not the launcher.
+    bool from_game = 4;
 }
 
 message SendResponse {
@@ -99,12 +104,36 @@ message WaitRequest {
     // How long to hold the wait open, in seconds (0: about 25; at most that): shorter for a
     // client whose calls time out sooner (the game's overlay).
     uint32 wait_seconds = 2;
+    // The caller takes who joins and leaves its lobby (`WaitResponse.events`), after this one
+    // (0: none yet). An older client asks for none, and its waits end only for messages.
+    bool events = 3;
+    uint64 after_event = 4;
 }
 
 message WaitResponse {
     repeated Message messages = 1;
     // The newest message id seen (the next Wait's `after`).
     int64 last = 2;
+    // Who joined or left the caller's lobby, when it asked (an older server sends none), and the
+    // newest of them (the next Wait's `after_event`).
+    repeated LobbyEvent events = 3;
+    uint64 last_event = 4;
+}
+
+// A player joined or left a lobby (or match) on this server. Kept in the server's memory for
+// the lobby's life only, never stored.
+message LobbyEvent {
+    uint64 id = 1;
+    // Unix seconds.
+    int64 at = 2;
+    // The game session (Status's `lobby`).
+    uint32 lobby = 3;
+    string name = 4;
+    // Their identity, when their account is linked to one.
+    string identity = 5;
+    bool joined = 6;
+    // It's the caller.
+    bool mine = 7;
 }
 
 message HistoryRequest {

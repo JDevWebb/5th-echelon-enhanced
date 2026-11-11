@@ -281,20 +281,50 @@ impl ChatPage {
             "lobby" => " · the players in your party or match",
             _ => " · only the two of you see this",
         };
+        // Lobby's messages and who joined or left it, in time order (a join after the messages
+        // of its second).
+        let events = if self.tab == "lobby" { arr(v, "lobby_events") } else { &[] };
+        let mut items: Vec<(&Value, bool)> = Vec::with_capacity(messages.len() + events.len());
+        let (mut i, mut j) = (0, 0);
+        while i < messages.len() || j < events.len() {
+            let event_first = j < events.len() && (i == messages.len() || num(&events[j], "at") < num(&messages[i], "at"));
+            if event_first {
+                items.push((&events[j], true));
+                j += 1;
+            } else {
+                items.push((&messages[i], false));
+                i += 1;
+            }
+        }
+        let mut last_day: Option<String> = None;
         let mut last: Option<&Value> = None;
         let mut marked = false;
-        for m in messages {
+        for (m, event) in items {
             let id = id_of(m);
             let (day, at) = (st(m, "day"), num(m, "at") as i64);
-            let new_day = last.is_none_or(|l| st(l, "day") != day);
+            let new_day = last_day.as_ref().is_none_or(|d| *d != day);
             if new_day {
-                let text = if last.is_none() { format!("{day}{suffix}") } else { day.clone() };
+                let text = if last_day.is_none() { format!("{day}{suffix}") } else { day.clone() };
                 lines.push(crate::ChatLine {
                     kind: s("day"),
-                    key: s(format!("day:{id}")),
+                    key: s(format!("day:{}:{id}", if event { "e" } else { "m" })),
                     text: s(format!("— {text} —")),
                     ..Default::default()
                 });
+                last_day = Some(day.clone());
+            }
+            if event {
+                // A line of its own, in the log's caps; the sender's lines after it start again.
+                let who = if bo(m, "mine") { "You".to_string() } else { st(m, "name") };
+                lines.push(crate::ChatLine {
+                    kind: s("system"),
+                    key: s(format!("event:{id}")),
+                    time: s(st(m, "time")),
+                    text: s(format!("▸ {who} {} the lobby", if bo(m, "joined") { "joined" } else { "left" })),
+                    ..Default::default()
+                });
+                last = None;
+                continue;
             }
             let mut new_here = false;
             if !marked && !bo(m, "mine") && marker.is_some_and(|after| id > after) {
@@ -340,6 +370,7 @@ impl ChatPage {
                 reporting: self.reporting.as_ref().is_some_and(|(r, _)| *r == id),
                 can_message: friend && self.tab != "messages",
                 can_add: !friend && !mine,
+                in_game: bo(m, "from_game"),
             });
         }
         if let Some((rid, why)) = &self.reporting {
@@ -634,6 +665,23 @@ mod tests {
         let p = page.build(&v);
         let l = lines(&p);
         assert_eq!(l, vec![("day".into(), false), ("msg".into(), true), ("msg".into(), false), ("msg".into(), true)]);
+    }
+
+    #[test]
+    fn lobby_joins_sit_between_its_messages_in_time() {
+        let mut page = ChatPage::new();
+        page.section("lobby");
+        let mut typed = msg(2, 1100, "b", "Orrin", "ready");
+        typed["from_game"] = true.into();
+        let mut v = view(vec![msg(1, 1000, "a", "Kestrel", "hi"), typed]);
+        v["lobby"] = true.into();
+        v["lobby_events"] = json!([{ "id": 9, "at": 1050, "time": "14:07", "day": "Today", "name": "Orrin", "joined": true, "mine": false }]);
+        let p = page.build(&v);
+        let l = &p.chat.as_ref().unwrap().lines;
+        let kinds: Vec<&str> = l.iter().map(|l| l.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["day", "msg", "system", "msg"]);
+        assert_eq!(l[2].text.as_str(), "▸ Orrin joined the lobby");
+        assert!(l[3].in_game && !l[1].in_game, "the IN GAME tag on what was typed in the game");
     }
 
     #[test]

@@ -42,6 +42,19 @@ pub struct Msg {
     pub body: String,
     pub mine: bool,
     pub mentions_me: bool,
+    /// Typed in the game (an overlay's), not a launcher: the IN GAME tag.
+    pub from_game: bool,
+}
+
+/// Someone joined or left the player's lobby (from a server that says).
+#[derive(Debug, Clone)]
+pub struct Joined {
+    pub id: u64,
+    pub at: i64,
+    pub lobby: u32,
+    pub name: String,
+    pub joined: bool,
+    pub mine: bool,
 }
 
 impl Msg {
@@ -57,6 +70,7 @@ impl Msg {
             to: m.to,
             mine: m.mine,
             mentions_me: m.mentions_me,
+            from_game: m.from_game,
         }
     }
 
@@ -91,6 +105,8 @@ pub struct View {
     pub in_match: bool,
     pub global: Vec<Msg>,
     pub lobby_messages: Vec<Msg>,
+    /// Who joined or left the lobby, oldest first (cleared with its messages).
+    pub lobby_events: Vec<Joined>,
     pub direct: BTreeMap<String, Vec<Msg>>,
     /// Names of the people direct conversations are with (and friends), by identity.
     pub names: BTreeMap<String, String>,
@@ -241,6 +257,30 @@ fn take(messages: Vec<server_api::chat::Message>, toasts: bool) {
     });
 }
 
+/// Takes who joined or left the lobby (by id, once), keeping the newest [`KEEP`].
+fn take_events(events: Vec<server_api::chat::LobbyEvent>) {
+    update(|v| {
+        for e in events {
+            let e = Joined {
+                id: e.id,
+                at: e.at,
+                lobby: e.lobby,
+                name: clip(&e.name, MAX_NAME),
+                joined: e.joined,
+                mine: e.mine,
+            };
+            match v.lobby_events.binary_search_by_key(&e.id, |x| x.id) {
+                Ok(i) => v.lobby_events[i] = e,
+                Err(i) => v.lobby_events.insert(i, e),
+            }
+        }
+        if v.lobby_events.len() > KEEP {
+            let extra = v.lobby_events.len() - KEEP;
+            v.lobby_events.drain(..extra);
+        }
+    });
+}
+
 /// Asks the server whether chat is open to the player (and their lobby, whether in a match),
 /// and their friends to message.
 fn refresh_status() -> bool {
@@ -250,6 +290,7 @@ fn refresh_status() -> bool {
             update(|v| {
                 if s.lobby != v.lobby {
                     v.lobby_messages.clear();
+                    v.lobby_events.clear();
                 }
                 v.available = s.available;
                 v.why_not = clip(&s.why_not, 200);
@@ -284,6 +325,7 @@ pub fn start() {
         let mut status_at: Option<Instant> = None;
         let mut available = false;
         let mut after = 0;
+        let mut after_event = 0;
         let mut primed = false;
         let mut lobby_read = 0;
         let mut failures = 0u32;
@@ -312,15 +354,19 @@ pub fn start() {
                 }
             }
             let asked = Instant::now();
-            match crate::api::chat_wait(after) {
+            match crate::api::chat_wait(after, after_event) {
                 Ok(answer) => {
                     failures = 0;
                     // A wait answered at once with nothing (a server that doesn't hold it, or a
                     // stale cursor) mustn't make this thread ask again and again (R7).
-                    if answer.messages.is_empty() && asked.elapsed() < Duration::from_secs(1) {
+                    if answer.messages.is_empty() && answer.events.is_empty() && asked.elapsed() < Duration::from_secs(1) {
                         std::thread::sleep(Duration::from_secs(1));
                     }
                     after = answer.last.max(after);
+                    after_event = answer.last_event.max(after_event);
+                    if !answer.events.is_empty() {
+                        take_events(answer.events);
+                    }
                     // The first answer is what the server kept: no pop-ups for it.
                     take(answer.messages, primed);
                     primed = true;

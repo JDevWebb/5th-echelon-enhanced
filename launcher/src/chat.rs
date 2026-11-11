@@ -19,6 +19,7 @@ use eframe::egui;
 use eframe::egui::RichText;
 use server_api::chat::ChatFriend;
 use server_api::chat::Conversation;
+use server_api::chat::LobbyEvent;
 use server_api::chat::Message;
 use server_api::chat::Room;
 use server_api::chat::StatusResponse;
@@ -57,6 +58,8 @@ pub enum FeedEvent {
     /// Messages, and whether they're what the server kept before the feed began (the first
     /// answer): shown, but not counted as unseen.
     Messages(Vec<Message>, bool),
+    /// Who joined or left the player's lobby (from a server that says).
+    Lobby(Vec<LobbyEvent>),
     /// The server can't be reached, or said no: why, for the screen.
     Trouble(String),
     Back,
@@ -120,17 +123,25 @@ pub fn with_api<T>(cfg: &Config, f: impl Fn(&mut ChatApi) -> std::pin::Pin<Box<d
 /// again, until stopped.
 pub fn run_feed(cfg: Config, stop: Arc<AtomicBool>, tx: mpsc::Sender<FeedEvent>, notify: impl Fn()) {
     let mut after = 0;
+    let mut after_event = 0;
     let mut primed = false;
     let mut failures = 0u32;
     while !stop.load(Ordering::Relaxed) {
-        match with_api(&cfg, |api| Box::pin(api.wait(after))) {
+        match with_api(&cfg, |api| Box::pin(api.wait(after, after_event))) {
             Ok(answer) => {
                 if failures > 0 {
                     let _ = tx.send(FeedEvent::Back);
                 }
                 failures = 0;
                 after = answer.last.max(after);
+                after_event = answer.last_event.max(after_event);
                 let kept = !std::mem::replace(&mut primed, true);
+                if !answer.events.is_empty() {
+                    if tx.send(FeedEvent::Lobby(answer.events)).is_err() {
+                        return;
+                    }
+                    notify();
+                }
                 if !answer.messages.is_empty() {
                     if tx.send(FeedEvent::Messages(answer.messages, kept)).is_err() {
                         return;
@@ -250,6 +261,8 @@ pub struct Rooms {
     pub direct: BTreeMap<String, Vec<Message>>,
     /// Names of the people direct conversations are with.
     pub names: BTreeMap<String, String>,
+    /// Who joined or left the player's lobby, oldest first (cleared with the lobby's messages).
+    pub lobby_events: Vec<LobbyEvent>,
     /// Messages naming the player, and direct messages, not seen yet (the rail's count).
     pub unseen_mentions: u32,
     pub unseen_direct: BTreeMap<String, u32>,
@@ -264,6 +277,7 @@ impl Default for Rooms {
             lobby: Vec::new(),
             direct: BTreeMap::new(),
             names: BTreeMap::new(),
+            lobby_events: Vec::new(),
             unseen_mentions: 0,
             unseen_direct: BTreeMap::new(),
             conversations_stale: true,
@@ -275,6 +289,29 @@ impl Rooms {
     /// Unseen direct messages and mentions: the rail's count.
     pub fn unread(&self) -> u32 {
         self.unseen_mentions + self.unseen_direct.values().sum::<u32>()
+    }
+
+    /// The player's lobby changed: its messages and who joined or left it go.
+    pub fn lobby_changed(&mut self) {
+        self.lobby.clear();
+        self.lobby_events.clear();
+    }
+
+    /// Takes who joined or left the lobby (by id, once, cleaned), keeping the newest [`KEEP`].
+    pub fn take_events(&mut self, events: Vec<LobbyEvent>) {
+        use hooks_config::text::clip;
+        for mut e in events {
+            e.name = clip(&e.name, MAX_NAME);
+            e.identity = clip(&e.identity, MAX_IDENTITY);
+            match self.lobby_events.binary_search_by_key(&e.id, |x| x.id) {
+                Ok(i) => self.lobby_events[i] = e,
+                Err(i) => self.lobby_events.insert(i, e),
+            }
+        }
+        if self.lobby_events.len() > KEEP {
+            let extra = self.lobby_events.len() - KEEP;
+            self.lobby_events.drain(..extra);
+        }
     }
 
     /// Who a direct message is with, from the player's side.
@@ -487,7 +524,7 @@ impl Chat {
         match self.status_slot.poll() {
             Some(Ok((status, friends, online))) => {
                 if status.lobby != self.lobby_of {
-                    self.rooms.lobby.clear();
+                    self.rooms.lobby_changed();
                     self.lobby_of = status.lobby;
                     self.history_asked.remove("lobby");
                 }
@@ -535,6 +572,8 @@ impl Chat {
                 match event {
                     FeedEvent::Messages(m, true) => kept.extend(m),
                     FeedEvent::Messages(m, false) => arrived.extend(m),
+                    // Kept for the shared rooms; this launcher (the fallback) doesn't show them.
+                    FeedEvent::Lobby(events) => self.rooms.take_events(events),
                     FeedEvent::Trouble(e) => self.trouble = Some(e),
                     FeedEvent::Back => self.trouble = None,
                 }

@@ -852,12 +852,17 @@ pub fn chat_status() -> Result<server_api::chat::StatusResponse, Error> {
     }))
 }
 
-/// The chat messages for the player after `after`: at once, or when one comes, within 8 s (the
-/// overlay's calls time out at 10).
-pub fn chat_wait(after: i64) -> Result<server_api::chat::WaitResponse, Error> {
+/// The chat messages for the player after `after`, and who joined or left their lobby after
+/// `after_event`: at once, or when one comes, within 8 s (the overlay's calls time out at 10).
+pub fn chat_wait(after: i64, after_event: u64) -> Result<server_api::chat::WaitResponse, Error> {
     run(signed_in(|| async {
         let mut client = connect!(ChatClient);
-        let request = tonic::Request::new(server_api::chat::WaitRequest { after, wait_seconds: 8 });
+        let request = tonic::Request::new(server_api::chat::WaitRequest {
+            after,
+            wait_seconds: 8,
+            events: true,
+            after_event,
+        });
         Ok(client.wait(request).await?.into_inner())
     }))
 }
@@ -869,6 +874,8 @@ pub fn chat_send(room: server_api::chat::Room, to: &str, text: &str) -> Result<s
             room: room.into(),
             to: to.into(),
             text: text.into(),
+            // From the overlay: the IN GAME tag beside it.
+            from_game: true,
         });
         Ok(client.send(request).await?.into_inner())
     }))

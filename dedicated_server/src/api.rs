@@ -2625,10 +2625,14 @@ pub async fn start_server(
         .add_optional_service(reflection_v1)
         // Chat on the community network (chat.rs): Unimplemented elsewhere.
         .add_service(authenticated(
-            server_api::chat::chat_server::ChatServer::new(crate::chat::MyChat {
-                logger: logger.clone(),
-                storage: Arc::clone(&storage),
-            }),
+            {
+                // Who joins and leaves the lobbies, for their chat.
+                crate::chat::start_lobby_watch(Arc::clone(&storage), logger.clone());
+                server_api::chat::chat_server::ChatServer::new(crate::chat::MyChat {
+                    logger: logger.clone(),
+                    storage: Arc::clone(&storage),
+                })
+            },
             logger.clone(),
             key.clone(),
             Arc::clone(&storage),

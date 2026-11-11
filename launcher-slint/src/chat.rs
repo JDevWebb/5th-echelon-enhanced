@@ -130,7 +130,7 @@ fn tick(app: &tauri::AppHandle) {
         match read {
             Ok((status, friends, online)) => {
                 if status.lobby != st.lobby_of {
-                    st.rooms.lobby.clear();
+                    st.rooms.lobby_changed();
                     st.lobby_of = status.lobby;
                     st.history_asked.remove("lobby");
                 }
@@ -253,6 +253,10 @@ fn start_feed(app: &tauri::AppHandle, cfg: &Config) {
                     let (tab, with, showing) = (st.tab.unwrap_or(Tab::Global), st.with.clone(), st.showing);
                     st.rooms.take(messages, kept, |t| showing && tab == t, with.as_deref())
                 }
+                c::FeedEvent::Lobby(events) => {
+                    st.rooms.take_events(events);
+                    false
+                }
                 c::FeedEvent::Trouble(e) => {
                     st.trouble = Some(e);
                     false
@@ -324,6 +328,20 @@ pub struct MessageView {
     mentions_me: bool,
     /// The sender is the player's friend (to message them from Global).
     friend: bool,
+    /// Typed in the game (its overlay), not the launcher.
+    from_game: bool,
+}
+
+/// Someone joined or left the player's lobby.
+#[derive(Serialize)]
+pub struct EventView {
+    id: u64,
+    at: i64,
+    time: String,
+    day: String,
+    name: String,
+    joined: bool,
+    mine: bool,
 }
 
 #[derive(Serialize)]
@@ -360,8 +378,9 @@ pub struct ChatView {
     may_post_global: bool,
     global_wait: String,
     lobby: bool,
-    /// The open room's messages, oldest first.
+    /// The open room's messages, oldest first; in Lobby, who joined or left it.
     messages: Vec<MessageView>,
+    lobby_events: Vec<EventView>,
     /// The conversations, and friends to start one with.
     conversations: Vec<RoomEntry>,
     online: Vec<OnlineView>,
@@ -437,8 +456,27 @@ pub fn chat(app: tauri::AppHandle, state: tauri::State<Chat>, tab: String, with:
             mine: m.mine,
             mentions_me: m.mentions_me,
             friend: friends.contains(m.from.as_str()),
+            from_game: m.from_game,
         })
         .collect();
+    let lobby_events = match tab {
+        Tab::Lobby => st
+            .rooms
+            .lobby_events
+            .iter()
+            .filter(|e| e.lobby == st.lobby_of)
+            .map(|e| EventView {
+                id: e.id,
+                at: e.at,
+                time: clock.clock_time(e.at),
+                day: day(e.at),
+                name: e.name.clone(),
+                joined: e.joined,
+                mine: e.mine,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
     let mut conversations: Vec<RoomEntry> = st
         .conversations
         .iter()
@@ -512,6 +550,7 @@ pub fn chat(app: tauri::AppHandle, state: tauri::State<Chat>, tab: String, with:
         global_wait: status.global_wait,
         lobby: status.lobby != 0,
         messages,
+        lobby_events,
         conversations,
         online,
         with_name,

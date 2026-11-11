@@ -189,7 +189,8 @@ export struct ChatTab {
 }
 
 export struct ChatLine {
-    // "msg", "day" (a day's line) or "new" (where the unseen messages start).
+    // "msg", "day" (a day's line), "new" (where the unseen messages start) or "system" (someone
+    // joined or left the lobby).
     kind: string,
     // The message's id, for what's done to it.
     key: string,
@@ -213,6 +214,8 @@ export struct ChatLine {
     reporting: bool,
     can-message: bool,
     can-add: bool,
+    // Typed in the game (its overlay), not the launcher: the IN GAME tag.
+    in-game: bool,
 }
 
 export struct RosterRow {

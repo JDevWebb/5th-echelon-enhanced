@@ -136,13 +136,13 @@ component LogLine inherits TouchArea {
     if l.mine: Rectangle { x: 0; width: 3px; background: Theme.me; }
     if l.mention: Rectangle { x: 0; width: 3px; background: Theme.accent; }
     lay := HorizontalLayout {
-        padding-top: l.kind == "new" ? 10px : l.kind == "day" ? 12px : l.head ? 7px : 1px;
-        padding-bottom: l.kind == "new" ? 6px : l.kind == "day" ? 6px : 3px;
+        padding-top: l.kind == "new" ? 10px : l.kind == "day" ? 12px : l.kind == "system" ? 6px : l.head ? 7px : 1px;
+        padding-bottom: l.kind == "new" || l.kind == "day" ? 6px : l.kind == "system" ? 4px : 3px;
         padding-right: root.right-pad;
         spacing: 12px;
         Text {
             width: root.time-width;
-            text: root.msg && l.head ? l.time : "";
+            text: (root.msg && l.head) || l.kind == "system" ? l.time : "";
             font-family: Type.mono;
             font-size: 11.5px;
             color: l.mention ? Theme.accent : Theme.muted;
@@ -197,6 +197,16 @@ component LogLine inherits TouchArea {
                     }
                 }
                 if l.friend: Caps { text: "FRIEND"; font-size: 10.5px; color: Theme.accent; vertical-alignment: center; }
+                if l.in-game: VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: ig.preferred-width + 8px;
+                        height: ig.preferred-height + 2px;
+                        border-width: 1px;
+                        border-color: Theme.control-line;
+                        ig := Caps { text: "IN GAME"; font-size: 9.5px; color: Theme.muted; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                }
             }
             Text { text: l.text; font-size: root.text-size; color: Theme.fg; wrap: word-wrap; }
             if l.invite != "": HorizontalLayout {

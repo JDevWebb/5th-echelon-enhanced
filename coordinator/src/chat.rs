@@ -300,6 +300,7 @@ impl Coordinator {
             "to": row.recipient,
             "body": row.body,
             "deletes": row.deletes,
+            "from_game": row.from_game,
         })
     }
 
@@ -307,7 +308,7 @@ impl Coordinator {
     /// messages to or from players linked to it.
     async fn chat_for_server(&self, server: &str, after: i64) -> sqlx::Result<Vec<Row>> {
         sqlx::query_as(
-            "SELECT id, room, conv, at, sender, sender_name, server, recipient, body, deletes FROM chat_messages m
+            "SELECT id, room, conv, at, sender, sender_name, server, recipient, body, deletes, from_game FROM chat_messages m
              WHERE m.id > ?1 AND m.deleted_at IS NULL AND (
                  m.room = 'global'
                  OR (m.room = 'lobby' AND substr(m.conv, 1, length(?2) + 7) = 'lobby:' || ?2 || ':')
@@ -424,6 +425,8 @@ struct Row {
     body: String,
     /// For a deletion: the message it deletes.
     deletes: Option<i64>,
+    /// Typed in the game (its overlay), not the launcher.
+    from_game: bool,
 }
 
 #[derive(Deserialize)]
@@ -438,6 +441,9 @@ struct SendRequest {
     #[serde(default)]
     session: Option<u32>,
     text: String,
+    /// Typed in the game (its overlay), not the launcher; an older server sends none.
+    #[serde(default)]
+    from_game: bool,
 }
 
 /// `POST /v1/chat/send` (a member server, for one of its players): the message as sent, or why
@@ -542,7 +548,7 @@ pub(crate) async fn send(State(c): State<Shared>, headers: HeaderMap, body: axum
         return refused("invite_wait", "One Discord invite every 10 minutes in Global.");
     }
     let id: i64 = match sqlx::query_scalar(
-        "INSERT INTO chat_messages (room, conv, at, sender, sender_name, server, recipient, body, masked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+        "INSERT INTO chat_messages (room, conv, at, sender, sender_name, server, recipient, body, masked, from_game) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
     )
     .bind(room)
     .bind(&conv)
@@ -553,6 +559,7 @@ pub(crate) async fn send(State(c): State<Shared>, headers: HeaderMap, body: axum
     .bind(&recipient)
     .bind(&checked.text)
     .bind(i64::from(checked.masked))
+    .bind(r.from_game)
     .fetch_one(&c.pool)
     .await
     {
@@ -579,6 +586,7 @@ pub(crate) async fn send(State(c): State<Shared>, headers: HeaderMap, body: axum
         recipient,
         body: checked.text,
         deletes: None,
+        from_game: r.from_game,
     };
     let names = c.chat_server_names().await;
     ok(json!({ "message": Coordinator::chat_message_json(&row, &names) }))
@@ -674,7 +682,7 @@ pub(crate) async fn history(State(c): State<Shared>, headers: HeaderMap, Query(q
     let limit = q.limit.unwrap_or(50).clamp(1, 100);
     let before = if q.before > 0 { q.before } else { i64::MAX };
     let rows: Vec<Row> = match sqlx::query_as(
-        "SELECT id, room, conv, at, sender, sender_name, server, recipient, body, deletes FROM chat_messages
+        "SELECT id, room, conv, at, sender, sender_name, server, recipient, body, deletes, from_game FROM chat_messages
          WHERE conv = ? AND id < ? AND deleted_at IS NULL AND deletes IS NULL ORDER BY id DESC LIMIT ?",
     )
     .bind(&q.conv)

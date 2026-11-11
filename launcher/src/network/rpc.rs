@@ -596,13 +596,30 @@ impl ChatApi {
     }
 
     pub async fn send(&mut self, room: server_api::chat::Room, to: String, text: String) -> Result<server_api::chat::SendResponse, Error> {
-        let r = authed(server_api::chat::SendRequest { room: room.into(), to, text }, &self.token);
+        let r = authed(
+            server_api::chat::SendRequest {
+                room: room.into(),
+                to,
+                text,
+                from_game: false,
+            },
+            &self.token,
+        );
         self.client.send(r).await.map(tonic::Response::into_inner).map_err(chat_error)
     }
 
-    /// The messages after `after`: at once, or when one comes, or after about 25 s.
-    pub async fn wait(&mut self, after: i64) -> Result<server_api::chat::WaitResponse, Error> {
-        let r = authed(server_api::chat::WaitRequest { after, wait_seconds: 0 }, &self.token);
+    /// The messages after `after`, and who joined or left the lobby after `after_event`: at
+    /// once, or when one comes, or after about 25 s.
+    pub async fn wait(&mut self, after: i64, after_event: u64) -> Result<server_api::chat::WaitResponse, Error> {
+        let r = authed(
+            server_api::chat::WaitRequest {
+                after,
+                wait_seconds: 0,
+                events: true,
+                after_event,
+            },
+            &self.token,
+        );
         self.client.wait(r).await.map(tonic::Response::into_inner).map_err(chat_error)
     }
 
