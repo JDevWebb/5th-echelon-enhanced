@@ -2877,8 +2877,9 @@ impl ImguiRenderLoop for MyRenderLoop {
 
     fn message_filter(&self, _io: &imgui::Io) -> hudhook::MessageFilter {
         // The panel takes the input; while the quick start takes the game through its menus, a
-        // click or key would fight it, so the game doesn't get them either (Alt+F4 still quits).
-        if matches!(self.ui_state, UiState::Show) || crate::overlay_input::held_back() {
+        // click or key would fight it, so the game doesn't get them either (Alt+F4 still quits);
+        // nor the Esc that stopped it, until that's let go (overlay_input::stopping_esc).
+        if matches!(self.ui_state, UiState::Show) || crate::overlay_input::held_back() || crate::overlay_input::stopping_esc() {
             hudhook::MessageFilter::InputAll
         } else {
             hudhook::MessageFilter::empty()

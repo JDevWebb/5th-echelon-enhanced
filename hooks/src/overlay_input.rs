@@ -298,6 +298,13 @@ fn now_ms() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
+/// Whether the Esc that stopped the quick start is still kept from the game: its window's input
+/// messages are held back as long, as that Esc's key message can come after the stop (the
+/// overlay can see the key down first), and at the title it would close the game.
+pub(crate) fn stopping_esc() -> bool {
+    stop_esc_kept()
+}
+
 /// Whether the stopping Esc is still kept from the game's DirectInput.
 fn stop_esc_kept() -> bool {
     if !crate::quickstart::aborted() {
