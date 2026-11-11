@@ -39,8 +39,10 @@ export component AppWindow inherits Window {
         Layout.width = root.width;
         Layout.height = root.height;
     }
-    changed width => { Layout.width = root.width; }
-    changed height => { Layout.height = root.height; }
+    changed width => { Layout.width = root.width; root.resized(); }
+    changed height => { Layout.height = root.height; root.resized(); }
+    // The window's size changed: the launcher's scale follows it (shell.rs, rescale).
+    callback resized();
     out property <string> band: Layout.band;
     callback band-changed(string);
     changed band => { root.band-changed(root.band); }

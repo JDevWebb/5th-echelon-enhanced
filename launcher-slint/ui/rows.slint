@@ -461,27 +461,13 @@ export component RowItem inherits Rectangle {
             color: item.tone == "accent" ? Theme.accent : Theme.muted;
         }
         // About's head: the mark large, the product, its release and whether it's current,
-        // a line on what it is, and what to do. The echelon steps back across the card, faintly.
+        // a line on what it is, and what to do.
         if item.kind == "about": Rectangle {
             min-height: about-lay.preferred-height;
             background: Theme.surface;
             border-radius: 6px;
             border-width: 1px;
             border-color: Theme.line;
-            clip: true;
-            // Kept to the top corner, clear of the text (none at compact sizes).
-            if !Layout.compact: Rectangle {
-                x: parent.width - 300px;
-                y: -80px;
-                width: 300px;
-                height: 220px;
-                opacity: 0.08;
-                Rectangle { x: 20px; y: 150px; width: 44px; height: 44px; border-radius: 6px; background: Theme.muted; }
-                Rectangle { x: 74px; y: 110px; width: 44px; height: 44px; border-radius: 6px; background: Theme.muted; }
-                Rectangle { x: 128px; y: 70px; width: 44px; height: 44px; border-radius: 6px; background: Theme.muted; }
-                Rectangle { x: 182px; y: 30px; width: 44px; height: 44px; border-radius: 6px; background: Theme.muted; }
-                Rectangle { x: 236px; y: -10px; width: 44px; height: 44px; border-radius: 6px; background: Theme.accent; }
-            }
             about-lay := HorizontalLayout {
                 padding: Layout.compact ? 20px : 26px;
                 spacing: Layout.compact ? 18px : 24px;

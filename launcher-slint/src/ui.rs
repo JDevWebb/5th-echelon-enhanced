@@ -104,6 +104,10 @@ pub struct Ui {
     actions: Mutex<Option<std::sync::mpsc::Sender<Box<dyn FnOnce(&Arc<Ui>) + Send>>>>,
     /// The system's own scaling, before the player's size.
     base_scale: Mutex<f32>,
+    /// The player's size for the launcher (Settings › Display), on top of the window's own.
+    pub(crate) player_size: Mutex<f32>,
+    /// Set once the window is up with the system's scale: until then, it isn't rescaled.
+    pub(crate) scale_ready: AtomicBool,
     /// The game's own pictures for matches (Matches' band), by name, read once each from the
     /// player's game (None: it hasn't got that one).
     map_art: Mutex<std::collections::HashMap<&'static str, Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>>>>,
@@ -997,6 +1001,8 @@ pub fn run() -> Result<(), slint::PlatformError> {
         pages: crate::shell::Pages::new(fresh),
         actions: Mutex::new(None),
         base_scale: Mutex::new(window.window().scale_factor()),
+        player_size: Mutex::new(Prefs::ui_scale()),
+        scale_ready: AtomicBool::new(false),
         map_art: Mutex::new(Default::default()),
     });
     *ui_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::downgrade(&ui));
@@ -1051,16 +1057,16 @@ pub fn run() -> Result<(), slint::PlatformError> {
     crate::chat::start(&app);
     crate::update::start(&app);
     told_once(&ui);
-    // The player's size for the launcher, kept from before.
-    let size = Prefs::ui_scale();
-    if (size - 1.0).abs() > 0.01 {
-        // Once the window is up with its own scale (the system's), the player's on top.
+    // Once the window is up with its own scale (the system's): the launcher's size for the
+    // window's (a big window, bigger), and the player's on top.
+    {
         let ui2 = ui.clone();
         slint::Timer::single_shot(Duration::from_millis(400), move || {
             if let Some(w) = ui2.window().upgrade() {
                 *ui2.base_scale.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = w.window().scale_factor();
             }
-            ui2.apply_size(size);
+            ui2.scale_ready.store(true, std::sync::atomic::Ordering::Relaxed);
+            ui2.rescale();
         });
     }
     if ui.setup_shown() {

@@ -411,15 +411,53 @@ impl Ui {
 
     /// The player's size for the launcher, on top of the system's own scaling.
     pub fn apply_size(self: &Arc<Self>, size: f32) {
+        *self.player_size.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = size;
+        self.rescale();
+    }
+
+    /// The launcher's scale: the system's, the window's (a big window gets bigger text and
+    /// controls, not just more space; see [`window_scale`]) and the player's size on top.
+    pub fn rescale(self: &Arc<Self>) {
+        if !self.scale_ready.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
         let base = self.base_scale();
+        let size = *self.player_size.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let _ = self.window().upgrade_in_event_loop(move |w| {
             // The window keeps its size on screen; what's in it gets bigger or smaller: the
             // same pixels, fewer (or more) logical ones.
             let keep = w.window().size();
-            let scale = base * size;
+            let scale = base * size * window_scale(keep.width as f32 / base, keep.height as f32 / base);
+            if (scale - w.window().scale_factor()).abs() < 0.01 {
+                return;
+            }
             w.window().dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged { scale_factor: scale });
             w.window().dispatch_event(slint::platform::WindowEvent::Resized { size: keep.to_logical(scale) });
         });
+    }
+}
+
+/// How much bigger the launcher gets for a window of this size (in the system's own points):
+/// none up to 1366x800, then half as fast as the window grows (about 1.2 at 1920x1080, 1.4 at
+/// 2560x1440), in steps of 5 % and at most double, so text stays readable on a big screen.
+pub fn window_scale(width: f32, height: f32) -> f32 {
+    let k = (width / 1366.0).min(height / 800.0);
+    let s = 1.0 + (k - 1.0) * 0.5;
+    ((s * 20.0).round() / 20.0).clamp(1.0, 2.0)
+}
+
+#[cfg(test)]
+mod window_scale_tests {
+    use super::window_scale;
+
+    #[test]
+    fn grows_with_big_windows_only() {
+        assert_eq!(window_scale(960.0, 600.0), 1.0);
+        assert_eq!(window_scale(1280.0, 800.0), 1.0);
+        assert_eq!(window_scale(1366.0, 768.0), 1.0);
+        assert!((1.1..=1.25).contains(&window_scale(1920.0, 1080.0)));
+        assert!((window_scale(2560.0, 1440.0) - 1.4).abs() < 0.01);
+        assert_eq!(window_scale(7680.0, 4320.0), 2.0);
     }
 }
 
@@ -427,6 +465,15 @@ impl Ui {
 pub fn wire(w: &AppWindow, ui: &Arc<Ui>) {
     // The window's size band: some pages show more at wide, or less at compact.
     crate::pages::set_band(&w.get_band());
+    // A resize: the launcher's scale for the window's new size, once the resizing settles.
+    let rescale = std::rc::Rc::new(slint::Timer::default());
+    w.on_resized({
+        let ui = ui.clone();
+        move || {
+            let ui = ui.clone();
+            rescale.start(slint::TimerMode::SingleShot, std::time::Duration::from_millis(150), move || ui.rescale());
+        }
+    });
     w.on_band_changed({
         let ui = ui.clone();
         move |band| {
