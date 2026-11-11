@@ -1,0 +1,89 @@
+<!-- Moved from the README (2026-11-10), unchanged. -->
+# Features
+
+## For players
+- **Online co-op and Spies vs Mercs:**
+  - matchmaking through Find Teammate and Quick Match;
+  - lobby invites;
+  - **invites into private matches**.
+- **Internet play without a VPN:** public addresses from the server, router port forwarding (UPnP / NAT-PMP), and a relay through the server when a router can't be reached.
+- **An automatic setup:** game detection, client install, your account found (or made) with your identity, the network adapter chosen at every start, and your save (your Ubisoft Connect one, or a new rank 5 one), then a Status card with a fix for each problem.
+- **An in-game overlay** (<kbd>F5</kbd>, or a key you choose): friends and what they're playing, friend requests, player search and blocking, chat, invites, lobby player limits, and server status.
+- **Chat on the community network:** Global, lobby and friends chat in the launcher and the overlay, with who's online beside it; no links but Discord invites, slurs and hate masked, and reports the network's admins act on ([docs/chat.md](chat.md)).
+- **Fixes for the game's own crashes:** the client patches crashes in the game's code in memory (big Spies vs Mercs lobbies, leaving a match, voice chat, its network code), ends a host migration that never finishes, and writes where a freeze stuck to the log.
+- **One identity, every server:** the launcher makes you an identity (a key that stays on your PC) and links every account to it. It finds your account on a server by itself, with no username or password to remember, and asks for a name only the first time. Friends made on one server show up on every other server that shares a coordinator, and friends playing on another of them are listed in the overlay and the launcher, which joins you to their server in one click. Moving PCs? Copy your identity across in **Settings**, before connecting on the new PC ([how](friends.md#your-identity)).
+- **Your name is yours:** servers that share a coordinator reserve each name for one player. Elsewhere, the overlay warns when someone has a friend's name but isn't them. You can rename your account from the launcher.
+- **No slurs or hate in names:** new names and renames are checked (swearing is fine). A player whose name breaks the rules is asked to choose another before they play, with one click to ask the admins for a review if it's a mistake ([how it looks](https://github.com/JDevWebb/5th-echelon-enhanced/wiki/Your-Account-and-Identity#when-youre-asked-to-choose-another-name)).
+- **One server for the whole network:** on a network with a matchmaking server (the community network is one), everyone signs in to it and every search finds every region's players; the launcher pings the network's relays and the game uses the nearest.
+- **A server directory:** joining a server that shares a coordinator brings in its directory. On a network of several servers the launcher pings every server in it, preselects the best (the lowest ping, then the busiest), and its server menu moves you to another in one click.
+- **Save games:**
+  - a rank 5 save for new players with no save anywhere;
+  - raising an existing save to rank 5 (with a backup first);
+  - your Ubisoft Connect save brought over at setup (the newest, from any Ubisoft account on the PC, on Windows and in a Proton or Wine prefix), and raised to rank 5 only if it's lower;
+  - importing any save file: from another PC, Ubisoft Connect's `1.save`, or one of the launcher's backups;
+  - backups.
+- **Staying signed in:**
+  - the client signs in again on its own if the server restarts or your sign-in lapses;
+  - logins survive server restarts.
+- **Updates:** the launcher updates itself from this project's releases (each one's notes carry checksums, build provenance and [VirusTotal](../README.md#antivirus-warnings) results). It checks every download against the published SHA-256 checksums, and the checksums against the release key's signature, so a changed release is never installed.
+  - **When:** at start, every 4 hours while it's open, and at once when a server refuses it as outdated (the Status card then offers **Update**). Development builds never update themselves.
+  - **One release:** the launcher and the client DLL it installs are always the same version; the launcher replaces any other version in the game folder. Servers refuse launchers and clients older than they allow (by default, their own release).
+- **Your details stay yours:**
+  - the launcher and overlay use HTTPS where the server offers it, so passwords and sign-ins never travel unencrypted;
+  - the server's relay carries only your game's players: those in your party or match, a public match's host you're joining, and players you invited or who invited you;
+  - a network's admin UI sees counts and cities, never your address; your launcher reports its ping to each server and relay in a directory, from which only your city is noted;
+  - a server directory is used only over `https://`, never replaces one you chose, and lists only public hosts, each shown by name;
+  - on Windows, saved passwords and your identity key are encrypted for your Windows user.
+- **Fits your screen:** resize, maximise or go full screen (<kbd>F11</kbd>) and the launcher scales to fit; on a small or high-DPI screen it starts smaller. Make everything bigger or smaller in **Settings › Display** or with <kbd>Ctrl</kbd> + / <kbd>Ctrl</kbd> −.
+- **Linux and Steam Deck:** a native Linux launcher, Proton and Wine support in the client, and the many-core CPU fix.
+- **Unusual game builds:** unknown game executables can be identified from the launcher, which covers most mods.
+
+## For server operators
+- **One server for everything:** accounts, matchmaking, invites, friends and presence, news, challenges, and the game's configuration and content.
+- **Friend lists for public servers:** friends-only lists and invites (`[friends] mode = "mutual"`), blocking, and rate limits on invites and friend requests.
+- **Friends across servers:** a **coordinator** shares friendships and blocks between servers, reserves each player's name across them, and lists them in a server directory. The Linux installer runs one next to your server, or on a machine of its own, for [a network of your own](../README.md#run-your-own-server).
+- **Global matchmaking:** one **matchmaking server** for a whole network, with **relays** (a NAT helper and relay alone, no game services) near each region's players. The matchmaking server signs a relay pass at sign-in, relays forward to each other only between players it put together, it can have a standby on each relay, and `--merge-accounts` with `copy-links` moves a network of regional servers onto it at once, accounts, friends and links included ([docs/cutover.md](cutover.md), [docs/failover.md](failover.md)).
+- **A network that updates itself:** the coordinator rolls out each signed release to its servers, one first, then the rest. Each server's updater checks the signature, and puts the previous release back if the new one doesn't come back healthy. Members keep up, or leave the directory.
+- **An admin UI for the network:**
+  - **What it shows:**
+    - players and where they are (cities, on a map);
+    - what's being played;
+    - pings from players and the coordinator;
+    - each server's CPU, memory and bandwidth, live;
+    - bandwidth over time: in, out and relayed, the 95th percentile, monthly allowances, CSV export;
+    - players over time, play time and when people play, and the matches played (by mode, map, length and players);
+    - the players on every server, by name, with their play time, sessions and matches, and actions on them: kick, ban, a new password, rename, ask to rename, allow a name the rules flagged by mistake, delete (never their addresses);
+    - alerts (a server offline, CPU, memory, disk, refused sign-ins, the traffic allowance, failed updates), optionally posted to Discord or Slack;
+    - players' reports after their sessions (what went wrong, their logs, redacted on their PC, and the server's), to read, reply to and resolve, each posted to the alert chat;
+    - every game open now (**Live**), and each player's sessions: how each stay ended, where, and with whom;
+    - on the community network, **Support**: each player's conversation with the admins, their logs and accounts;
+    - the update rollout.
+  - **How it's protected:**
+    - it's served only through Cloudflare;
+    - sign-in takes passkeys, or a password with an authenticator app;
+    - sign-in can be limited by address and country;
+    - every action is recorded in an audit log.
+  - See [docs/operations.md](operations.md).
+- **A one-script Linux install:** Caddy with automatic certificates, the API over HTTPS, sandboxed systemd services (Caddy included, its admin API on a root-only socket), firewall rules, a guided setup for sharing friends, `--status`, and updates that check the release's signature. See [docs/deploying.md](deploying.md).
+- **A hardened host in one more script:** `scripts/harden-host.sh` does the following:
+  - installs updates, and lets unattended upgrades reboot at a quiet hour;
+  - locks SSH down to keys, named users and local tunnels, optionally on another port, with an automatic undo if you'd be locked out;
+  - adds fail2ban;
+  - hardens the kernel and turns off services a server doesn't need.
+- **Runs anywhere:**
+  - Windows, from the launcher's **Host** screen or on its own;
+  - Linux;
+  - Docker.
+- **A management screen** in the launcher: see and remove players and games, and read the log. It works for the server on your PC, or for a remote server through an SSH tunnel with its admin key.
+- **Built for the public internet**, and [audited](whats-new-since-5th-echelon.md#whats-new-since-5th-echelon):
+  - rate limits on logins (per address and per account), new accounts, invites, searches and friend requests;
+  - login tickets that expire, and API tokens that end when the password changes;
+  - private matches need an invite, are never offered to Find Teammate or Quick Match, and only a match's own players can change them;
+  - caps on packets, fragments, connections per address, sessions and lookups, and on the API's and the coordinator's connections, streams and message sizes;
+  - a relay that carries traffic only between players the server put together;
+  - a directory that lists a server only where the server answering gives its id;
+  - the admin API never reachable from the internet;
+  - a malformed packet can't crash it.
+- **Internet play for everyone:** a NAT helper tells each game its public address, and relays matches for players whose routers can't be reached directly.
+- **Fixes joins over VPNs:** `trusted_subnet` corrects players who advertise the wrong network adapter.
+- **A community API** on port 80, each part opt-in: server info, who's online, and sign-up for tools (off where accounts need an identity).
