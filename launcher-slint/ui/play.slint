@@ -4,7 +4,7 @@
 // maintenance, the news; beside it the Status and Squad tabs.
 
 import { ScrollView } from "std-widgets.slint";
-import { Theme, Type } from "theme.slint";
+import { Theme, Type, Layout } from "theme.slint";
 import { EchelonMark } from "brand.slint";
 import { Btn, Link, Spinner, Dot, Caps, Rule } from "widgets.slint";
 import { Icon, Icons } from "chrome.slint";
@@ -176,11 +176,11 @@ export component PlayScreen inherits Rectangle {
             Rectangle { background: @linear-gradient(90deg, #0a0e0fd9 0%, #0a0e0f00 70%); }
 
             VerticalLayout {
-                padding-left: 36px;
-                padding-right: 36px;
-                padding-top: 22px;
-                padding-bottom: 22px;
-                spacing: 10px;
+                padding-left: root.stage-pad;
+                padding-right: root.stage-pad;
+                padding-top: Layout.wide ? 28px : 22px;
+                padding-bottom: Layout.wide ? 30px : 22px;
+                spacing: Layout.wide ? 14px : 10px;
 
                 // The banners: a name the network refuses, and a Uplay emulator.
                 if info.name-not-allowed != "": Rectangle {
@@ -311,20 +311,24 @@ export component PlayScreen inherits Rectangle {
                 if !root.short: Text {
                     text: "Co-op and Spies vs Mercs on community servers. No VPN, no port forwarding.";
                     color: Theme.stage-soft;
-                    font-size: 16px;
+                    font-size: Layout.wide ? 18px : 16px;
                     wrap: word-wrap;
                 }
                 Rectangle { height: 8px; }
 
+                // In a row of its own, aligned to the start: a child's max-width caps the column
+                // it's in, and so the stage and the whole screen (which stopped at ~1470 px).
+                HorizontalLayout {
+                alignment: start;
                 launch := HorizontalLayout {
-                    max-width: 940px;
+                    width: root.launch-width;
                     spacing: 20px;
                     // The server card, and its menu.
                     server := Rectangle {
                         min-width: 190px;
-                        max-width: 420px;
+                        max-width: Layout.wide ? 520px : 420px;
                         horizontal-stretch: 1;
-                        height: 58px;
+                        height: root.launch-height;
                         border-radius: 4px;
                         background: #0c1112cc;
                         border-width: 1px;
@@ -357,9 +361,9 @@ export component PlayScreen inherits Rectangle {
                     split := HorizontalLayout {
                         spacing: 2px;
                         play := Rectangle {
-                            min-width: 210px;
+                            min-width: Layout.wide ? 300px : 210px;
                             horizontal-stretch: 0;
-                            height: 58px;
+                            height: root.launch-height;
                             border-radius: 4px;
                             background: root.play-colour;
                             opacity: button.disabled && !button.busy ? 0.7 : 1;
@@ -434,9 +438,9 @@ export component PlayScreen inherits Rectangle {
                             }
                         }
                         more := Rectangle {
-                            width: 42px;
+                            width: Layout.wide ? 56px : 42px;
                             horizontal-stretch: 0;
-                            height: 58px;
+                            height: root.launch-height;
                             border-radius: 4px;
                             background: root.play-colour;
                             opacity: root.modes-allowed ? 1 : 0.55;
@@ -479,6 +483,7 @@ export component PlayScreen inherits Rectangle {
                             }
                         }
                     }
+                }
                 }
 
                 // The notice: a release going out, or maintenance.
@@ -547,7 +552,9 @@ export component PlayScreen inherits Rectangle {
                     wrap: word-wrap;
                 }
                 if news.length > 0: HorizontalLayout {
-                    max-width: 940px;
+                alignment: start;
+                HorizontalLayout {
+                    width: root.launch-width;
                     spacing: 12px;
                     padding-top: 6px;
                     Caps { text: "INTEL"; color: Theme.stage-accent; vertical-alignment: center; }
@@ -560,13 +567,14 @@ export component PlayScreen inherits Rectangle {
                     }
                     Link { text: "All news"; tint: Theme.stage-accent; clicked => { root.go("intel"); } }
                 }
+                }
             }
 
         }
 
         // The drawer: Status and Squad.
         drawer := Rectangle {
-            width: clamp(root.width * 0.3, 300px, 380px);
+            width: root.drawer-width;
             background: Theme.surface;
             Rectangle { x: 0; width: 1px; background: Theme.line; }
             VerticalLayout {
@@ -1014,7 +1022,21 @@ export component PlayScreen inherits Rectangle {
     property <bool> modes-open;
     // The window's height (from AppWindow: the screen's own would loop through its layout).
     in property <length> window-height: 800px;
-    out property <length> hero-size: clamp(min((root.width - clamp(root.width * 0.3, 300px, 380px)) * 0.085, window-height * 0.1), 40px, 92px);
+    // The drawer (Status and Squad), always against the window's right edge: 300 to 340 px at
+    // compact, 360 regular, up to 440 wide. The stage takes the rest.
+    out property <length> drawer-width: Layout.compact ? clamp(root.screen-width * 0.32, 300px, 340px)
+        : Layout.wide ? clamp(root.screen-width * 0.2, 380px, 440px)
+        : 360px;
+    // The screen's width from the window's (the side menu off), not its own: what's in it is
+    // sized from it, and its own would loop back through its layout.
+    property <length> screen-width: Layout.width - 80px;
+    property <length> launch-width: min(root.launch-max, root.screen-width - root.drawer-width - 2 * root.stage-pad);
+    // The stage's content grows with it: the hero's size with the stage's width and the window's
+    // height, the launch row's width, its height and the space round it.
+    out property <length> hero-size: clamp(min((root.screen-width - root.drawer-width) * 0.085, window-height * 0.11), 40px, 150px);
+    property <length> launch-max: Layout.wide ? 1180px : 940px;
+    property <length> launch-height: Layout.wide ? 66px : 58px;
+    property <length> stage-pad: Layout.wide ? 64px : Layout.compact ? 32px : 40px;
     // A short window: the tag line goes.
     property <bool> short: window-height < 680px;
     property <color> play-colour: button.tone == "ok" ? Theme.stage-accent
