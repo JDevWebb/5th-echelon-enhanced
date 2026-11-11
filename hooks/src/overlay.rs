@@ -112,6 +112,8 @@ struct Look {
     bad: [f32; 4],
     on_bad: [f32; 4],
     warn: [f32; 4],
+    /// Chat: the player's own lines (the launcher's `me`).
+    me: [f32; 4],
     /// Over the game behind the panel.
     dim: [f32; 4],
     /// The mark (docs/brand.md): its tile and edge, the four units behind from the back, the
@@ -142,6 +144,7 @@ const DARK: Look = Look {
     bad: rgba(0xff7a6b, 1.0),
     on_bad: rgba(0x1a0503, 1.0),
     warn: rgba(0xf0b44c, 1.0),
+    me: rgba(0xd9b45a, 1.0),
     dim: [0.012, 0.02, 0.024, 0.6],
     tile: rgba(0x141c20, 1.0),
     tile_edge: rgba(0x2b363c, 1.0),
@@ -169,6 +172,7 @@ const LIGHT: Look = Look {
     bad: rgba(0xb3261e, 1.0),
     on_bad: rgba(0xffffff, 1.0),
     warn: rgba(0x8a5600, 1.0),
+    me: rgba(0x7a5a06, 1.0),
     dim: [0.10, 0.13, 0.11, 0.45],
     tile: rgba(0xe6ebe6, 1.0),
     tile_edge: rgba(0xc4cec6, 1.0),
@@ -1772,64 +1776,6 @@ impl MyRenderLoop {
         )
     }
 
-    /// The launcher's segmented choice: `labels` side by side in one box, `current` lit. The
-    /// one clicked, if one was.
-    fn segments(&self, ui: &Ui, id: &str, labels: &[&str], current: usize) -> Option<usize> {
-        let pad_x = self.s(16.0);
-        let h = ui.text_line_height() + self.s(16.0);
-        let widths: Vec<f32> = labels.iter().map(|l| self.with_font(ui, |f| f.strong, || ui.calc_text_size(l))[0] + pad_x * 2.0).collect();
-        let start = ui.cursor_screen_pos();
-        let total: f32 = widths.iter().sum::<f32>() + self.s(6.0);
-        let mut picked = None;
-        {
-            let dl = ui.get_window_draw_list();
-            dl.add_rect(start, [start[0] + total, start[1] + h + self.s(6.0)], pal().surface)
-                .filled(true)
-                .rounding(self.s(6.0))
-                .build();
-            dl.add_rect(start, [start[0] + total, start[1] + h + self.s(6.0)], pal().line)
-                .rounding(self.s(6.0))
-                .thickness(1.0)
-                .build();
-        }
-        let mut x = start[0] + self.s(3.0);
-        for (i, (label, w)) in labels.iter().zip(&widths).enumerate() {
-            let at = [x, start[1] + self.s(3.0)];
-            ui.set_cursor_screen_pos(at);
-            if ui.invisible_button(format!("##fe-seg-{id}-{i}"), [*w, h]) {
-                picked = Some(i);
-            }
-            let focused = Self::nav_focused(ui);
-            let hovered = ui.is_item_hovered() || focused;
-            let on = i == current;
-            let dl = ui.get_window_draw_list();
-            if on || hovered {
-                dl.add_rect(at, [at[0] + w, at[1] + h], if on { pal().selected } else { pal().surface_hover })
-                    .filled(true)
-                    .rounding(self.s(4.0))
-                    .build();
-            }
-            if on {
-                dl.add_rect(at, [at[0] + w, at[1] + h], pal().accent_soft).rounding(self.s(4.0)).thickness(1.0).build();
-            }
-            let color = if on {
-                pal().accent
-            } else if hovered {
-                pal().fg
-            } else {
-                pal().muted
-            };
-            self.with_font(ui, |f| f.strong, || dl.add_text([at[0] + pad_x, at[1] + self.s(8.0)], color, label));
-            if focused {
-                self.focus_ring(&dl, at, [at[0] + w, at[1] + h]);
-            }
-            x += w;
-        }
-        ui.set_cursor_screen_pos([start[0], start[1] + h + self.s(6.0)]);
-        ui.dummy([total, 0.0]);
-        picked
-    }
-
     fn pane_friends(&self, ui: &Ui) {
         use community::FriendChange as C;
         let note = if self.data.everyone_mode {
@@ -1965,42 +1911,37 @@ impl MyRenderLoop {
             return;
         }
         let direct_unread: u32 = v.unread.values().sum();
+        // The rooms as the launcher's Chat has them: frequencies, the unread beside.
         let rooms = [
-            (Room::Global, String::from("Global")),
-            (Room::Lobby, String::from("Lobby")),
-            (
-                Room::Direct,
-                if direct_unread > 0 {
-                    format!("Messages ({direct_unread})")
-                } else {
-                    String::from("Messages")
-                },
-            ),
+            (Room::Global, String::from("// GLOBAL"), 0),
+            (Room::Lobby, String::from("// LOBBY"), 0),
+            (Room::Direct, String::from("// MESSAGES"), direct_unread),
         ];
-        let labels: Vec<&str> = rooms.iter().map(|(_, l)| l.as_str()).collect();
-        let current = rooms.iter().position(|(r, _)| *r == self.chat_room).unwrap_or(0);
-        if let Some(i) = self.segments(ui, "chat-room", &labels, current) {
+        let labels: Vec<(&str, u32)> = rooms.iter().map(|(_, l, n)| (l.as_str(), *n)).collect();
+        let current = rooms.iter().position(|(r, ..)| *r == self.chat_room).unwrap_or(0);
+        if let Some(i) = self.freqs(ui, "chat-room", &labels, current) {
             self.chat_room = rooms[i].0;
         }
         if v.read_only {
-            ui.text_colored(pal().warn, "The network can't be reached right now: you can read, not send.");
+            self.edge_note(ui, pal().warn, "The network can't be reached right now: you can read, not send.");
         }
         ui.dummy([0.0, self.s(4.0)]);
         let input_h = ui.text_line_height() * 2.0 + self.s(34.0);
         let log_h = (ui.content_region_avail()[1] - input_h).max(self.s(120.0));
         match self.chat_room {
             Room::Global => {
-                self.chat_log(ui, "global", &v.global, log_h);
+                self.chat_log(ui, "global", &v.global, &[], &v, log_h);
                 let note = (!v.may_post_global).then(|| v.global_wait.clone());
-                self.chat_input(ui, Room::Global, "", v.may_post_global && !v.read_only, note, &v);
+                self.chat_input(ui, Room::Global, "", "TX // GLOBAL", v.may_post_global && !v.read_only, note, &v);
             }
             Room::Lobby => {
                 if v.lobby == 0 {
                     self.empty(ui, "Not in a lobby", "Join a lobby or a match: its players can talk here.");
                     return;
                 }
-                self.chat_log(ui, "lobby", &v.lobby_messages, log_h);
-                self.chat_input(ui, Room::Lobby, "", !v.read_only, None, &v);
+                let events: Vec<chat::Joined> = v.lobby_events.iter().filter(|e| e.lobby == v.lobby).cloned().collect();
+                self.chat_log(ui, "lobby", &v.lobby_messages, &events, &v, log_h);
+                self.chat_input(ui, Room::Lobby, "", "TX // LOBBY", !v.read_only, None, &v);
             }
             Room::Direct => {
                 // Conversations (and friends to start one with) beside the open one.
@@ -2042,63 +1983,164 @@ impl MyRenderLoop {
                         return;
                     };
                     let list = v.direct.get(&with).cloned().unwrap_or_default();
-                    self.chat_log(ui, "direct", &list, log_h);
-                    self.chat_input(ui, Room::Direct, &with, !v.read_only, None, &v);
+                    self.chat_log(ui, "direct", &list, &[], &v, log_h);
+                    let tx = format!("TX // {}", v.names.get(&with).map_or("FRIEND", String::as_str).to_uppercase());
+                    self.chat_input(ui, Room::Direct, &with, &tx, !v.read_only, None, &v);
                 });
             }
         }
     }
 
-    /// A room's messages, newest at the bottom (kept there while it's scrolled down); right-click
-    /// a name for more.
-    fn chat_log(&self, ui: &Ui, id: &str, list: &[chat::Msg], h: f32) {
+    /// A room's messages, newest at the bottom (kept there while it's scrolled down), as the
+    /// launcher's Chat shows them: the time in a gutter, the sender's square tile (a friend's
+    /// edge green, the player's amber), their name and tags, a sender's lines together under one;
+    /// who joined or left the lobby (`events`) as lines of their own. Right-click a name for more.
+    fn chat_log(&self, ui: &Ui, id: &str, list: &[chat::Msg], events: &[chat::Joined], v: &chat::View, h: f32) {
+        /// A sender's lines this close together show under one tile and name.
+        const TOGETHER: i64 = 5 * 60;
         let _boxed = self.boxed(ui);
         ui.child_window(format!("##fe-chat-log-{id}")).size([0.0, h]).always_use_window_padding(true).build(|| {
             let at_bottom = ui.scroll_y() >= ui.scroll_max_y() - self.s(4.0);
-            if list.is_empty() {
+            if list.is_empty() && events.is_empty() {
                 ui.text_colored(pal().muted, "No messages yet.");
             }
             let clock = hooks_config::clock::Clock::local();
-            for m in list {
-                // When, as the PC's clock shows it (the launcher's chat does the same).
-                ui.text_colored(pal().muted, clock.clock_time(m.at));
-                ui.same_line();
-                let name_color = if m.mine {
-                    pal().accent
+            let gutter = self.with_font(ui, |f| f.caps, || ui.calc_text_size("00:00 pm"))[0];
+            let tile = self.s(30.0);
+            let gap = self.s(10.0);
+            let text_x = gutter + gap + tile + gap;
+            let right = ui.content_region_avail()[0];
+            // Messages and joins in time order (a join after the messages of its second).
+            let (mut i, mut j) = (0, 0);
+            let mut last: Option<&chat::Msg> = None;
+            while i < list.len() || j < events.len() {
+                let x0 = ui.cursor_pos()[0];
+                if j < events.len() && (i == list.len() || events[j].at < list[i].at) {
+                    let e = &events[j];
+                    j += 1;
+                    let who = if e.mine { "You".to_string() } else { e.name.clone() };
+                    let line = format!("> {who} {} the lobby", if e.joined { "joined" } else { "left" }).to_uppercase();
+                    ui.dummy([0.0, self.s(2.0)]);
+                    let y = ui.cursor_pos()[1];
+                    self.with_font(
+                        ui,
+                        |f| f.caps,
+                        || {
+                            ui.text_colored(pal().label, clock.clock_time(e.at));
+                            ui.set_cursor_pos([x0 + text_x, y]);
+                            let _w = ui.push_text_wrap_pos_with_pos(x0 + right);
+                            let _c = ui.push_style_color(StyleColor::Text, pal().label);
+                            ui.text_wrapped(&line);
+                        },
+                    );
+                    last = None;
+                    continue;
+                }
+                let m = &list[i];
+                i += 1;
+                let friend = !m.mine && v.friends.iter().any(|(identity, ..)| *identity == m.from);
+                let together = last.is_some_and(|l| l.from == m.from && m.at - l.at <= TOGETHER);
+                last = Some(m);
+                if !together {
+                    ui.dummy([0.0, self.s(4.0)]);
+                }
+                let top = ui.cursor_pos()[1];
+                let screen_top = ui.cursor_screen_pos()[1];
+                let screen_x = ui.cursor_screen_pos()[0];
+                // The edge down the line: the player's own (amber), or naming the player.
+                let edge = if m.mine {
+                    Some(pal().me)
                 } else if m.mentions_me {
-                    pal().warn
+                    Some(pal().accent)
                 } else {
-                    pal().fg
+                    None
                 };
-                self.with_font(ui, |f| f.strong, || ui.text_colored(name_color, if m.mine { "You" } else { &m.from_name }));
-                let popup = format!("##fe-chat-menu-{}", m.id);
-                if ui.is_item_hovered() && !m.server_name.is_empty() {
-                    ui.tooltip_text(format!("On {}", m.server_name));
+                if !together {
+                    // When, as the PC's clock shows it (the launcher's chat does the same).
+                    self.with_font(
+                        ui,
+                        |f| f.caps,
+                        || {
+                            ui.set_cursor_pos([x0, top + self.s(3.0)]);
+                            ui.text_colored(if m.mentions_me { pal().accent } else { pal().label }, clock.clock_time(m.at));
+                        },
+                    );
+                    let dl = ui.get_window_draw_list();
+                    let at = [screen_x + gutter + gap, screen_top];
+                    dl.add_rect(at, [at[0] + tile, at[1] + tile], pal().surface).filled(true).build();
+                    let tone = if m.mine {
+                        Some(pal().me)
+                    } else if friend {
+                        Some(pal().accent)
+                    } else {
+                        None
+                    };
+                    if let Some(tone) = tone {
+                        dl.add_rect(at, [at[0] + self.s(3.0), at[1] + tile], tone).filled(true).build();
+                    }
+                    let initial: String = m.from_name.chars().find(|c| c.is_alphanumeric()).map_or_else(|| "?".into(), |c| c.to_uppercase().collect());
+                    self.with_font(
+                        ui,
+                        |f| f.title,
+                        || {
+                            let size = ui.calc_text_size(&initial);
+                            let color = if m.mine { pal().me } else { pal().fg };
+                            dl.add_text([at[0] + (tile - size[0]) / 2.0, at[1] + (tile - size[1]) / 2.0], color, &initial);
+                        },
+                    );
                 }
-                if ui.is_item_clicked_with_button(imgui::MouseButton::Right) {
-                    ui.open_popup(&popup);
-                }
-                ui.same_line();
-                let _c = ui.push_style_color(StyleColor::Text, if m.mentions_me { pal().fg } else { pal().muted });
-                ui.text_wrapped(&m.body);
-                ui.popup(&popup, || {
-                    if m.mine {
-                        if ui.menu_item("Delete") {
-                            chat::delete(m.id);
+                ui.set_cursor_pos([x0 + text_x, top]);
+                ui.group(|| {
+                    let _w = ui.push_text_wrap_pos_with_pos(x0 + right);
+                    if !together {
+                        let name_color = if m.mine { pal().me } else { pal().fg };
+                        self.with_font(ui, |f| f.strong, || ui.text_colored(name_color, if m.mine { "You" } else { &m.from_name }));
+                        let popup = format!("##fe-chat-menu-{}", m.id);
+                        if ui.is_item_hovered() && !m.server_name.is_empty() {
+                            ui.tooltip_text(format!("On {}", m.server_name));
                         }
-                        return;
+                        if ui.is_item_clicked_with_button(imgui::MouseButton::Right) {
+                            ui.open_popup(&popup);
+                        }
+                        if friend {
+                            ui.same_line();
+                            self.tag(ui, "FRIEND", pal().accent, false);
+                        }
+                        if m.from_game {
+                            ui.same_line();
+                            self.tag(ui, "IN GAME", pal().label, true);
+                        }
+                        ui.popup(&popup, || {
+                            if m.mine {
+                                if ui.menu_item("Delete") {
+                                    chat::delete(m.id);
+                                }
+                                return;
+                            }
+                            // By their identity: a name alone may be another account's on this server.
+                            if ui.menu_item("Add friend") {
+                                community::change_by_identity(community::FriendChange::Request, m.from.clone(), m.from_name.clone());
+                            }
+                            if ui.menu_item(format!("Block {}", m.from_name)) {
+                                community::change_by_identity(community::FriendChange::Block, m.from.clone(), m.from_name.clone());
+                            }
+                            if ui.menu_item("Report to the admins") {
+                                chat::report(m.id, m.from_name.clone());
+                            }
+                        });
                     }
-                    // By their identity: a name alone may be another account's on this server.
-                    if ui.menu_item("Add friend") {
-                        community::change_by_identity(community::FriendChange::Request, m.from.clone(), m.from_name.clone());
-                    }
-                    if ui.menu_item(format!("Block {}", m.from_name)) {
-                        community::change_by_identity(community::FriendChange::Block, m.from.clone(), m.from_name.clone());
-                    }
-                    if ui.menu_item("Report to the admins") {
-                        chat::report(m.id, m.from_name.clone());
-                    }
+                    let _c = ui.push_style_color(StyleColor::Text, pal().fg);
+                    ui.text_wrapped(&m.body);
                 });
+                let bottom = ui.item_rect_max()[1].max(if together { 0.0 } else { screen_top + tile });
+                if let Some(edge) = edge {
+                    let dl = ui.get_window_draw_list();
+                    dl.add_rect([screen_x - self.s(8.0), screen_top - self.s(2.0)], [screen_x - self.s(6.0), bottom + self.s(2.0)], edge)
+                        .filled(true)
+                        .build();
+                }
+                ui.set_cursor_screen_pos([screen_x, bottom + self.s(2.0)]);
+                ui.dummy([0.0, 0.0]);
             }
             if at_bottom {
                 ui.set_scroll_here_y_with_ratio(1.0);
@@ -2106,10 +2148,141 @@ impl MyRenderLoop {
         });
     }
 
+    /// A small tag in Plex Mono caps (FRIEND, IN GAME), inline; `boxed`: with an edge round it.
+    fn tag(&self, ui: &Ui, text: &str, color: [f32; 4], boxed: bool) {
+        self.with_font(
+            ui,
+            |f| f.caps,
+            || {
+                let size = ui.calc_text_size(text);
+                let at = ui.cursor_screen_pos();
+                let pad = self.s(4.0);
+                // Level with the name beside it (the strong font is taller).
+                let y = at[1] + (ui.text_line_height_with_spacing() - size[1]) / 2.0;
+                let dl = ui.get_window_draw_list();
+                if boxed {
+                    dl.add_rect([at[0], y - self.s(1.0)], [at[0] + size[0] + pad * 2.0, y + size[1] + self.s(1.0)], pal().line)
+                        .thickness(1.0)
+                        .build();
+                }
+                dl.add_text([at[0] + if boxed { pad } else { 0.0 }, y], color, text);
+                ui.dummy([size[0] + if boxed { pad * 2.0 } else { 0.0 }, size[1]]);
+            },
+        );
+    }
+
+    /// A note with a coloured edge on its left (the launcher's Chat notes: reconnecting, read only).
+    fn edge_note(&self, ui: &Ui, color: [f32; 4], text: &str) {
+        let at = ui.cursor_screen_pos();
+        let x = ui.cursor_pos()[0];
+        ui.set_cursor_pos([x + self.s(12.0), ui.cursor_pos()[1]]);
+        ui.group(|| {
+            let _c = ui.push_style_color(StyleColor::Text, color);
+            ui.text_wrapped(text);
+        });
+        let bottom = ui.item_rect_max()[1];
+        ui.get_window_draw_list().add_rect(at, [at[0] + self.s(3.0), bottom], color).filled(true).build();
+    }
+
+    /// The conversations as the launcher's Chat has them: frequencies side by side ("// GLOBAL"
+    /// in Plex Mono caps), the current one underlined in the accent, an unread count beside a
+    /// label. The one clicked (or pressed by keyboard or controller), if one was.
+    fn freqs(&self, ui: &Ui, id: &str, labels: &[(&str, u32)], current: usize) -> Option<usize> {
+        let pad_x = self.s(14.0);
+        let h = ui.text_line_height() + self.s(16.0);
+        let start = ui.cursor_screen_pos();
+        let width = ui.content_region_avail()[0];
+        let mut picked = None;
+        let mut x = start[0];
+        for (i, (label, unread)) in labels.iter().enumerate() {
+            let count = (*unread > 0).then(|| unread.min(&99).to_string());
+            let (text_w, count_w) = self.with_font(
+                ui,
+                |f| f.caps,
+                || {
+                    let gap = self.s(1.5);
+                    let w: f32 = label.chars().map(|c| ui.calc_text_size(c.to_string())[0] + gap).sum();
+                    (w, count.as_ref().map_or(0.0, |c| ui.calc_text_size(c)[0] + self.s(18.0)))
+                },
+            );
+            let w = text_w + count_w + pad_x * 2.0;
+            let at = [x, start[1]];
+            ui.set_cursor_screen_pos(at);
+            if ui.invisible_button(format!("##fe-freq-{id}-{i}"), [w, h]) {
+                picked = Some(i);
+            }
+            let focused = Self::nav_focused(ui);
+            let hovered = ui.is_item_hovered() || focused;
+            let on = i == current;
+            let dl = ui.get_window_draw_list();
+            let color = if on || hovered { pal().fg } else { pal().muted };
+            self.with_font(
+                ui,
+                |f| f.caps,
+                || {
+                    let y = at[1] + (h - ui.text_line_height()) / 2.0;
+                    // "//" in the accent on the current one, as the launcher's.
+                    let (slashes, rest) = label.split_at(label.find(' ').unwrap_or(0));
+                    draw_spaced(ui, &dl, [at[0] + pad_x, y], if on { pal().accent } else { pal().label }, slashes, self.s(1.5));
+                    let slash_w: f32 = slashes.chars().map(|c| ui.calc_text_size(c.to_string())[0] + self.s(1.5)).sum();
+                    draw_spaced(ui, &dl, [at[0] + pad_x + slash_w, y], color, rest, self.s(1.5));
+                    if let Some(c) = &count {
+                        let cx = at[0] + pad_x + text_w + self.s(8.0);
+                        let cw = ui.calc_text_size(c)[0] + self.s(10.0);
+                        dl.add_rect([cx, y - self.s(1.0)], [cx + cw, y + ui.text_line_height() + self.s(1.0)], pal().accent)
+                            .filled(true)
+                            .build();
+                        dl.add_text([cx + self.s(5.0), y], pal().on_accent, c);
+                    }
+                },
+            );
+            if on {
+                dl.add_rect([at[0], at[1] + h - self.s(2.0)], [at[0] + w, at[1] + h], pal().accent).filled(true).build();
+            }
+            if focused {
+                self.focus_ring(&dl, at, [at[0] + w, at[1] + h]);
+            }
+            x += w + self.s(2.0);
+        }
+        let dl = ui.get_window_draw_list();
+        dl.add_rect([start[0], start[1] + h], [start[0] + width, start[1] + h + 1.0], pal().line)
+            .filled(true)
+            .build();
+        ui.set_cursor_screen_pos([start[0], start[1] + h + self.s(6.0)]);
+        ui.dummy([0.0, 0.0]);
+        picked
+    }
+
     /// The text box and Send, with why the last message wasn't sent.
-    fn chat_input(&mut self, ui: &Ui, room: server_api::chat::Room, to: &str, allowed: bool, note: Option<String>, v: &chat::View) {
+    fn chat_input(&mut self, ui: &Ui, room: server_api::chat::Room, to: &str, tx: &str, allowed: bool, note: Option<String>, v: &chat::View) {
         let mut text = std::mem::take(&mut self.chat_text);
         let send_label = "Send##fe-chat-send";
+        // "TX // LOBBY" before the field, in a block of its own (the launcher's line to write).
+        self.with_font(
+            ui,
+            |f| f.caps,
+            || {
+                let at = ui.cursor_screen_pos();
+                let gap = self.s(1.5);
+                let w: f32 = tx.chars().map(|c| ui.calc_text_size(c.to_string())[0] + gap).sum::<f32>() + self.s(24.0);
+                let h = ui.frame_height();
+                let dl = ui.get_window_draw_list();
+                dl.add_rect(at, [at[0] + w, at[1] + h], if allowed { pal().selected } else { pal().surface })
+                    .filled(true)
+                    .build();
+                dl.add_rect(at, [at[0] + w, at[1] + h], pal().line).thickness(1.0).build();
+                draw_spaced(
+                    ui,
+                    &dl,
+                    [at[0] + self.s(12.0), at[1] + (h - ui.text_line_height()) / 2.0],
+                    if allowed { pal().accent } else { pal().label },
+                    tx,
+                    gap,
+                );
+                ui.dummy([w, h]);
+            },
+        );
+        ui.same_line_with_spacing(0.0, 0.0);
         let field_w = ui.content_region_avail()[0] - self.button_width(ui, send_label) - self.s(10.0);
         ui.set_next_item_width(field_w);
         if std::mem::take(&mut self.chat_refocus) {
@@ -2134,7 +2307,7 @@ impl MyRenderLoop {
         }
         self.chat_text = text;
         if let Some(why) = v.refused.as_ref().or(note.as_ref()) {
-            ui.text_colored(pal().warn, why);
+            self.edge_note(ui, pal().warn, why);
         }
     }
 
