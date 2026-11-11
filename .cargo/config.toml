@@ -1,0 +1,11 @@
+# Windows builds carry the C runtime inside them (static CRT) instead of needing Microsoft's
+# Visual C++ Redistributable (VCRUNTIME140.dll): a clean Windows doesn't have it, and the game's
+# own installer only brings the 2010 one, so without this the launcher didn't start and the
+# game couldn't load the client DLL on such a PC. Applies to launcher-slint (its own workspace,
+# below this folder) too. A RUSTFLAGS in the environment replaces these, so a build that sets
+# one adds the flag itself (launcher/build.rs).
+[target.i686-pc-windows-msvc]
+rustflags = ["-Ctarget-feature=+crt-static"]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-Ctarget-feature=+crt-static"]

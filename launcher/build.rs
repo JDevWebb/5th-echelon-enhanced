@@ -58,7 +58,9 @@ fn build_hooks_dll() -> PathBuf {
 
     if is_release {
         cmd.arg("--release")
-            .env("RUSTFLAGS", "-Zremap-cwd-prefix=. --remap-path-prefix=$(PWD)=/ -Clink-arg=/PDBALTPATH:%_PDB%");
+            // With the static C runtime, as .cargo/config.toml gives every other Windows build
+            // (this RUSTFLAGS replaces it).
+            .env("RUSTFLAGS", "-Zremap-cwd-prefix=. --remap-path-prefix=$(PWD)=/ -Clink-arg=/PDBALTPATH:%_PDB% -Ctarget-feature=+crt-static");
     }
 
     let results = String::from_utf8(cmd.output().unwrap().stdout).unwrap();
