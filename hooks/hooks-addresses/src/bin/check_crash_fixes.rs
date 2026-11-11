@@ -21,6 +21,7 @@ use hooks_addresses::crash_fixes::perception;
 use hooks_addresses::crash_fixes::scheme_pool;
 use hooks_addresses::crash_fixes::storm;
 use hooks_addresses::crash_fixes::tagging_device;
+use hooks_addresses::crash_fixes::texture_upload;
 use hooks_addresses::crash_fixes::umd_read;
 use hooks_addresses::crash_fixes::voice_device;
 use hooks_addresses::crash_fixes::Image;
@@ -104,6 +105,21 @@ fn check(path: &Path) -> bool {
         "disruption-fix",
         disruption::locate(&img).map(|s| format!("lookup {:#010x}, nav-disruption tick {:#010x} (end {:#010x})", s.lookup, s.tick, s.tick_end)),
     );
+    // DirectX 11 only: DirectX 9 uploads its video another way, without this code.
+    if path.file_name().is_some_and(|n| n.to_string_lossy().contains("DX11")) {
+        report(
+            "texture-upload-fix",
+            texture_upload::locate(&img).map(|s| format!("copies {:#010x}, {:#010x} (memcpy {:#010x})", s.whole, s.rows, s.memcpy)),
+        );
+    } else {
+        match texture_upload::locate(&img) {
+            Err(_) => println!("  ok      {:<18} not in DirectX 9 (as expected)", "texture-upload-fix"),
+            Ok(s) => println!(
+                "  note    {:<18} found in DirectX 9 too ({:#010x}): the hooks leave it there",
+                "texture-upload-fix", s.whole
+            ),
+        }
+    }
     report(
         "load-order-fix",
         load_order::locate(&img).map(|s| format!("reads {:#010x}, {:#010x}, end {:#010x}", s.first, s.second, s.done)),

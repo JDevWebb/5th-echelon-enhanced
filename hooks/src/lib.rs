@@ -74,6 +74,7 @@ mod scheme_pool_fix;
 mod speed_check;
 mod storm_fix;
 mod tagging_device_fix;
+mod texture_upload_fix;
 mod umd_read_fix;
 mod unblock_logic;
 mod uplay_r1_loader;

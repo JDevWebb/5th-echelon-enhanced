@@ -805,6 +805,9 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
             "load-order-fix",
             "migration-fix",
         ]);
+        if crate::texture_upload_fix::expected() {
+            crate::fix_stats::expect(&["texture-upload-fix"]);
+        }
         if !config.disable_umd_read_fix {
             crate::fix_stats::expect(&["umd-read-fix"]);
         }
@@ -816,6 +819,7 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
         crate::perception_fix::guard_perception();
         crate::gear_list_fix::guard_gear_list();
         crate::disruption_fix::guard_disruption();
+        crate::texture_upload_fix::guard_texture_uploads();
         // Before load_order_fix: umd_read_fix checks the read-sequence sync's code as the game
         // has it, and load_order_fix then patches two reads inside that sync. Each read the
         // sequence can't serve is served from the files; load_order_fix stays as the backstop
