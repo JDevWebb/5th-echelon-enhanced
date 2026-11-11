@@ -434,7 +434,7 @@ mod tests {
         let text = std::fs::read_to_string(dir.join("uplay.toml")).unwrap();
         assert_eq!(text.matches("ServerId = \"6jjuqf7i6cbxxcss\"").count(), 2, "the profile's and the game's: {text}");
         let game: hooks_config::Config = toml::from_str(&text).unwrap();
-        assert_eq!(game.hardware_salt(), "id:6jjuqf7i6cbxxcss");
+        assert!(game.hardware_salt().starts_with("id:6jjuqf7i6cbxxcss@"), "{}", game.hardware_salt());
         assert_eq!(
             game.hardware_salt(),
             hooks_config::hardware_salt(with_id.server_id.as_deref(), &with_id.api_server_url()),

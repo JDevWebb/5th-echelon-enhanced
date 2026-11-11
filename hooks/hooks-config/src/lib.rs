@@ -634,18 +634,21 @@ impl Config {
 }
 
 /// The salt for this PC's hardware hashes (the hwid crate) on the server whose API is
-/// `api_server`: the server's stable id, as its `/api/info` gives it, else its host name (lower
-/// case, no port, no trailing dot). The launcher and the game both use this, so they send the
-/// same server the same hashes, and every other server unrelated ones: servers can't link a
-/// player across them by their PC. An id that isn't one (empty, over 128 characters, spaces or
-/// control characters) is taken as missing.
+/// `api_server`: its host name (lower case, no port, no trailing dot), with the server's id from
+/// its `/api/info` beside it when it gives one. The host is always in it: an id is the server's
+/// own word, and a server could give another's (ids are public) to be sent that server's hashes;
+/// the host it can't choose. The launcher and the game both use this, so they send the same
+/// server the same hashes, and every other server unrelated ones: servers can't link a player
+/// across them by their PC. An id that isn't one (empty, over 128 characters, spaces or control
+/// characters) is taken as missing.
 pub fn hardware_salt(server_id: Option<&str>, api_server: &Url) -> String {
+    let host = api_server.host_str().unwrap_or_default().trim_end_matches('.').to_ascii_lowercase();
     match server_id
         .map(str::trim)
         .filter(|id| !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_graphic()))
     {
-        Some(id) => format!("id:{id}"),
-        None => format!("host:{}", api_server.host_str().unwrap_or_default().trim_end_matches('.').to_ascii_lowercase()),
+        Some(id) => format!("id:{id}@{host}"),
+        None => format!("host:{host}"),
     }
 }
 
@@ -1531,10 +1534,12 @@ mod tests {
         assert!(text.contains("ServerId = \"6jjuqf7i6cbxxcss\""), "{text}");
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(back.server_id.as_deref(), Some("6jjuqf7i6cbxxcss"));
-        assert_eq!(back.hardware_salt(), "id:6jjuqf7i6cbxxcss");
-        // The same server by another of its names: still its id.
+        assert_eq!(back.hardware_salt(), "id:6jjuqf7i6cbxxcss@play.example.net");
+        // The host is always in it: a server elsewhere giving this one's id (ids are public)
+        // isn't sent its hashes.
         let other: Url = "http://10.8.0.10:50051".parse().unwrap();
-        assert_eq!(hardware_salt(Some("6jjuqf7i6cbxxcss"), &other), "id:6jjuqf7i6cbxxcss");
+        assert_eq!(hardware_salt(Some("6jjuqf7i6cbxxcss"), &other), "id:6jjuqf7i6cbxxcss@10.8.0.10");
+        assert_ne!(hardware_salt(Some("6jjuqf7i6cbxxcss"), &other), back.hardware_salt());
         assert_eq!(hardware_salt(None, &other), "host:10.8.0.10");
         for bad in ["", "  ", "has space", "tab\there", &"x".repeat(129)] {
             assert_eq!(hardware_salt(Some(bad), &other), "host:10.8.0.10", "{bad:?}");
@@ -1563,7 +1568,7 @@ mod tests {
             ..Default::default()
         }
         .apply(&mut cfg);
-        assert_eq!(cfg.hardware_salt(), "id:bbbb");
+        assert_eq!(cfg.hardware_salt(), "id:bbbb@b.example.net");
     }
 
     #[test]

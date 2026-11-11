@@ -6,7 +6,7 @@
 //! admin's ban is (F2), and the account itself. One id in common is flagged for the admins, as
 //! is a new account on a virtual machine.
 //!
-//! The clients salt the hashes per server (the server's id, else its host name; hwid's
+//! The clients salt the hashes per server (its host name, with its id when it gives one; hwid's
 //! `fes-hw-v2`), so a PC's ids match only between accounts on the same server: one matchmaking
 //! server for a whole network (the community network's) matches every player, but a network of
 //! several game servers no longer matches one PC across them, and no server can link a player

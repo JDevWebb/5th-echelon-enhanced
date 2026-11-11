@@ -504,7 +504,7 @@ mod tests {
             ..Default::default()
         });
         note_server_ids(&cfg);
-        assert_eq!(hardware_salt("https://EU.salt-test.example:443/"), "id:6jjuqf7i6cbxxcss");
+        assert_eq!(hardware_salt("https://EU.salt-test.example:443/"), "id:6jjuqf7i6cbxxcss@eu.salt-test.example");
         let profile = cfg.profiles[0].clone();
         cfg.apply_profile(&profile);
         assert_eq!(hardware_salt(eu.as_str()), cfg.hook_config.hardware_salt(), "the game's salt");
