@@ -6,6 +6,8 @@
 #   build/build.sh server    Linux x86_64 dedicated_server and coordinator -> dist/
 #   build/build.sh linux     launcher-linux-x86_64 (the Slint launcher, DLL embedded) + dedicated_server-linux-x86_64
 #                            -> dist/
+#   build/build.sh notices   dist/THIRD-PARTY-NOTICES.txt: every library the release files carry and
+#                            its licence (scripts/notices.sh, about.toml)
 #   build/build.sh sums      dist/SHA256SUMS for a release
 #   build/build.sh test-dll  dist/uplay_r1_loader-test.dll: the client DLL with test commands (test clients only)
 #   build/build.sh windows   launcher.exe (the Slint launcher, DLL embedded), uplay_r1_loader.dll,
@@ -75,7 +77,7 @@ ui() {
 
 mkdir -p dist
 case "${1:-test}" in
-  test|server|linux|federation-test|relay-test) ui ;;
+  test|server|linux|federation-test|relay-test|notices) ui ;;
 esac
 case "${1:-test}" in
   ui)
@@ -239,6 +241,11 @@ case "${1:-test}" in
     # download against them.
     run "$IMAGE" sh -c 'cd dist && rm -f SHA256SUMS && find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name ".*" | sed "s|^\./||" | sort | xargs sha256sum > SHA256SUMS && cat SHA256SUMS'
     ;;
+  notices)
+    # The third-party licences of everything a release carries (scripts/notices.sh, about.toml).
+    # cargo-about's JSON and logs in /target/notices, kept only when it fails.
+    run "$IMAGE" sh -c 'rm -rf /target/notices && scripts/notices.sh dist/THIRD-PARTY-NOTICES.txt /target/notices && rm -rf /target/notices'
+    ;;
   fmt)
     run "$IMAGE" cargo fmt --all
     ;;
@@ -246,6 +253,6 @@ case "${1:-test}" in
     TTY=-it run "$IMAGE" bash
     ;;
   *)
-    echo "usage: $0 test|server|windows|linux|bots|federation-test|proxy-test|ops-test|load|fmt|sums|shell" >&2; exit 2
+    echo "usage: $0 test|server|windows|linux|bots|federation-test|proxy-test|ops-test|load|fmt|notices|sums|shell" >&2; exit 2
     ;;
 esac

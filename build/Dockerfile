@@ -22,4 +22,7 @@ ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
 RUN apt-get update \
  && apt-get install -y --no-install-recommends iproute2 \
  && rm -rf /var/lib/apt/lists/*
+# cargo-about, for the third-party licence notices a release carries (build.sh notices,
+# about.toml); pinned, as the release workflow pins it.
+RUN cargo install --locked cargo-about --version 0.9.3 --features cli
 WORKDIR /src

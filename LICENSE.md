@@ -62,7 +62,7 @@ About two thirds of upstream's lines are data and tools rather than the programs
 | `coordinator/admin-ui/src/lib/world.js` | The land outline of [Natural Earth](https://www.naturalearthdata.com) (public domain), via [world-atlas](https://github.com/topojson/world-atlas) (ISC licence) |
 | GeoIP data downloaded at run time | [DB-IP](https://db-ip.com)'s IP to City Lite, under CC BY 4.0; the admin UI credits it |
 | `launcher-slint/ui/assets/avatars/jdevwebb.png` | JDevWebb's profile picture, on the launcher's About page (the others it credits are shown by their initials) |
-| Libraries fetched by Cargo and npm (tokio, tonic, egui, Dear ImGui via imgui-rs, Vue, three.js and others) | Their own licences; they aren't part of this repository, but the release binaries include them |
+| Libraries fetched by Cargo and npm (tokio, tonic, egui, Dear ImGui via imgui-rs, Vue, three.js and others) | Their own licences; they aren't part of this repository, but the release binaries include them. Release downloads include `THIRD-PARTY-NOTICES.txt`, listing every library and its licence (`build/build.sh notices` writes it) |
 
 ## No warranty, and what this isn't
 

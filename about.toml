@@ -1,0 +1,55 @@
+# cargo-about (build.sh notices; the release workflow): the third-party licences release files carry,
+# in THIRD-PARTY-NOTICES.txt. build/notices.js reads its JSON for each released program and writes
+# the file. Licences are listed in order of preference: a crate offered under several takes the
+# first of them here.
+accepted = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "ISC",
+  "BSD-3-Clause",
+  "BSD-2-Clause",
+  "Zlib",
+  "BSL-1.0",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  # IBM Plex and other fonts some crates carry.
+  "OFL-1.1",
+  "Ubuntu-font-1.0",
+  # Slint (the launcher), offered under GPL-3.0-only, this or its paid licence: we use this one
+  # (attribution: the launcher's About page). cargo-about doesn't pick up a LicenseRef's text, so
+  # build/notices.js reads it from the crate (LICENSES/LicenseRef-Slint-Royalty-free-2.0.md).
+  "LicenseRef-Slint-Royalty-free-2.0",
+  # Weak copyleft, file by file: used unchanged, its source is on crates.io (the notices say so).
+  "MPL-2.0",
+]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# libsodium-sys builds in libsodium itself (ISC), whose licence it carries but doesn't name.
+[libsodium-sys.clarify]
+license = "MIT AND ISC"
+[[libsodium-sys.clarify.files]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "9239d55835457d1873f8e6ee5e8ad6080940b1851e4fbbba967e8770f34d2f0f"
+[[libsodium-sys.clarify.files]]
+path = "libsodium/LICENSE"
+license = "ISC"
+checksum = "bb55dac9e65555b91aa790eb0655a523ab78f343ab500b326b1d51d7854abb9d"
+
+# vendor/hudhook (its Cargo.toml names only LICENSE): hudhook's MIT, and MinHook's BSD-2-Clause
+# (with the Hacker Disassembler Engine's), which it builds into the client DLL.
+[hudhook.clarify]
+license = "MIT AND BSD-2-Clause"
+[[hudhook.clarify.files]]
+path = "LICENSE"
+license = "MIT"
+checksum = "81cb4d19bdd5b177933334ef5c42b92df6857136bd94892d8c443c347140ee6f"
+[[hudhook.clarify.files]]
+path = "vendor/minhook/LICENSE.txt"
+license = "BSD-2-Clause"
+checksum = "d5c2224982b0b95a16b098a561335fa93f3eaf4d0aa964b7843edb986df78dc8"
+
