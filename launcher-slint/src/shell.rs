@@ -116,8 +116,44 @@ fn set_rows(current: &ModelRc<crate::Row>, rows: &[R], replace: impl FnOnce(Mode
     replace(ModelRc::new(VecModel::from(rows.iter().map(row).collect::<Vec<_>>())));
 }
 
+/// `items` into the model shown, item by item (a line being hovered or a report being written
+/// keeps its place), as `set_rows`; for structs without models in them, which compare by value.
+fn set_model<T: Clone + PartialEq + 'static>(current: &ModelRc<T>, items: &[T], replace: impl FnOnce(ModelRc<T>)) {
+    if let Some(vec) = current.as_any().downcast_ref::<VecModel<T>>() {
+        let shown = vec.row_count();
+        for (i, item) in items.iter().enumerate() {
+            if i < shown {
+                if vec.row_data(i).as_ref() != Some(item) {
+                    vec.set_row_data(i, item.clone());
+                }
+            } else {
+                vec.push(item.clone());
+            }
+        }
+        while vec.row_count() > items.len() {
+            vec.remove(vec.row_count() - 1);
+        }
+        return;
+    }
+    replace(ModelRc::new(VecModel::from(items.to_vec())));
+}
+
+/// Chat's screen into the window.
+pub(crate) fn show_chat(w: &AppWindow, c: &crate::pages::ChatModel) {
+    w.set_chat_view(c.view.clone());
+    set_model(&w.get_chat_tabs(), &c.tabs, |m| w.set_chat_tabs(m));
+    set_model(&w.get_chat_lines(), &c.lines, |m| w.set_chat_lines(m));
+    set_model(&w.get_chat_roster(), &c.roster, |m| w.set_chat_roster(m));
+    set_model(&w.get_chat_notes(), &c.notes, |m| w.set_chat_notes(m));
+    set_model(&w.get_chat_picks(), &c.picks, |m| w.set_chat_picks(m));
+}
+
 /// A page's view into the window (its rows row by row, as `set_rows`).
 pub(crate) fn show_page(w: &AppWindow, view: &PageView) {
+    if let Some(chat) = &view.chat {
+        show_chat(w, chat);
+        return;
+    }
     w.set_page_kicker(s(&view.kicker));
     w.set_page_title(s(&view.title));
     w.set_page_summary(s(&view.summary));

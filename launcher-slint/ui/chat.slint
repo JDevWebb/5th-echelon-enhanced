@@ -1,0 +1,919 @@
+// Chat, "Comms": the conversations across the top as frequencies (Global, Lobby, then direct
+// messages), the log oldest first with the newest by the line to write, and beside Global the
+// roster of who's on it (Play's Squad drawer, a button in the head under 1600 px). pages/chat.rs
+// builds what it shows and answers what's done: `pressed` an action's id, as the rows' pages.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Type, Layout } from "theme.slint";
+import { Btn, Link, Dot, Caps, Rule, Field } from "widgets.slint";
+import { ChatView, ChatTab, ChatLine, RosterRow, ChatNote, ChatPick } from "types.slint";
+
+// A player's square tile: their first letter, an edge in their tone (a friend, the player).
+component Tile inherits Rectangle {
+    in property <string> initial;
+    in property <string> tone;
+    in property <length> size: 36px;
+    width: size;
+    height: size;
+    background: Theme.control;
+    Rectangle {
+        x: 0;
+        width: root.size >= 30px ? 3px : 2px;
+        background: root.tone == "friend" ? Theme.accent : root.tone == "me" ? Theme.me : transparent;
+    }
+    Text {
+        text: root.initial;
+        font-family: Type.cond;
+        font-weight: 700;
+        font-size: max(11px, root.size * 0.44);
+        color: root.tone == "me" ? Theme.me : Theme.fg;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// A word that does something to a line or a player (Message, Report…, Block): keyboard reachable.
+component Act inherits Link {
+    font-size: Type.small;
+}
+
+// One conversation across the top.
+component Freq inherits Rectangle {
+    in property <ChatTab> t;
+    in property <bool> on;
+    callback chosen();
+    forward-focus: fs;
+    height: lay.preferred-height;
+    width: lay.preferred-width;
+    opacity: t.offline && !on ? 0.55 : 1;
+    accessible-role: tab;
+    accessible-label: t.label + (t.unread > 0 ? ", " + t.unread + " unread" : "");
+    accessible-checked: on;
+    accessible-action-default => { root.chosen(); }
+    fs := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.chosen(); return accept; }
+            reject
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.chosen(); } }
+    lay := HorizontalLayout {
+        padding-left: Layout.compact ? 10px : 14px;
+        padding-right: self.padding-left;
+        padding-top: Layout.compact ? 8px : 10px;
+        padding-bottom: Layout.compact ? 7px : 9px;
+        spacing: 7px;
+        if !t.direct: Text { text: "//"; font-family: Type.mono; font-size: Type.small; color: root.on ? Theme.accent : Theme.muted; vertical-alignment: center; }
+        if t.direct && !Layout.compact: VerticalLayout {
+            alignment: center;
+            Tile { initial: t.initial; tone: t.online ? "friend" : ""; size: 20px; }
+        }
+        Text {
+            text: t.label;
+            font-size: Layout.compact ? 13.5px : Type.body;
+            font-weight: root.on || t.unread > 0 ? 600 : 400;
+            color: root.on || t.unread > 0 || ta.has-hover ? Theme.fg : Theme.soft;
+            vertical-alignment: center;
+        }
+        if t.count != "": Text { text: t.count; font-family: Type.mono; font-size: 11.5px; color: Theme.muted; vertical-alignment: center; }
+        if t.unread > 0: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                background: Theme.accent;
+                height: 17px;
+                width: max(17px, n.preferred-width + 10px);
+                n := Text { text: t.unread > 99 ? "99+" : t.unread; font-family: Type.mono; font-size: 11px; color: Theme.on-accent; horizontal-alignment: center; vertical-alignment: center; }
+            }
+        }
+    }
+    Rectangle { y: parent.height - 2px; height: 2px; background: root.on ? Theme.accent : transparent; }
+    Rectangle { border-width: fs.has-focus ? 2px : 0px; border-color: Theme.accent; }
+}
+
+// A note over the log or by the line to write: a coloured left edge, its text.
+component Note inherits Rectangle {
+    in property <ChatNote> n;
+    height: nl.preferred-height;
+    background: n.tone == "warn" ? Theme.warn.transparentize(0.9) : n.tone == "bad" ? Theme.bad.transparentize(0.9) : Theme.surface;
+    Rectangle { x: 0; width: 3px; background: n.tone == "warn" ? Theme.warn : n.tone == "bad" ? Theme.bad : Theme.control-line; }
+    nl := HorizontalLayout {
+        padding: 7px;
+        padding-left: 14px;
+        Text { text: n.text; font-size: Type.small; color: n.tone == "warn" ? Theme.warn : n.tone == "bad" ? Theme.bad : Theme.soft; wrap: word-wrap; }
+    }
+}
+
+// A line of the log: a message (its time in the gutter, the sender's tile and name on the first
+// of their lines together), a day's line, or where the unseen messages start.
+component LogLine inherits TouchArea {
+    in property <ChatLine> l;
+    in property <length> time-width;
+    in property <length> tile-size;
+    in property <length> text-size;
+    in property <length> right-pad;
+    callback act(string);
+    callback edited(string, string);
+    callback accepted(string, string);
+    property <bool> msg: l.kind == "msg";
+    property <bool> show-acts: msg && (root.has-hover || fs.has-focus || l.picked);
+    height: lay.preferred-height;
+    mouse-cursor: msg ? pointer : default;
+    clicked => { if msg { root.act("pick:" + l.key); } }
+    accessible-role: list-item;
+    accessible-label: msg ? (l.mine ? "You" : l.who) + ", " + l.time + ": " + l.text : l.text;
+    forward-focus: fs;
+    fs := FocusScope {
+        enabled: root.msg;
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.act("pick:" + l.key); return accept; }
+            if e.text == Key.Escape && l.picked { root.act("pick:" + l.key); return accept; }
+            reject
+        }
+    }
+    Rectangle {
+        background: l.mention ? Theme.mention : l.picked || (root.has-hover && root.msg) ? Theme.surface : transparent;
+    }
+    if l.mine: Rectangle { x: 0; width: 3px; background: Theme.me; }
+    if l.mention: Rectangle { x: 0; width: 3px; background: Theme.accent; }
+    lay := HorizontalLayout {
+        padding-top: l.kind == "new" ? 10px : l.kind == "day" ? 12px : l.head ? 7px : 1px;
+        padding-bottom: l.kind == "new" ? 6px : l.kind == "day" ? 6px : 3px;
+        padding-right: root.right-pad;
+        spacing: 12px;
+        Text {
+            width: root.time-width;
+            text: root.msg && l.head ? l.time : "";
+            font-family: Type.mono;
+            font-size: 11.5px;
+            color: l.mention ? Theme.accent : Theme.muted;
+            horizontal-alignment: right;
+            vertical-alignment: top;
+        }
+        if root.msg: Rectangle {
+            width: root.tile-size;
+            if l.head: VerticalLayout {
+                alignment: start;
+                Tile {
+                    initial: l.initial;
+                    tone: l.tone;
+                    size: root.tile-size;
+                    TouchArea {
+                        mouse-cursor: l.mine ? default : pointer;
+                        clicked => { if !l.mine { root.act("who:" + l.key); } }
+                    }
+                }
+            }
+        }
+        if !root.msg: HorizontalLayout {
+            spacing: 14px;
+            Rectangle { width: root.tile-size - 12px; }
+            Caps {
+                text: l.text.to-uppercase();
+                color: l.kind == "new" ? Theme.warn : Theme.muted;
+                letter-spacing: 1.4px;
+                vertical-alignment: center;
+            }
+            if l.kind == "new": VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                Rectangle { height: 1px; background: Theme.warn.transparentize(0.6); }
+            }
+            if l.kind != "new": Rectangle { horizontal-stretch: 1; }
+        }
+        if root.msg: VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 4px;
+            if l.head: HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                Text {
+                    text: l.who;
+                    font-weight: 600;
+                    font-size: root.text-size;
+                    color: l.mine ? Theme.me : Theme.fg;
+                    TouchArea {
+                        mouse-cursor: l.mine ? default : pointer;
+                        clicked => { if !l.mine { root.act("who:" + l.key); } }
+                    }
+                }
+                if l.friend: Caps { text: "FRIEND"; font-size: 10.5px; color: Theme.accent; vertical-alignment: center; }
+            }
+            Text { text: l.text; font-size: root.text-size; color: Theme.fg; wrap: word-wrap; }
+            if l.invite != "": HorizontalLayout {
+                alignment: start;
+                Rectangle {
+                    max-width: 520px;
+                    horizontal-stretch: 1;
+                    background: Theme.sunken;
+                    border-width: 1px;
+                    border-color: Theme.control-line;
+                    HorizontalLayout {
+                        padding: 10px;
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        spacing: 14px;
+                        VerticalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: il.preferred-width + 12px;
+                                height: il.preferred-height + 8px;
+                                border-width: 1px;
+                                border-color: Theme.control-line;
+                                il := Caps { text: "INVITE"; font-size: 10px; color: Theme.soft; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            Text { text: l.invite; font-weight: 600; font-size: 14px; color: Theme.fg; overflow: elide; }
+                            Text { text: "The only links chat lets through. Opens in your browser."; font-size: 12.5px; color: Theme.muted; wrap: word-wrap; }
+                        }
+                        Link { text: "Open…"; font-size: 14px; clicked => { root.act("invite:" + l.invite); } }
+                    }
+                }
+            }
+            // The report being written: why, then Report or Cancel.
+            if l.reporting: VerticalLayout {
+                spacing: 8px;
+                padding-top: 4px;
+                Text { text: "Report " + l.who + "'s message to the admins"; font-size: Type.small; color: Theme.soft; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    why := Field {
+                        horizontal-stretch: 1;
+                        placeholder: "Why (optional)";
+                        label: "Why you report it";
+                        init => { self.focus(); }
+                        edited(t) => { root.edited("report-why", t); }
+                        accepted(t) => { root.accepted("report-why", t); }
+                    }
+                    Btn { text: "Report"; kind: "primary"; clicked => { root.act("report-send"); } }
+                    Btn { text: "Cancel"; clicked => { root.act("report-cancel"); } }
+                }
+            }
+        }
+    }
+    // What can be done with it, as words: on hover or focus, and while it's picked.
+    if root.show-acts && !l.reporting: Rectangle {
+        x: parent.width - self.width - root.right-pad;
+        y: 4px;
+        width: acts.preferred-width;
+        height: acts.preferred-height;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.control-line;
+        drop-shadow-blur: 10px;
+        drop-shadow-color: #0000003a;
+        acts := HorizontalLayout {
+            padding: 6px;
+            padding-left: 12px;
+            padding-right: 12px;
+            spacing: 16px;
+            if l.mine: Act { text: "Delete"; tint: Theme.bad; clicked => { root.act("delete:" + l.key); } }
+            if !l.mine && l.can-message: Act { text: "Message"; clicked => { root.act("message:" + l.from); } }
+            if !l.mine && l.can-add: Act { text: "Add friend"; clicked => { root.act("request-by-id:" + l.from + ":" + l.who); } }
+            if !l.mine: Act { text: "Invite"; clicked => { root.act("invite-by-id:" + l.from + ":" + l.who); } }
+            if !l.mine: Act { text: "Report…"; tint: Theme.soft; clicked => { root.act("report:" + l.key); } }
+            if !l.mine: Act { text: "Block"; tint: Theme.bad; clicked => { root.act("block-by-id:" + l.from + ":" + l.who); } }
+        }
+    }
+    Rectangle { border-width: fs.has-focus ? 2px : 0px; border-color: Theme.accent; }
+}
+
+// The roster: who's on Global, as Play's Squad drawer, and the rules.
+component Roster inherits Rectangle {
+    in property <[RosterRow]> roster;
+    in property <int> count;
+    in property <string> rules;
+    callback pressed(string);
+    property <string> tab: "roster";
+    background: Theme.surface;
+    Rectangle { x: 0; width: 1px; background: Theme.line; }
+    VerticalLayout {
+        HorizontalLayout {
+            height: 52px;
+            for t in [{ id: "roster", label: "ROSTER · " + root.count }, { id: "rules", label: "RULES" }]: Rectangle {
+                horizontal-stretch: 1;
+                accessible-role: AccessibleRole.tab;
+                accessible-label: t.label;
+                accessible-checked: root.tab == t.id;
+                accessible-action-default => { root.tab = t.id; }
+                forward-focus: tfs;
+                tfs := FocusScope {
+                    key-pressed(e) => {
+                        if e.text == Key.Return || e.text == " " { root.tab = t.id; return accept; }
+                        reject
+                    }
+                }
+                tta := TouchArea { mouse-cursor: pointer; clicked => { root.tab = t.id; } }
+                Caps {
+                    text: t.label;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    color: root.tab == t.id ? Theme.fg : tta.has-hover ? Theme.soft : Theme.muted;
+                }
+                Rectangle { y: parent.height - 2px; height: 2px; background: root.tab == t.id ? Theme.accent : transparent; }
+                Rectangle { border-width: tfs.has-focus ? 2px : 0px; border-color: Theme.accent; }
+            }
+        }
+        Rule {}
+        if root.tab == "roster": rv := ScrollView {
+            vertical-stretch: 1;
+            content-width: self.visible-width;
+            content-height: rc.preferred-height;
+            rc := VerticalLayout {
+                width: rv.visible-width;
+                padding: 18px;
+                padding-right: 20px;
+                spacing: 6px;
+                if root.roster.length == 0: Text { text: "Nobody else is online here right now."; color: Theme.soft; wrap: word-wrap; }
+                for r in root.roster: VerticalLayout {
+                    if r.kind == "head": VerticalLayout {
+                        padding-top: 10px;
+                        padding-bottom: 2px;
+                        Caps { text: r.name.to-uppercase(); }
+                    }
+                    if r.kind == "more": HorizontalLayout {
+                        padding-left: 15px;
+                        Text { text: r.name; color: Theme.muted; font-size: Type.small; wrap: word-wrap; }
+                    }
+                    if r.kind == "person": Rectangle {
+                        height: pl.preferred-height;
+                        background: r.picked ? Theme.selected : pta.has-hover ? Theme.control : transparent;
+                        accessible-role: button;
+                        accessible-label: r.name + ", " + r.line;
+                        accessible-action-default => { root.pressed("person:" + r.id); }
+                        forward-focus: pfs;
+                        pfs := FocusScope {
+                            key-pressed(e) => {
+                                if e.text == Key.Return || e.text == " " { root.pressed("person:" + r.id); return accept; }
+                                reject
+                            }
+                        }
+                        pta := TouchArea { mouse-cursor: pointer; clicked => { root.pressed("person:" + r.id); } }
+                        Rectangle { x: 0; width: 3px; background: r.tone == "friend" ? Theme.accent : r.tone == "match" ? Theme.warn : Theme.control-line; }
+                        pl := HorizontalLayout {
+                            padding: 8px;
+                            padding-left: 15px;
+                            spacing: 10px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+                                Text { text: r.name; font-weight: 600; color: Theme.fg; overflow: elide; }
+                                Text { text: r.line; font-size: Type.small; color: Theme.soft; overflow: elide; }
+                            }
+                            if r.join: Btn { text: "Join"; kind: "fix"; description: "Join " + r.name + "'s game"; clicked => { root.pressed("join:" + r.id + ":" + r.name); } }
+                            if r.asked: Text { text: "Asked"; color: Theme.muted; font-size: Type.small; vertical-alignment: center; }
+                        }
+                        Rectangle { border-width: pfs.has-focus ? 2px : 0px; border-color: Theme.accent; }
+                    }
+                }
+            }
+        }
+        if root.tab == "rules": VerticalLayout {
+            vertical-stretch: 1;
+            padding: 20px;
+            spacing: 12px;
+            alignment: start;
+            Caps { text: "HOW CHAT WORKS"; }
+            for line in [
+                "Global is everyone on the community network; Lobby is the players in your party or match, and the game's overlay shows it too.",
+                "Direct messages are between you and a friend only.",
+                "Discord invites are the only links chat lets through, and they open in your browser after you say so.",
+                "Some words show as ***.",
+                "Report… sends a message to the admins with what came before it. Block: neither of you sees the other.",
+            ]: Text { text: line; color: Theme.soft; font-size: Type.small; wrap: word-wrap; }
+            Rule {}
+            Text { text: root.rules; color: Theme.muted; font-size: Type.small; wrap: word-wrap; }
+        }
+    }
+}
+
+export component ChatScreen inherits Rectangle {
+    in property <ChatView> chat;
+    in property <[ChatTab]> tabs;
+    in property <[ChatLine]> lines;
+    in property <[RosterRow]> roster;
+    in property <[ChatNote]> notes;
+    in property <[ChatPick]> picks;
+    callback section(string);
+    callback pressed(string);
+    callback edited(string, string);
+    callback accepted(string, string);
+
+    // Under 1600 px the roster is behind a button in the head; the friends to message behind
+    // "+ Message a friend".
+    in-out property <bool> roster-open: false;
+    in-out property <bool> picks-open: false;
+    property <bool> open: chat.state == "open";
+    property <bool> fixed-roster: chat.roster && Layout.wide && open;
+    property <bool> drawer-shown: fixed-roster || (chat.roster && roster-open && open);
+    property <length> drawer-width: Layout.wide ? 380px : 340px;
+    property <length> gutter: Layout.compact ? 16px : Layout.wide ? 40px : 32px;
+    property <length> time-width: Layout.compact ? 44px : Layout.wide ? 64px : 54px;
+    property <length> tile-size: Layout.compact ? 30px : Layout.wide ? 40px : 36px;
+    property <length> text-size: Layout.compact ? 14px : Layout.wide ? 16px : 15px;
+    property <bool> has-top-notes: false;
+    background: Theme.bg;
+
+    function choose(id: string) {
+        root.picks-open = false;
+        root.section(id);
+    }
+
+    HorizontalLayout {
+        main := VerticalLayout {
+            horizontal-stretch: 1;
+            // The head: the title over the conversations; at compact the conversations are it.
+            if !Layout.compact: HorizontalLayout {
+                padding-left: root.gutter;
+                padding-right: root.gutter;
+                padding-top: Layout.wide ? 26px : 20px;
+                spacing: 16px;
+                VerticalLayout {
+                    horizontal-stretch: 0;
+                    alignment: end;
+                    Caps { text: "COMMS"; color: Theme.accent; }
+                    Text { text: "CHAT"; font-family: Type.cond; font-weight: 700; font-size: Layout.title-size; color: Theme.fg; }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                if root.open: VerticalLayout {
+                    horizontal-stretch: 0;
+                    alignment: end;
+                    padding-bottom: 8px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        VerticalLayout { alignment: center; Dot { tone: chat.conn-tone; } }
+                        Text { text: chat.conn; font-family: Type.mono; font-size: 12.5px; color: Theme.soft; vertical-alignment: center; }
+                    }
+                }
+                if chat.roster && !Layout.wide && root.open: VerticalLayout {
+                    horizontal-stretch: 0;
+                    alignment: end;
+                    padding-bottom: 2px;
+                    Btn { text: "Roster · " + chat.roster-count; small: true; pressed-look: root.roster-open; clicked => { root.roster-open = !root.roster-open; } }
+                }
+            }
+            freqs := HorizontalLayout {
+                padding-left: Layout.compact ? 16px : root.gutter - 14px;
+                padding-right: root.gutter;
+                padding-top: Layout.compact ? 6px : 12px;
+                spacing: 2px;
+                if Layout.compact: VerticalLayout {
+                    alignment: center;
+                    padding-right: 8px;
+                    Caps { text: "COMMS"; color: Theme.accent; }
+                }
+                for t[i] in root.tabs: HorizontalLayout {
+                    spacing: 2px;
+                    if t.direct && (i == 0 || !root.tabs[i - 1].direct): VerticalLayout {
+                        alignment: center;
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        Rectangle { width: 1px; height: 20px; background: Theme.control-line; }
+                    }
+                    Freq { t: t; on: t.id == chat.tab; chosen => { root.choose(t.id); } }
+                }
+                more := Rectangle {
+                    visible: root.open && chat.more-label != "";
+                    width: self.visible ? ml.preferred-width : 0px;
+                    accessible-role: button;
+                    accessible-label: "Message a friend";
+                    accessible-action-default => { root.picks-open = !root.picks-open; }
+                    forward-focus: mfs;
+                    mfs := FocusScope {
+                        key-pressed(e) => {
+                            if e.text == Key.Return || e.text == " " { root.picks-open = !root.picks-open; return accept; }
+                            reject
+                        }
+                    }
+                    mta := TouchArea { mouse-cursor: pointer; clicked => { root.picks-open = !root.picks-open; } }
+                    ml := HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        Text { text: chat.more-label; color: mta.has-hover ? Theme.accent.brighter(10%) : Theme.accent; font-size: Layout.compact ? 13.5px : Type.body; vertical-alignment: center; }
+                    }
+                    Rectangle { border-width: mfs.has-focus ? 2px : 0px; border-color: Theme.accent; }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                if Layout.compact && chat.roster && root.open: VerticalLayout {
+                    alignment: center;
+                    Btn { text: "Roster · " + chat.roster-count; small: true; pressed-look: root.roster-open; clicked => { root.roster-open = !root.roster-open; } }
+                }
+            }
+            Rule {}
+            if chat.room-line != "": HorizontalLayout {
+                padding-left: root.gutter;
+                padding-right: root.gutter;
+                padding-top: 8px;
+                padding-bottom: 8px;
+                spacing: 10px;
+                Text { text: "//"; font-family: Type.mono; font-size: 12px; color: Theme.accent; }
+                Text { text: chat.room-line; font-size: 12.5px; color: Theme.soft; wrap: word-wrap; horizontal-stretch: 1; }
+            }
+            if chat.room-line != "": Rule {}
+            // A direct message's friend: where they are, and Join.
+            if chat.strip: HorizontalLayout {
+                padding-left: root.gutter;
+                padding-right: root.gutter;
+                padding-top: 12px;
+                Rectangle {
+                    height: sl.preferred-height;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.line;
+                    Rectangle { x: 0; width: 3px; background: chat.strip-online ? Theme.accent : Theme.control-line; }
+                    sl := HorizontalLayout {
+                        padding: 10px;
+                        padding-left: 16px;
+                        padding-right: 14px;
+                        spacing: 12px;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            HorizontalLayout {
+                                spacing: 10px;
+                                alignment: start;
+                                Text { text: chat.strip-name; font-weight: 600; color: Theme.fg; }
+                                if chat.strip-id != "": Text { text: "ID " + chat.strip-id; font-family: Type.mono; font-size: 11.5px; color: Theme.muted; vertical-alignment: center; }
+                            }
+                            Text { text: chat.strip-line; font-size: Type.small; color: Theme.soft; overflow: elide; }
+                        }
+                        if chat.strip-join != "": VerticalLayout {
+                            alignment: center;
+                            Btn { text: "Join"; kind: "primary"; small: true; description: "Join " + chat.strip-name + "'s game"; clicked => { root.pressed("join:" + chat.strip-join + ":" + chat.strip-name); } }
+                        }
+                    }
+                }
+            }
+            for n in root.notes: HorizontalLayout {
+                padding-left: root.gutter;
+                padding-right: root.gutter;
+                padding-top: 8px;
+                visible: n.top;
+                height: n.top ? self.preferred-height : 0px;
+                Note { n: n; }
+            }
+
+            // The log: oldest at the top, the newest by the line to write.
+            log := ScrollView {
+                vertical-stretch: 1;
+                content-width: self.visible-width;
+                content-height: max(self.visible-height, col.preferred-height);
+                // It keeps to the newest while it's there: a message coming in shows at once.
+                property <length> last-height;
+                property <bool> stick: true;
+                changed content-height => {
+                    if self.stick || -self.content-y >= self.last-height - self.visible-height - 32px {
+                        self.content-y = min(0px, self.visible-height - self.content-height);
+                    }
+                    self.stick = false;
+                    self.last-height = self.content-height;
+                }
+                col := VerticalLayout {
+                    y: max(0px, log.content-height - self.preferred-height);
+                    width: log.visible-width;
+                    height: self.preferred-height;
+                    padding-top: 10px;
+                    padding-bottom: 6px;
+                    if root.open && root.lines.length == 0 && chat.empty != "": HorizontalLayout {
+                        padding-left: root.gutter + root.time-width - 16px;
+                        padding-right: root.gutter;
+                        padding-bottom: 10px;
+                        Text { text: chat.empty; color: Theme.muted; wrap: word-wrap; }
+                    }
+                    for l in root.lines: LogLine {
+                        l: l;
+                        time-width: root.time-width;
+                        tile-size: root.tile-size;
+                        text-size: root.text-size;
+                        right-pad: max(14px, root.gutter - 10px);
+                        act(a) => { root.pressed(a); }
+                        edited(a, b) => { root.edited(a, b); }
+                        accepted(a, b) => { root.accepted(a, b); }
+                    }
+                }
+            }
+            property <string> tab: chat.tab;
+            changed tab => {
+                log.stick = true;
+                log.content-y = min(0px, log.visible-height - log.content-height);
+                root.roster-open = false;
+            }
+
+            // The line to write, then the rules.
+            if root.open: VerticalLayout {
+                padding-left: Layout.compact ? 16px : root.gutter + root.time-width - 2px;
+                padding-right: root.gutter;
+                padding-top: 6px;
+                padding-bottom: Layout.compact ? 12px : 18px;
+                spacing: 7px;
+                for n in root.notes: Rectangle {
+                    visible: !n.top;
+                    height: !n.top ? self.preferred-height : 0px;
+                    Note { n: n; }
+                }
+                composer := Rectangle {
+                    height: Layout.compact ? 42px : Layout.wide ? 50px : 46px;
+                    background: Theme.surface;
+                    border-width: input.has-focus ? 2px : 1px;
+                    border-color: input.has-focus ? Theme.accent : Theme.control-line;
+                    opacity: chat.can-type ? 1 : 0.6;
+                    property <int> sent: chat.sent;
+                    changed sent => { input.text = ""; }
+                    HorizontalLayout {
+                        padding: input.has-focus ? 2px : 1px;
+                        Rectangle {
+                            width: tx.preferred-width + (Layout.compact ? 20px : 30px);
+                            background: chat.can-type ? Theme.selected : transparent;
+                            tx := Text {
+                                text: chat.tx;
+                                font-family: Type.mono;
+                                font-size: Layout.compact ? 11px : 12px;
+                                letter-spacing: 2.2px;
+                                color: chat.can-type ? Theme.accent : Theme.muted;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            Rectangle { x: parent.width - 1px; width: 1px; background: Theme.control-line; }
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            clip: true;
+                            TouchArea { mouse-cursor: MouseCursor.text; clicked => { input.focus(); } }
+                            if input.text == "": Text {
+                                x: 14px;
+                                width: parent.width - 28px;
+                                text: chat.placeholder;
+                                color: Theme.muted;
+                                font-size: root.text-size;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            input := TextInput {
+                                x: 14px;
+                                y: (parent.height - self.height) / 2;
+                                width: parent.width - 28px;
+                                height: self.preferred-height;
+                                enabled: chat.can-type;
+                                single-line: true;
+                                font-size: root.text-size;
+                                color: Theme.fg;
+                                selection-background-color: Theme.accent-soft;
+                                selection-foreground-color: Theme.fg;
+                                accessible-role: text-input;
+                                accessible-label: chat.tx;
+                                edited => { root.edited("text", self.text); }
+                                accepted => { if chat.can-send { root.accepted("text", self.text); } }
+                            }
+                        }
+                        send := Rectangle {
+                            width: sendt.preferred-width + (Layout.compact ? 26px : 40px);
+                            property <bool> on: chat.can-send && input.text != "";
+                            background: on ? (sta.has-hover ? Theme.accent.brighter(8%) : Theme.accent) : Theme.control;
+                            accessible-role: button;
+                            accessible-label: "Send";
+                            accessible-enabled: on;
+                            accessible-action-default => { if on { root.accepted("text", input.text); } }
+                            sta := TouchArea {
+                                enabled: send.on;
+                                mouse-cursor: send.on ? pointer : default;
+                                clicked => { root.accepted("text", input.text); }
+                            }
+                            sendt := Text {
+                                text: "SEND";
+                                font-family: Type.cond;
+                                font-weight: 700;
+                                font-size: Layout.compact ? 14px : 16px;
+                                letter-spacing: 2px;
+                                color: send.on ? Theme.on-accent : Theme.muted;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+                Text { text: chat.rules; font-size: 12.5px; color: Theme.muted; wrap: word-wrap; }
+            }
+        }
+        if root.fixed-roster: Roster {
+            width: root.drawer-width;
+            roster: root.roster;
+            count: chat.roster-count;
+            rules: chat.rules;
+            pressed(a) => { root.pressed(a); }
+        }
+    }
+
+    // Chat not open (no account, opening, closed here): what and why, in the log's place.
+    if !root.open: VerticalLayout {
+        y: freqs.y + freqs.height + 40px;
+        height: self.preferred-height;
+        padding-left: root.gutter;
+        padding-right: root.gutter;
+        spacing: 8px;
+        Text {
+            text: chat.state == "no-account" ? "No account yet" : chat.state == "opening" || chat.state == "" ? "Opening chat…" : "Chat isn't open";
+            font-family: Type.cond;
+            font-weight: 700;
+            font-size: 24px;
+            color: Theme.fg;
+        }
+        if chat.why != "": Text { text: chat.why; color: Theme.soft; wrap: word-wrap; }
+    }
+
+    // The roster under 1600 px: over the log, from the right, while its button is down.
+    if root.drawer-shown && !root.fixed-roster: Rectangle {
+        x: root.width - root.drawer-width;
+        width: root.drawer-width;
+        y: main.y + freqs.y + freqs.height + 1px;
+        height: root.height - self.y;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000070;
+        Roster {
+            roster: root.roster;
+            count: chat.roster-count;
+            rules: chat.rules;
+            pressed(a) => { root.pressed(a); }
+        }
+        FocusScope {
+            key-pressed(e) => {
+                if e.text == Key.Escape { root.roster-open = false; return accept; }
+                reject
+            }
+        }
+    }
+
+    // A player's dossier, from the roster or a name in the log.
+    if chat.dossier && root.open: Rectangle {
+        width: min(340px, root.width - 32px);
+        height: dl.preferred-height;
+        x: root.drawer-shown ? root.width - root.drawer-width - self.width - 12px : root.width - self.width - root.gutter;
+        // At the top of the log: what's done to the newest lines stays in view.
+        y: min(main.y + log.y + 12px, max(8px, root.height - self.height - 12px));
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.control-line;
+        drop-shadow-blur: 30px;
+        drop-shadow-color: #00000088;
+        accessible-role: groupbox;
+        accessible-label: "Dossier: " + chat.dossier-name;
+        Rectangle { y: 0; height: 2px; background: Theme.accent; }
+        FocusScope {
+            key-pressed(e) => {
+                if e.text == Key.Escape { root.pressed("dossier-close"); return accept; }
+                reject
+            }
+        }
+        TouchArea {}
+        dl := VerticalLayout {
+            padding: 18px;
+            padding-top: 16px;
+            spacing: 12px;
+            HorizontalLayout {
+                Caps { text: "DOSSIER"; font-size: 10.5px; color: Theme.accent; horizontal-stretch: 1; vertical-alignment: center; }
+                Link { text: "Close"; tint: Theme.soft; clicked => { root.pressed("dossier-close"); } }
+            }
+            HorizontalLayout {
+                spacing: 14px;
+                Tile { initial: chat.dossier-initial; tone: chat.dossier-friend ? "friend" : ""; size: 52px; }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+                        Text { text: chat.dossier-name; font-weight: 600; font-size: 20px; color: Theme.fg; overflow: elide; }
+                        if chat.dossier-friend: Caps { text: "FRIEND"; font-size: 10.5px; color: Theme.accent; vertical-alignment: center; }
+                    }
+                    if chat.dossier-id != "": Text { text: "ID " + chat.dossier-id; font-family: Type.mono; font-size: 12px; color: Theme.muted; }
+                }
+            }
+            Text { text: chat.dossier-line; font-size: Type.small; color: Theme.soft; wrap: word-wrap; }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                if chat.dossier-message != "": Btn { text: "Message"; kind: "primary"; small: true; clicked => { root.pressed(chat.dossier-message); } }
+                if chat.dossier-add != "": Btn { text: "Add friend"; kind: "primary"; small: true; clicked => { root.pressed(chat.dossier-add); } }
+                if chat.dossier-asked: Text { text: "Asked to be friends"; color: Theme.muted; font-size: Type.small; vertical-alignment: center; }
+                if chat.dossier-invite != "": Btn { text: "Invite to your game"; small: true; clicked => { root.pressed(chat.dossier-invite); } }
+            }
+            Rule {}
+            HorizontalLayout {
+                spacing: 16px;
+                alignment: start;
+                if chat.dossier-report != "": Act { text: "Report…"; tint: Theme.soft; clicked => { root.pressed(chat.dossier-report); } }
+                if chat.dossier-block != "": Act { text: "Block"; tint: Theme.bad; clicked => { root.pressed(chat.dossier-block); } }
+            }
+        }
+    }
+
+    // "+ Message a friend": the friends, and the conversations not across the top.
+    if root.picks-open && root.open: Rectangle {
+        TouchArea { clicked => { root.picks-open = false; } }
+        Rectangle {
+            x: min(max(8px, (more.absolute-position.x - root.absolute-position.x)), root.width - self.width - 8px);
+            y: freqs.y + freqs.height + (Layout.compact ? 0px : main.y) + 4px;
+            width: 300px;
+            height: min(pl.preferred-height, root.height - self.y - 16px);
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.control-line;
+            drop-shadow-blur: 30px;
+            drop-shadow-color: #00000088;
+            Rectangle { y: 0; height: 2px; background: Theme.accent; }
+            FocusScope {
+                init => { self.focus(); }
+                key-pressed(e) => {
+                    if e.text == Key.Escape { root.picks-open = false; return accept; }
+                    reject
+                }
+            }
+            TouchArea {}
+            pv := ScrollView {
+                content-width: self.visible-width;
+                content-height: pl.preferred-height;
+                pl := VerticalLayout {
+                    width: pv.visible-width;
+                    padding: 6px;
+                    padding-top: 10px;
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        padding-bottom: 6px;
+                        Caps { text: "MESSAGE A FRIEND"; }
+                    }
+                    if root.picks.length == 0: HorizontalLayout {
+                        padding: 10px;
+                        padding-top: 0px;
+                        Text { text: "No friends to message yet. Make friends in the game, or from Global."; color: Theme.soft; font-size: Type.small; wrap: word-wrap; }
+                    }
+                    for p in root.picks: Rectangle {
+                        height: 44px;
+                        background: pta.has-hover || pfs.has-focus ? Theme.control-hover : transparent;
+                        accessible-role: button;
+                        accessible-label: p.label;
+                        accessible-action-default => { root.choose(p.id); }
+                        forward-focus: pfs;
+                        pfs := FocusScope {
+                            key-pressed(e) => {
+                                if e.text == Key.Return || e.text == " " { root.choose(p.id); return accept; }
+                                reject
+                            }
+                        }
+                        pta := TouchArea { mouse-cursor: pointer; clicked => { root.choose(p.id); } }
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 10px;
+                            VerticalLayout { alignment: center; Tile { initial: p.initial; tone: p.online ? "friend" : ""; size: 26px; } }
+                            VerticalLayout {
+                                alignment: center;
+                                horizontal-stretch: 1;
+                                Text { text: p.label; color: Theme.fg; font-weight: p.unread > 0 ? 600 : 400; overflow: elide; }
+                                Text { text: p.line; color: Theme.muted; font-size: 12px; overflow: elide; }
+                            }
+                            if p.unread > 0: Text { text: p.unread; font-family: Type.mono; font-size: 12px; color: Theme.accent; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // A Discord invite, confirmed before it opens.
+    if chat.invite != "": Rectangle {
+        background: Theme.scrim;
+        TouchArea { clicked => { root.pressed("invite-cancel"); } }
+        Rectangle {
+            width: min(460px, root.width - 48px);
+            height: il.preferred-height;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.control-line;
+            drop-shadow-blur: 30px;
+            drop-shadow-color: #00000088;
+            Rectangle { y: 0; height: 2px; background: Theme.accent; }
+            FocusScope {
+                key-pressed(e) => {
+                    if e.text == Key.Escape { root.pressed("invite-cancel"); return accept; }
+                    reject
+                }
+            }
+            TouchArea {}
+            il := VerticalLayout {
+                padding: 22px;
+                spacing: 12px;
+                Caps { text: "INVITE"; color: Theme.accent; }
+                Text { text: "Open a Discord invite?"; font-family: Type.cond; font-weight: 700; font-size: 22px; color: Theme.fg; }
+                Text { text: chat.invite + " opens in your browser: Discord invites are the only links chat lets through."; color: Theme.soft; wrap: word-wrap; }
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: end;
+                    Btn { text: "Cancel"; clicked => { root.pressed("invite-cancel"); } }
+                    Btn { text: "Open it"; kind: "primary"; init => { self.focus(); } clicked => { root.pressed("invite-open"); } }
+                }
+            }
+        }
+    }
+}

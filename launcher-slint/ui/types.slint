@@ -171,3 +171,130 @@ export struct LobbyRow {
     // The game's own picture for it (the map's, else the mode's), when the game has one.
     art: image,
 }
+
+// Chat ("Comms"; pages/chat.rs builds these): the conversations across the top, the log, the
+// roster beside Global, and the rest of the screen.
+export struct ChatTab {
+    // The section's id: "global", "lobby" or "with:<identity>".
+    id: string,
+    label: string,
+    direct: bool,
+    initial: string,
+    // Beside the label: "24 on" (Global), or nothing.
+    count: string,
+    unread: int,
+    // A friend online here (the tile's green edge), or offline (dimmed).
+    online: bool,
+    offline: bool,
+}
+
+export struct ChatLine {
+    // "msg", "day" (a day's line) or "new" (where the unseen messages start).
+    kind: string,
+    // The message's id, for what's done to it.
+    key: string,
+    time: string,
+    // The sender's name ("You" for the player's own), their first letter, their identity.
+    who: string,
+    initial: string,
+    from: string,
+    // "friend", "me" or "": the tile's edge.
+    tone: string,
+    friend: bool,
+    mine: bool,
+    mention: bool,
+    // The first of a sender's lines together: the tile and the name show.
+    head: bool,
+    text: string,
+    // A Discord invite in it, shown as a card.
+    invite: string,
+    // Picked (its actions show), its report being written.
+    picked: bool,
+    reporting: bool,
+    can-message: bool,
+    can-add: bool,
+}
+
+export struct RosterRow {
+    // "head" (a group's caption), "person", or "more" ("and 4 more").
+    kind: string,
+    id: string,
+    name: string,
+    line: string,
+    // "friend", "match" or "menu": the left edge.
+    tone: string,
+    join: bool,
+    asked: bool,
+    picked: bool,
+}
+
+export struct ChatNote {
+    text: string,
+    // "warn", "bad" or "": the left edge.
+    tone: string,
+    // Over the log (the connection), or by the line to write (what's typed, Global's wait).
+    top: bool,
+}
+
+// One of "+ Message a friend"'s choices: a friend, or a conversation not across the top.
+export struct ChatPick {
+    id: string,
+    label: string,
+    initial: string,
+    line: string,
+    unread: int,
+    online: bool,
+}
+
+export struct ChatView {
+    // "open", "no-account", "opening", or anything else (`why` says).
+    state: string,
+    why: string,
+    // The conversation shown: its section's id ("global", "lobby", "with:<identity>").
+    tab: string,
+    // The connection: its line and its dot's tone ("ok", "warn", "fail").
+    conn: string,
+    conn-tone: string,
+    // The line to write: its label ("TX // GLOBAL"), placeholder, whether it can be typed in
+    // and sent, and a count that goes up with each message sent (the field empties then).
+    tx: string,
+    placeholder: string,
+    can-type: bool,
+    can-send: bool,
+    sent: int,
+    rules: string,
+    // Under the conversations: the room's line (Lobby's); an empty room's line.
+    room-line: string,
+    empty: string,
+    // A direct message's friend: their name, ID, where they are, and Join (their account id).
+    strip: bool,
+    strip-name: string,
+    strip-id: string,
+    strip-line: string,
+    strip-online: bool,
+    strip-join: string,
+    // The roster (Global only): how many are in it.
+    roster: bool,
+    roster-count: int,
+    // The player picked in the roster or the log: their dossier, and what can be done (each an
+    // action's id for `pressed`, or "" when it can't).
+    dossier: bool,
+    dossier-name: string,
+    dossier-initial: string,
+    dossier-id: string,
+    dossier-line: string,
+    dossier-friend: bool,
+    dossier-add: string,
+    dossier-asked: bool,
+    dossier-message: string,
+    dossier-invite: string,
+    dossier-report: string,
+    dossier-block: string,
+    // A Discord invite to confirm before it opens.
+    invite: string,
+    // The report being written: whose message, and why.
+    report-who: string,
+    report-why: string,
+    // The button opening the friends to message ("+ Message a friend", shorter when narrow).
+    more-label: string,
+}

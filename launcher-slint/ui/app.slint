@@ -12,10 +12,11 @@ import { Btn } from "widgets.slint";
 import { TitleBar, SideMenu, ActivityBar, ActivityView, ActionItem } from "chrome.slint";
 import { PlayScreen } from "play.slint";
 import { MatchesScreen } from "matches.slint";
+import { ChatScreen } from "chat.slint";
 import { Page, Dialog, Row, RowButton } from "rows.slint";
-import { InfoView, PlayButton, ServerCard, ServerRow, CheckRow, FriendRow, OtherRow, ElsewhereRow, ModeItem, NoticeView, NoticeRow, LobbyRow, PersonRow, SettingRow } from "types.slint";
+import { InfoView, PlayButton, ServerCard, ServerRow, CheckRow, FriendRow, OtherRow, ElsewhereRow, ModeItem, NoticeView, NoticeRow, LobbyRow, PersonRow, SettingRow, ChatView, ChatTab, ChatLine, RosterRow, ChatNote, ChatPick } from "types.slint";
 
-export { Row, RowButton, Theme, ThemeChoice, InfoView, PlayButton, ServerCard, ServerRow, CheckRow, FriendRow, OtherRow, ElsewhereRow, ModeItem, NoticeView, NoticeRow, LobbyRow, PersonRow, SettingRow, ActivityView, ActionItem }
+export { Row, RowButton, Theme, ThemeChoice, InfoView, PlayButton, ServerCard, ServerRow, CheckRow, FriendRow, OtherRow, ElsewhereRow, ModeItem, NoticeView, NoticeRow, LobbyRow, PersonRow, SettingRow, ActivityView, ActionItem, ChatView, ChatTab, ChatLine, RosterRow, ChatNote, ChatPick }
 
 export component AppWindow inherits Window {
     title: "5th Echelon Enhanced " + release;
@@ -182,6 +183,13 @@ export component AppWindow inherits Window {
     in property <string> page-status;
     in property <string> page-status-tone;
     in property <[RowButton]> page-actions;
+    // Chat's own screen (chat.slint), from the same page (pages/chat.rs) and its callbacks.
+    in property <ChatView> chat-view;
+    in property <[ChatTab]> chat-tabs;
+    in property <[ChatLine]> chat-lines;
+    in property <[RosterRow]> chat-roster;
+    in property <[ChatNote]> chat-notes;
+    in property <[ChatPick]> chat-picks;
     callback page-section-chosen(string);
     callback page-toggled(string, bool);
     callback page-chosen(string, int);
@@ -361,7 +369,19 @@ export component AppWindow inherits Window {
                         go(s) => { root.go(s); }
                         retry => { root.retry-lobbies(); }
                     }
-                    if root.screen != "play" && root.screen != "matches": Page {
+                    if root.screen == "chat": ChatScreen {
+                        chat: root.chat-view;
+                        tabs: root.chat-tabs;
+                        lines: root.chat-lines;
+                        roster: root.chat-roster;
+                        notes: root.chat-notes;
+                        picks: root.chat-picks;
+                        section(s) => { root.page-section-chosen(s); }
+                        pressed(a) => { root.page-pressed(a); }
+                        edited(a, b) => { root.page-edited(a, b); }
+                        accepted(a, b) => { root.page-accepted(a, b); }
+                    }
+                    if root.screen != "play" && root.screen != "matches" && root.screen != "chat": Page {
                         kicker: root.page-kicker;
                         title: root.page-title;
                         summary: root.page-summary;

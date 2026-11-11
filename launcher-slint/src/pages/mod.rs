@@ -401,6 +401,19 @@ pub struct PageView {
     pub layout: &'static str,
     pub status: (String, &'static str),
     pub actions: Vec<B>,
+    /// Chat's own screen (ui/chat.slint) instead of rows.
+    pub chat: Option<Box<ChatModel>>,
+}
+
+/// What Chat's screen shows (pages/chat.rs builds it; ui/types.slint has its parts).
+#[derive(Debug, Clone, Default)]
+pub struct ChatModel {
+    pub view: crate::ChatView,
+    pub tabs: Vec<crate::ChatTab>,
+    pub lines: Vec<crate::ChatLine>,
+    pub roster: Vec<crate::RosterRow>,
+    pub notes: Vec<crate::ChatNote>,
+    pub picks: Vec<crate::ChatPick>,
 }
 
 /// The window's size band (ui/theme.slint's Layout, which the window reports): 0 compact

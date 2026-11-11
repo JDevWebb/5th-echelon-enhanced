@@ -148,6 +148,16 @@ pub fn run(dir: PathBuf) -> Result<(), slint::PlatformError> {
             size: None,
         },
         Shot {
+            name: "chat-direct",
+            set: chat_direct,
+            size: None,
+        },
+        Shot {
+            name: "chat-lobby",
+            set: chat_lobby,
+            size: None,
+        },
+        Shot {
             name: "host-empty",
             set: host_empty,
             size: None,
@@ -1122,35 +1132,134 @@ fn support(w: &AppWindow) {
     );
 }
 
-/// Chat, as pages/chat.rs lays it out: # Global with a few lines.
-fn chat(w: &AppWindow) {
-    use crate::pages::*;
-    let mut r = Rows::default();
-    r.card("");
-    r.add(
-        field("text", "", "")
-            .placeholder("Say something to everyone…")
-            .button(b("send", "Send").kind("primary").enabled(false)),
-    );
-    r.out();
-    r.add(message("Kestrel", "Anyone up for SvM Classic on Germany?", "21:02"));
-    r.add(message("Marlow", "In 5, finishing a co-op run", "21:03"));
-    r.add(message("Nightshade", "I'm in. Penthouse?", "21:03").on(true));
-    r.add(message("Tamsin", "gg last night, that Silo round was close", "21:05"));
-    let sections = vec![
-        ("global".to_string(), "# Global".to_string()),
-        ("lobby".to_string(), "# Lobby".to_string()),
-        ("with:1".to_string(), "Kestrel · 2".to_string()),
-        ("with:2".to_string(), "Marlow".to_string()),
-    ];
-    let v = crate::pages::PageView {
-        kicker: "Community network".into(),
-        title: "Chat".into(),
-        summary: "# Global · the whole community network".into(),
-        sections,
-        section: "global".into(),
-        rows: r.done(),
-        ..Default::default()
+/// A chat message as crate::chat::ChatView has it (`at` in minutes past 14:00 today, or
+/// yesterday's below 0), its invite as a part of its own.
+#[allow(clippy::too_many_arguments)]
+fn said(id: i64, minute: i64, from: &str, name: &str, body: &str, mine: bool, friend: bool, mention: bool) -> serde_json::Value {
+    let at = 1_790_000_000 + minute * 60;
+    let (day, time) = if minute < 0 {
+        // 16 hours 40 before 14:00: from 21:20 the day before.
+        ("Yesterday", format!("21:{:02}", (minute + 1240 + 40).rem_euclid(60)))
+    } else {
+        ("Today", format!("14:{minute:02}"))
     };
-    page(w, "chat", v);
+    let parts = match body.split_once("discord.gg/") {
+        Some((before, link)) => serde_json::json!([{ "text": before, "link": false }, { "text": format!("discord.gg/{link}"), "link": true }]),
+        None => serde_json::json!([{ "text": body, "link": false }]),
+    };
+    serde_json::json!({ "id": id, "at": at, "time": time, "day": day, "from": from, "from_name": name,
+        "server": "Singapore", "parts": parts, "mine": mine, "mentions_me": mention, "friend": friend })
+}
+
+/// Chat's view on made-up people, as crate::chat::chat gives it.
+fn chat_view(messages: Vec<serde_json::Value>, trouble: &str, read_only: bool, with_name: &str) -> serde_json::Value {
+    let person = |id: &str, name: &str, activity: &str, friend: bool, joinable: bool, asked: bool| {
+        serde_json::json!({ "id": id, "name": name, "activity": if activity.is_empty() { serde_json::Value::Null } else { activity.into() },
+            "friend": friend, "asked": asked, "joinable": joinable })
+    };
+    let mut online = vec![
+        person("1", "Kestrel", "SvM lobby · 3/4", true, true, false),
+        person("2", "Marlow", "Co-op · Opium Farm, under way", true, false, false),
+        person("5", "Pell", "SvM Blacklist · Wake", false, false, false),
+        person("6", "Orrin", "Co-op · Dead Drop", false, false, false),
+        person("7", "Tamsin", "", false, false, false),
+        person("8", "Ravel_77", "", false, false, true),
+        person("9", "Sable", "SvM Classic · Penthouse", false, false, false),
+    ];
+    for i in 0..17 {
+        online.push(person(
+            &format!("x{i}"),
+            &format!("Agent_{:02}", i + 10),
+            if i < 3 { "SvM Classic · Station" } else { "" },
+            false,
+            false,
+            false,
+        ));
+    }
+    let conv = |with: &str, name: &str, unread: u32, online: bool, direct: bool| serde_json::json!({ "with": with, "name": name, "what": "Direct", "unread": unread, "direct": direct, "friend": true, "online": online });
+    serde_json::json!({
+        "state": "open", "trouble": if trouble.is_empty() { serde_json::Value::Null } else { trouble.into() },
+        "read_only": read_only, "may_post_global": true, "global_wait": "", "lobby": true,
+        "messages": messages,
+        "conversations": [conv("K7QF2M9DAAAA", "Kestrel", 2, true, true), conv("M4RL0WAAAAAA", "Marlow", 0, true, true),
+            conv("QU1LL0NAAAAA", "Quillon", 0, false, true), conv("T4MS1NAAAAAA", "Tamsin", 0, false, false)],
+        "online": online, "with_name": with_name, "unread": 2,
+        "rules": launcher::chat::RULES_LINE, "max_message": 500, "join_offered": true, "lobby_ids": [101, 102, 103],
+    })
+}
+
+/// The shots' chat page: its room, a first look (what was seen before), then the view.
+fn chat_page(w: &AppWindow, room: &str, first: Option<serde_json::Value>, v: serde_json::Value, picked: Option<i64>, person: Option<&str>) {
+    use crate::pages::Screen;
+    let mut page = crate::pages::chat::ChatPage::new();
+    page.section(room);
+    if let Some(first) = first {
+        page.build(&first);
+        page.section("lobby");
+        page.build(&chat_view(vec![], "", false, ""));
+        page.section(room);
+    }
+    page.pick(picked, person);
+    let view = page.build(&v);
+    self::page(w, "chat", view);
+}
+
+/// Chat's Global: a sender's lines together, a mention, the unseen from "New traffic", a
+/// Discord invite, the player's own; the roster, and Tamsin's dossier.
+fn chat(w: &AppWindow) {
+    let global = |more: bool| {
+        let mut m = vec![
+            said(1, 2, "K7QF2M9DAAAA", "Kestrel", "anyone up for SvM Classic on Penthouse?", false, true, false),
+            said(2, 2, "K7QF2M9DAAAA", "Kestrel", "need one more merc, we're 3/4", false, true, false),
+            said(3, 3, "T4MS1NAAAAAA", "Tamsin", "that last round was so *** close", false, false, false),
+            said(4, 4, "M4RL0WAAAAAA", "Marlow", "@Nightshade you in? Kestrel's lobby", false, true, true),
+        ];
+        if more {
+            m.push(said(
+                5,
+                5,
+                "P3LLAAAAAAAA",
+                "Pell",
+                "EU crew plays on our Discord most nights: discord.gg/blacklist-eu",
+                false,
+                false,
+                false,
+            ));
+            m.push(said(6, 6, "N1GHTAAAAAAA", "Nightshade", "yep, on my way", true, false, false));
+            m.push(said(7, 6, "N1GHTAAAAAAA", "Nightshade", "joining now", true, false, false));
+        }
+        m
+    };
+    chat_page(
+        w,
+        "global",
+        Some(chat_view(global(false), "", false, "")),
+        chat_view(global(true), "", false, ""),
+        Some(5),
+        Some("7"),
+    );
+}
+
+/// A direct message: Kestrel's strip with Join, yesterday's lines and today's, a line picked.
+fn chat_direct(w: &AppWindow) {
+    let k = "K7QF2M9DAAAA";
+    let me = "N1GHTAAAAAAA";
+    let m = vec![
+        said(11, -1240, k, "Kestrel", "gg, that last extraction was clean", false, true, false),
+        said(12, -1239, me, "Nightshade", "same time tomorrow?", true, false, false),
+        said(13, 1, k, "Kestrel", "lobby's up, Penthouse", false, true, false),
+        said(14, 1, k, "Kestrel", "come when you're ready", false, true, false),
+        said(15, 2, me, "Nightshade", "2 min", true, false, false),
+    ];
+    chat_page(w, &format!("with:{k}"), None, chat_view(m, "", false, "Kestrel"), Some(13), None);
+}
+
+/// Lobby while chat reconnects: read only, the line to write off.
+fn chat_lobby(w: &AppWindow) {
+    let m = vec![
+        said(101, 8, "K7QF2M9DAAAA", "Kestrel", "mercs: me and Marlow. spies: you two", false, true, false),
+        said(102, 8, "0RR1NAAAAAAA", "Orrin", "ready", false, false, false),
+        said(103, 9, "N1GHTAAAAAAA", "Nightshade", "ready, start it", true, false, false),
+    ];
+    chat_page(w, "lobby", None, chat_view(m, "the server didn't answer", true, ""), None, None);
 }

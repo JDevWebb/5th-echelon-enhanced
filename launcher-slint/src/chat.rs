@@ -311,7 +311,11 @@ fn parts(text: &str) -> Vec<Part> {
 #[derive(Serialize)]
 pub struct MessageView {
     id: i64,
+    /// When it was sent (Unix seconds), its clock time, and its day ("Today", "Yesterday", "6 Oct
+    /// 2026"), for the day lines and grouping a sender's lines.
+    at: i64,
     time: String,
+    day: String,
     from: String,
     from_name: String,
     server: String,
@@ -328,6 +332,10 @@ pub struct RoomEntry {
     name: String,
     what: &'static str,
     unread: u32,
+    /// A conversation (not only a friend to start one with), and the friend is online here.
+    direct: bool,
+    friend: bool,
+    online: bool,
 }
 
 #[derive(Serialize)]
@@ -337,6 +345,8 @@ pub struct OnlineView {
     activity: Option<String>,
     friend: bool,
     asked: bool,
+    /// A friend in a party or a public match: Join takes the player there.
+    joinable: bool,
 }
 
 /// The Chat screen, for the page.
@@ -360,6 +370,10 @@ pub struct ChatView {
     unread: u32,
     rules: &'static str,
     max_message: usize,
+    /// The server joins a friend's game (`JoinNow`): the Join buttons show.
+    join_offered: bool,
+    /// The lobby's messages from others (their ids), for its unread count while another room shows.
+    lobby_ids: Vec<i64>,
 }
 
 /// The Chat screen as it is, for `tab` ("global", "lobby", "messages") and `with` (the
@@ -395,6 +409,13 @@ pub fn chat(app: tauri::AppHandle, state: tauri::State<Chat>, tab: String, with:
         _ => ("open", None),
     };
     let clock = setup::clock::Clock::local();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    let today = clock.day_start(now);
+    let day = |at: i64| match (today - clock.day_start(at)) / 86_400 {
+        0 => "Today".to_string(),
+        1 => "Yesterday".to_string(),
+        _ => clock.date(at),
+    };
     let friends: HashSet<&str> = st.friends.iter().map(|f| f.identity.as_str()).collect();
     let list: &[Message] = match (tab, &with) {
         (Tab::Global, _) => &st.rooms.global,
@@ -406,7 +427,9 @@ pub fn chat(app: tauri::AppHandle, state: tauri::State<Chat>, tab: String, with:
         .iter()
         .map(|m| MessageView {
             id: m.id,
+            at: m.at,
             time: clock.clock_time(m.at),
+            day: day(m.at),
             from: m.from.clone(),
             from_name: m.from_name.clone(),
             server: m.server_name.clone(),
@@ -428,6 +451,9 @@ pub fn chat(app: tauri::AppHandle, state: tauri::State<Chat>, tab: String, with:
             },
             what: "Direct",
             unread: st.rooms.unseen_direct.get(&conv.with).copied().unwrap_or(0),
+            direct: true,
+            friend: st.friends.iter().any(|f| f.identity == conv.with),
+            online: st.friends.iter().any(|f| f.identity == conv.with && f.online),
         })
         .collect();
     conversations.extend(
@@ -439,6 +465,9 @@ pub fn chat(app: tauri::AppHandle, state: tauri::State<Chat>, tab: String, with:
                 name: f.name.clone(),
                 what: if f.online { "Friend · online" } else { "Friend" },
                 unread: 0,
+                direct: false,
+                friend: true,
+                online: f.online,
             }),
     );
     let online = st
@@ -451,6 +480,7 @@ pub fn chat(app: tauri::AppHandle, state: tauri::State<Chat>, tab: String, with:
             activity: f.activity.clone(),
             friend: true,
             asked: false,
+            joinable: f.joinable && !f.with_me,
         })
         .chain(st.online.others.iter().map(|p| OnlineView {
             id: p.id.clone(),
@@ -458,6 +488,7 @@ pub fn chat(app: tauri::AppHandle, state: tauri::State<Chat>, tab: String, with:
             activity: p.activity.clone(),
             friend: false,
             asked: p.asked,
+            joinable: false,
         }))
         .collect();
     // A friend not written to yet has no conversation, so no name kept for it: their name from
@@ -487,6 +518,8 @@ pub fn chat(app: tauri::AppHandle, state: tauri::State<Chat>, tab: String, with:
         unread: st.rooms.unread(),
         rules: c::RULES_LINE,
         max_message: moderation::MAX_MESSAGE,
+        join_offered: st.online.join_offered,
+        lobby_ids: st.rooms.lobby.iter().filter(|m| !m.mine).map(|m| m.id).collect(),
     }
 }
 
