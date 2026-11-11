@@ -320,7 +320,7 @@ export component MatchesScreen inherits Rectangle {
                         spacing: 12px;
                         Caps { text: "MATCH"; horizontal-stretch: 1.6; min-width: 0; preferred-width: 0; font-size: 11px; }
                         Caps { text: "PLAYERS"; width: narrow ? 76px : 110px; font-size: 11px; }
-                        Caps { text: "STATUS"; horizontal-stretch: 1.2; min-width: 0; preferred-width: 0; font-size: 11px; }
+                        Caps { text: "STATUS"; horizontal-stretch: narrow ? 1.6 : 1.2; min-width: 0; preferred-width: 0; font-size: 11px; }
                         Caps { text: "PING"; width: narrow ? 60px : 70px; horizontal-alignment: right; font-size: 11px; }
                     }
                     for l[i] in shown: Rectangle {
@@ -374,13 +374,15 @@ export component MatchesScreen inherits Rectangle {
                                     }
                                 }
                             }
+                            // Narrow: the status takes as much room as the match, and a second line
+                            // rather than being cut off ("In lobby · waiting for 3 more").
                             HorizontalLayout {
-                                horizontal-stretch: 1.2;
+                                horizontal-stretch: narrow ? 1.6 : 1.2;
                                 min-width: 0;
                                 preferred-width: 0;
                                 spacing: 8px;
                                 Dot { tone: l.tone; y: (parent.height - self.height) / 2; }
-                                Text { text: l.status; color: Theme.fg; font-size: 14px; vertical-alignment: center; overflow: elide; }
+                                Text { text: l.status; color: Theme.fg; font-size: narrow ? 13.5px : 14px; vertical-alignment: center; wrap: word-wrap; overflow: elide; }
                             }
                             PingText { ms: l.ping; width: narrow ? 60px : 70px; horizontal-alignment: right; vertical-alignment: center; }
                         }
