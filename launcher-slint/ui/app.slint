@@ -6,7 +6,7 @@ import "fonts/IBMPlexSans-SemiBold.ttf";
 import "fonts/IBMPlexSansCondensed-Bold.ttf";
 import "fonts/IBMPlexMono-Regular.ttf";
 
-import { Theme, Type, ThemeChoice } from "theme.slint";
+import { Theme, Type, ThemeChoice, Layout } from "theme.slint";
 import { EchelonMark, Splash } from "brand.slint";
 import { Btn } from "widgets.slint";
 import { TitleBar, SideMenu, ActivityBar, ActivityView, ActionItem } from "chrome.slint";
@@ -33,6 +33,17 @@ export component AppWindow inherits Window {
     in property <bool> full-screen-mode;
     in property <bool> maximised;
     in-out property <string> screen: "play";
+    // The window's size band (theme.slint's Layout): the pages built in Rust take it too, as
+    // some show more at wide (Friends' two columns) or less at compact (Host's one).
+    init => {
+        Layout.width = root.width;
+        Layout.height = root.height;
+    }
+    changed width => { Layout.width = root.width; }
+    changed height => { Layout.height = root.height; }
+    out property <string> band: Layout.band;
+    callback band-changed(string);
+    changed band => { root.band-changed(root.band); }
     // The screen just changed: the cover's up for a frame, then fades.
     in-out property <bool> covering;
     changed screen => { covering = true; }
@@ -159,6 +170,16 @@ export component AppWindow inherits Window {
     in property <[string]> page-section-ids;
     in property <string> page-section;
     in property <[Row]> page-rows;
+    // A second column beside the rows (Friends at wide, Host), and the first's share of the two.
+    in property <[Row]> page-side;
+    in property <float> page-split: 0.6;
+    // "" a centred column; "setup" a dialog's width, centred both ways; "wide" the two columns'
+    // width even with one (Host's).
+    in property <string> page-layout;
+    // Beside the title: a status (its pill, and its tone) and the page's main buttons.
+    in property <string> page-status;
+    in property <string> page-status-tone;
+    in property <[RowButton]> page-actions;
     callback page-section-chosen(string);
     callback page-toggled(string, bool);
     callback page-chosen(string, int);
@@ -346,6 +367,12 @@ export component AppWindow inherits Window {
                         section-ids: root.page-section-ids;
                         section: root.page-section;
                         rows: root.page-rows;
+                        side: root.page-side;
+                        split: root.page-split;
+                        layout: root.page-layout;
+                        status: root.page-status;
+                        status-tone: root.page-status-tone;
+                        actions: root.page-actions;
                         go-section(s) => { root.page-section-chosen(s); }
                         toggled(a, b) => { root.page-toggled(a, b); }
                         chosen(a, b) => { root.page-chosen(a, b); }

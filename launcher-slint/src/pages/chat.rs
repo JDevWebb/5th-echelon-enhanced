@@ -64,6 +64,7 @@ impl Screen for ChatPage {
             sections,
             section,
             rows: r.done(),
+            ..Default::default()
         };
         if state != "open" {
             r.add(match state.as_str() {

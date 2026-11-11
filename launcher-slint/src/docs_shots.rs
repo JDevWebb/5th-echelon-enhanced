@@ -101,15 +101,12 @@ impl Docs {
         r
     }
 
-    fn page(&self, w: &AppWindow, screen: &str, view: PageView) {
+    fn page(&self, w: &AppWindow, screen: &str, mut view: PageView) {
         w.set_screen(s(screen));
-        w.set_page_kicker(s(&view.kicker));
-        w.set_page_title(s(&view.title));
-        w.set_page_summary(s(self.path_text(&view.summary)));
-        w.set_page_sections(model(view.sections.iter().map(|(_, l)| s(l)).collect()));
-        w.set_page_section_ids(model(view.sections.iter().map(|(i, _)| s(i)).collect()));
-        w.set_page_section(s(&view.section));
-        w.set_page_rows(self.rows(view.rows));
+        view.summary = self.path_text(&view.summary);
+        view.rows = view.rows.into_iter().map(|r| self.windows_paths(r)).collect();
+        view.side = view.side.into_iter().map(|r| self.windows_paths(r)).collect();
+        crate::shell::show_page(w, &view);
     }
 
     fn dialog(&self, w: &AppWindow, mut dialog: Dialog) {

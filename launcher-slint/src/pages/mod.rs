@@ -260,7 +260,14 @@ pub fn caps(t: impl Into<String>) -> R {
 }
 /// About's head: the kicker over the product's name, its release, whether it's current (with
 /// its dot's tone), a line on what it is; its actions as buttons.
-pub fn about(kicker: impl Into<String>, product: impl Into<String>, release: impl Into<String>, status: impl Into<String>, status_tone: &'static str, line: impl Into<String>) -> R {
+pub fn about(
+    kicker: impl Into<String>,
+    product: impl Into<String>,
+    release: impl Into<String>,
+    status: impl Into<String>,
+    status_tone: &'static str,
+    line: impl Into<String>,
+) -> R {
     let status = status.into();
     R {
         label: product.into(),
@@ -352,7 +359,10 @@ impl Rows {
 }
 
 /// What a page shows: its kicker and title (or, with sections, the section's name as the
-/// summary), its sections down the side, and its rows.
+/// summary), its sections down the side, and its rows; a second column beside them (`side`,
+/// `split` the first's share of the width), how it's laid out ("" a centred column, "setup"
+/// a dialog's width centred both ways, "wide" the two columns' width), and beside its title a
+/// status (its line and tone) and its main buttons.
 #[derive(Debug, Clone, Default)]
 pub struct PageView {
     pub kicker: String,
@@ -361,6 +371,32 @@ pub struct PageView {
     pub sections: Vec<(String, String)>,
     pub section: String,
     pub rows: Vec<R>,
+    pub side: Vec<R>,
+    pub split: f32,
+    pub layout: &'static str,
+    pub status: (String, &'static str),
+    pub actions: Vec<B>,
+}
+
+/// The window's size band (ui/theme.slint's Layout, which the window reports): 0 compact
+/// (under 1100 px wide), 1 regular, 2 wide (1600 and over).
+static BAND: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
+
+pub fn set_band(band: &str) {
+    let b = match band {
+        "compact" => 0,
+        "wide" => 2,
+        _ => 1,
+    };
+    BAND.store(b, std::sync::atomic::Ordering::Relaxed);
+}
+/// The window is wide (1600 px and over): room for two columns.
+pub fn wide() -> bool {
+    BAND.load(std::sync::atomic::Ordering::Relaxed) == 2
+}
+/// The window is compact (under 1100 px wide): one column.
+pub fn compact() -> bool {
+    BAND.load(std::sync::atomic::Ordering::Relaxed) == 0
 }
 
 /// A page: what it shows, and what the player does on it. Every call may block (the network):

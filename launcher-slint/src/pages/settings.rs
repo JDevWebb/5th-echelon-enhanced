@@ -127,6 +127,7 @@ impl Screen for SettingsPage {
             sections,
             section: self.section.clone(),
             rows: r.done(),
+            ..Default::default()
         }
     }
 
@@ -818,7 +819,10 @@ impl SettingsPage {
                 72.0,
                 true,
             )
-            .buttons(vec![super::b("profile", "github.com/JDevWebb").kind("link"), super::b("revivals", "Other game revivals").kind("link")]),
+            .buttons(vec![
+                super::b("profile", "github.com/JDevWebb").kind("link"),
+                super::b("revivals", "Other game revivals").kind("link"),
+            ]),
         );
         r.out().add(
             support(

@@ -22,13 +22,19 @@ fn model<T: Clone + 'static>(items: Vec<T>) -> ModelRc<T> {
     ModelRc::new(VecModel::from(items))
 }
 
-/// One screen to take: its name, and what to set.
+/// One screen to take: its name, what to set, and the one size it's taken at (else all).
 struct Shot {
     name: &'static str,
     set: fn(&AppWindow),
+    size: Option<(u32, u32)>,
 }
 
-const SIZES: [(u32, u32); 3] = [(1280, 800), (960, 600), (1920, 1080)];
+/// Sizes only some shots are taken at.
+const EXTRA: [(u32, u32); 1] = [(1280, 1900)];
+
+/// From the window's smallest up to 2560x1440: compact (960, the minimum), regular (1280,
+/// 1366) and wide (1600 and up).
+const SIZES: [(u32, u32); 6] = [(960, 600), (1280, 800), (1366, 768), (1600, 900), (1920, 1080), (2560, 1440)];
 
 pub fn run(dir: PathBuf) -> Result<(), slint::PlatformError> {
     std::fs::create_dir_all(&dir).map_err(|e| slint::PlatformError::Other(e.to_string()))?;
@@ -39,66 +45,132 @@ pub fn run(dir: PathBuf) -> Result<(), slint::PlatformError> {
         Shot {
             name: "splash",
             set: |w| w.set_loaded(false),
+            size: None,
         },
         Shot {
             name: "play-ready",
             set: play_ready,
+            size: None,
         },
-        Shot { name: "play-fix", set: play_fix },
+        Shot {
+            name: "play-fix",
+            set: play_fix,
+            size: None,
+        },
         Shot {
             name: "play-notice",
             set: play_notice,
+            size: None,
         },
         Shot {
             name: "play-checking",
             set: play_checking,
+            size: None,
         },
-        Shot { name: "matches", set: matches },
+        Shot {
+            name: "matches",
+            set: matches,
+            size: None,
+        },
         Shot {
             name: "matches-teams",
             set: matches_teams,
+            size: None,
         },
         Shot {
             name: "matches-empty",
             set: matches_empty,
+            size: None,
         },
-        Shot { name: "settings", set: settings },
-        Shot { name: "friends", set: friends },
-        Shot { name: "dialog", set: dialog },
-        Shot { name: "setup", set: setup },
+        Shot {
+            name: "settings",
+            set: settings,
+            size: None,
+        },
+        Shot {
+            name: "friends",
+            set: friends,
+            size: None,
+        },
+        Shot {
+            name: "dialog",
+            set: dialog,
+            size: None,
+        },
+        Shot {
+            name: "setup",
+            set: setup,
+            size: None,
+        },
         Shot {
             name: "friends-empty",
             set: friends_empty,
+            size: None,
         },
         Shot {
             name: "whats-new",
             set: whats_new,
+            size: None,
         },
-        Shot { name: "banner", set: banner },
+        Shot {
+            name: "banner",
+            set: banner,
+            size: None,
+        },
         Shot {
             name: "settings-save",
             set: settings_save,
+            size: None,
         },
         Shot {
             name: "settings-about",
             set: settings_about,
+            size: None,
         },
     ]);
-    // Every shot in each look and size, one after another on the window's own clock.
+    // Every shot in each look and size, one after another on the window's own clock; or only
+    // some while working on a screen: FE_SHOTS (names starting so, comma-separated),
+    // FE_SHOT_SIZES ("1280x800,1920x1080") and FE_SHOT_LOOKS ("dark" or "light").
+    let only = |var: &str| -> Vec<String> {
+        std::env::var(var)
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect()
+    };
+    let (names, sizes, looks) = (only("FE_SHOTS"), only("FE_SHOT_SIZES"), only("FE_SHOT_LOOKS"));
     let mut steps = Vec::new();
     for dark in [true, false] {
-        for size in SIZES {
-            for i in 0..shots.len() {
+        if !looks.is_empty() && !looks.iter().any(|l| (l == "dark") == dark) {
+            continue;
+        }
+        for size in SIZES.into_iter().chain(EXTRA) {
+            let named = format!("{}x{}", size.0, size.1);
+            if if sizes.is_empty() { !SIZES.contains(&size) } else { !sizes.contains(&named) } {
+                continue;
+            }
+            for (i, shot) in shots.iter().enumerate() {
+                if !names.is_empty() && !names.iter().any(|n| shot.name.starts_with(n.as_str())) {
+                    continue;
+                }
+                // A shot for one size only (About's whole page, on a tall window).
+                if shot.size.is_some_and(|only| only != size) || (shot.size.is_none() && EXTRA.contains(&size)) {
+                    continue;
+                }
                 steps.push((dark, size, i));
             }
         }
     }
     let steps = Rc::new(steps);
     let at = Rc::new(std::cell::Cell::new(0usize));
+    let retries = Rc::new(std::cell::Cell::new(0u32));
     let timer = Rc::new(slint::Timer::default());
     let weak = w.as_weak();
     let next = {
         let (steps, shots, at, dir, timer2) = (steps.clone(), shots.clone(), at.clone(), dir.clone(), timer.clone());
+        let retries = retries.clone();
         move || {
             let Some(w) = weak.upgrade() else { return };
             let i = at.get();
@@ -110,6 +182,15 @@ pub fn run(dir: PathBuf) -> Result<(), slint::PlatformError> {
                 // between shots, it sometimes hadn't cleared, and the shot had the side menu alone
                 // (the 1920x1080 ones after Play). The launcher itself clears it.
                 w.set_covering(false);
+                // The window not at its size yet (the X server sometimes lets a resize go):
+                // asked again, and taken on the next tick.
+                let size = w.window().size();
+                if (size.width != width || size.height != height) && retries.get() < 5 {
+                    retries.set(retries.get() + 1);
+                    w.window().set_size(slint::LogicalSize::new(width as f32, height as f32));
+                    return;
+                }
+                retries.set(0);
                 match w.window().take_snapshot() {
                     Ok(px) => {
                         let img = image::RgbaImage::from_raw(px.width(), px.height(), px.as_bytes().to_vec());
@@ -131,6 +212,14 @@ pub fn run(dir: PathBuf) -> Result<(), slint::PlatformError> {
             w.global::<crate::Theme>()
                 .set_choice(if dark { crate::ThemeChoice::Dark } else { crate::ThemeChoice::Light });
             w.window().set_size(slint::LogicalSize::new(width as f32, height as f32));
+            // The size band, as the window reports it to the pages (shell::wire isn't run here).
+            crate::pages::set_band(if width < 1100 {
+                "compact"
+            } else if width >= 1600 {
+                "wide"
+            } else {
+                "regular"
+            });
             (shots[shot].set)(&w);
             at.set(i + 1);
         }
@@ -267,6 +356,12 @@ fn base(w: &AppWindow) {
     w.set_seat_open(s(""));
     w.set_dialog_shown(false);
     w.set_banner(s(""));
+    w.set_page_side(model(vec![]));
+    w.set_page_split(0.6);
+    w.set_page_layout(s(""));
+    w.set_page_status(s(""));
+    w.set_page_status_tone(s(""));
+    w.set_page_actions(model(vec![]));
 }
 
 fn rows(list: Vec<crate::pages::R>) -> ModelRc<crate::Row> {

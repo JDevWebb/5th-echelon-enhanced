@@ -55,3 +55,24 @@ export global Type {
     out property <length> small: 13px;
     out property <length> caps: 11.5px;
 }
+
+// The window's size bands, defined once: compact below 1100 px wide, regular to 1599, wide from
+// 1600. The window sets `width` and `height`; the pages take their widths from here.
+export global Layout {
+    in-out property <length> width: 1280px;
+    in-out property <length> height: 800px;
+    out property <bool> compact: width < 1100px;
+    out property <bool> wide: width >= 1600px;
+    out property <string> band: compact ? "compact" : wide ? "wide" : "regular";
+    // A page's column: lists and settings grow to this, then sit centred.
+    out property <length> column: 1100px;
+    // Two columns side by side (Friends at wide, Host): the pair grows to this.
+    out property <length> columns: 1560px;
+    // The guided setup: a dialog's width, centred both ways.
+    out property <length> narrow: 760px;
+    // The space each side of a page's column, and between its two columns.
+    out property <length> gutter: compact ? 28px : wide ? 48px : 40px;
+    out property <length> gap: compact ? 20px : wide ? 32px : 24px;
+    // A page's title.
+    out property <length> title-size: compact ? 34px : wide ? 44px : 40px;
+}

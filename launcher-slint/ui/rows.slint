@@ -5,7 +5,7 @@
 // works the same, by mouse, keyboard and controller.
 
 import { ScrollView, AboutSlint } from "std-widgets.slint";
-import { Theme, Type } from "theme.slint";
+import { Theme, Type, Layout } from "theme.slint";
 import { Btn, Link, Spinner, Dot, Caps, Rule, CheckBox, Segment, Choice, Field, Slide } from "widgets.slint";
 import { EchelonMark } from "brand.slint";
 
@@ -81,7 +81,10 @@ export component RowItem inherits Rectangle {
     callback accepted(string, string);
     callback pressed(string);
 
+    // The guided setup: text outside cards centred.
+    in property <bool> centre-text;
     property <bool> carded: item.edge > 0;
+    property <bool> centre: centre-text && !carded;
     property <bool> top: item.edge == 1 || item.edge == 4;
     property <bool> bottom: item.edge == 3 || item.edge == 4;
     property <length> pad-x: carded ? 20px : 0px;
@@ -123,12 +126,14 @@ export component RowItem inherits Rectangle {
         if item.kind == "text": Text {
             text: item.text;
             wrap: word-wrap;
+            horizontal-alignment: centre ? center : left;
             color: item.tone == "" ? Theme.fg : tone-colour;
             font-weight: item.on ? 600 : 400;
         }
         if item.kind == "note": Text {
             text: item.text;
             wrap: word-wrap;
+            horizontal-alignment: centre ? center : left;
             font-size: Type.small;
             color: item.tone == "" ? Theme.soft : tone-colour;
         }
@@ -216,9 +221,9 @@ export component RowItem inherits Rectangle {
         }
         if item.kind == "segments": VerticalLayout {
             spacing: 6px;
-            if item.label != "": Caps { text: item.label.to-uppercase(); }
+            if item.label != "": Caps { text: item.label.to-uppercase(); horizontal-alignment: centre ? center : left; }
             HorizontalLayout {
-                alignment: start;
+                alignment: centre ? center : start;
                 Rectangle {
                     border-radius: 4px;
                     border-width: 1px;
@@ -297,7 +302,7 @@ export component RowItem inherits Rectangle {
         }
         if item.kind == "buttons": HorizontalLayout {
             spacing: 10px;
-            alignment: item.tone == "end" ? end : start;
+            alignment: item.tone == "end" ? end : centre ? center : start;
             for b in item.buttons: Btn { text: b.label; kind: b.kind; enabled: b.enabled; clicked => { root.pressed(b.id); } }
         }
         if item.kind == "item": Rectangle {
@@ -556,13 +561,49 @@ export component RowItem inherits Rectangle {
     }
 }
 
-// A list of rows, scrolled.
+// A column of rows (one of a list's columns).
+component RowColumn inherits VerticalLayout {
+    in property <[Row]> rows;
+    in property <bool> centre-text;
+    callback toggled(string, bool);
+    callback chosen(string, int);
+    callback slid(string, float);
+    callback edited(string, string);
+    callback accepted(string, string);
+    callback pressed(string);
+    alignment: start;
+    for r in root.rows: RowItem {
+        item: r;
+        centre-text: root.centre-text;
+        toggled(a, b) => { root.toggled(a, b); }
+        chosen(a, b) => { root.chosen(a, b); }
+        slid(a, b) => { root.slid(a, b); }
+        edited(a, b) => { root.edited(a, b); }
+        accepted(a, b) => { root.accepted(a, b); }
+        pressed(a) => { root.pressed(a); }
+    }
+}
+
+// A list of rows, scrolled: a column that grows to `measure`, at `pad` from the left or centred,
+// with a second column beside it when there's one (`side`: `split` the first's share), and
+// anything put inside it (the guided setup's head) above the rows.
 export component RowList inherits Rectangle {
     in property <[Row]> rows;
+    in property <[Row]> side;
+    in property <float> split: 0.6;
+    in property <length> gap: 24px;
     in property <length> measure: 820px;
     in property <length> pad: 40px;
+    in property <bool> centred: false;
+    // Shorter than the space: in the middle of it, top to bottom too (the guided setup), the
+    // text outside cards centred.
+    in property <bool> middle: false;
     // The rows' own height, for a dialog that's no taller than it needs.
-    out property <length> content-height: col.preferred-height;
+    out property <length> content-height: inner.preferred-height + 36px;
+    // Where the column is, for a title over it.
+    out property <length> column-width: min(root.measure, sv.visible-width - 2 * root.pad);
+    out property <length> column-x: root.centred ? max(root.pad, (sv.visible-width - self.column-width) / 2) : root.pad;
+    property <bool> two: root.side.length > 0;
     // Another page (its title): back to the top.
     in property <string> page;
     changed page => { sv.viewport-y = 0; }
@@ -577,28 +618,75 @@ export component RowList inherits Rectangle {
         content-height: col.preferred-height;
         col := VerticalLayout {
             width: sv.visible-width;
-            padding-left: root.pad;
-            padding-right: root.pad;
-            padding-top: 4px;
+            padding-left: root.column-x;
+            padding-right: sv.visible-width - root.column-x - root.column-width;
+            padding-top: root.middle ? max(4px, (sv.visible-height - inner.preferred-height - 32px) / 2) : 4px;
             padding-bottom: 32px;
-            for r in root.rows: HorizontalLayout {
-                alignment: start;
-                RowItem {
-                    width: min(root.measure, sv.visible-width - 2 * root.pad);
-                    item: r;
-                    toggled(a, b) => { root.toggled(a, b); }
-                    chosen(a, b) => { root.chosen(a, b); }
-                    slid(a, b) => { root.slid(a, b); }
-                    edited(a, b) => { root.edited(a, b); }
-                    accepted(a, b) => { root.accepted(a, b); }
-                    pressed(a) => { root.pressed(a); }
+            inner := VerticalLayout {
+                @children
+                HorizontalLayout {
+                    spacing: root.two ? root.gap : 0px;
+                    alignment: start;
+                    RowColumn {
+                        width: root.two ? (root.column-width - root.gap) * root.split : root.column-width;
+                        rows: root.rows;
+                        centre-text: root.middle;
+                        toggled(a, b) => { root.toggled(a, b); }
+                        chosen(a, b) => { root.chosen(a, b); }
+                        slid(a, b) => { root.slid(a, b); }
+                        edited(a, b) => { root.edited(a, b); }
+                        accepted(a, b) => { root.accepted(a, b); }
+                        pressed(a) => { root.pressed(a); }
+                    }
+                    if root.two: RowColumn {
+                        width: (root.column-width - root.gap) * (1 - root.split);
+                        rows: root.side;
+                        toggled(a, b) => { root.toggled(a, b); }
+                        chosen(a, b) => { root.chosen(a, b); }
+                        slid(a, b) => { root.slid(a, b); }
+                        edited(a, b) => { root.edited(a, b); }
+                        accepted(a, b) => { root.accepted(a, b); }
+                        pressed(a) => { root.pressed(a); }
+                    }
                 }
             }
         }
     }
 }
 
-// A page of rows: its kicker and title, an optional menu of sections down the side.
+// A status beside a page's title: a dot and a line in a pill ("Running · 2 h 14 min").
+component StatusPill inherits Rectangle {
+    in property <string> text;
+    // "ok", "warn", "bad" or "" (muted).
+    in property <string> tone;
+    height: pill.preferred-height;
+    width: pill.preferred-width;
+    border-radius: self.height / 2;
+    background: tone == "ok" ? Theme.selected : transparent;
+    border-width: 1px;
+    border-color: tone == "ok" ? Theme.accent-soft : tone == "warn" ? Theme.warn : tone == "bad" ? Theme.bad : Theme.control-line;
+    accessible-role: AccessibleRole.text;
+    accessible-label: text;
+    pill := HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        padding-top: 7px;
+        padding-bottom: 7px;
+        spacing: 8px;
+        VerticalLayout { alignment: center; Dot { tone: root.tone == "bad" ? "fail" : root.tone == "" ? "muted" : root.tone; } }
+        Text {
+            text: root.text;
+            font-size: 14px;
+            vertical-alignment: center;
+            color: tone == "ok" ? Theme.accent : tone == "warn" ? Theme.warn : tone == "bad" ? Theme.bad : Theme.soft;
+        }
+    }
+}
+
+// A page of rows: its kicker and title, an optional menu of sections down the side, and its
+// rows in a column that grows with the window to Layout.column (Layout.columns with two) and
+// then sits centred, the title over it; or, for the guided setup, a dialog's width centred both
+// ways.
 export component Page inherits Rectangle {
     in property <string> kicker;
     in property <string> title;
@@ -607,6 +695,12 @@ export component Page inherits Rectangle {
     in property <[string]> section-ids;
     in property <string> section;
     in property <[Row]> rows;
+    in property <[Row]> side;
+    in property <float> split: 0.6;
+    in property <string> layout;
+    in property <string> status;
+    in property <string> status-tone;
+    in property <[RowButton]> actions;
     callback go-section(string);
     callback toggled(string, bool);
     callback chosen(string, int);
@@ -614,10 +708,12 @@ export component Page inherits Rectangle {
     callback edited(string, string);
     callback accepted(string, string);
     callback pressed(string);
+    property <bool> setup: root.layout == "setup";
+    property <bool> has-sections: root.sections.length > 0;
     background: Theme.bg;
     HorizontalLayout {
-        if sections.length > 0: Rectangle {
-            width: 220px;
+        if has-sections: Rectangle {
+            width: Layout.compact ? 200px : 220px;
             background: Theme.rail;
             Rectangle { x: parent.width - 1px; width: 1px; background: Theme.line; }
             VerticalLayout {
@@ -626,7 +722,7 @@ export component Page inherits Rectangle {
                 spacing: 2px;
                 alignment: start;
                 Caps { text: root.kicker.to-uppercase(); color: Theme.accent; }
-                Text { text: root.title.to-uppercase(); font-family: Type.cond; font-weight: 700; font-size: 34px; color: Theme.fg; }
+                Text { text: root.title.to-uppercase(); font-family: Type.cond; font-weight: 700; font-size: Layout.compact ? 30px : 34px; color: Theme.fg; }
                 Rectangle { height: 12px; }
                 for s[i] in sections: Rectangle {
                     height: 36px;
@@ -647,8 +743,10 @@ export component Page inherits Rectangle {
                     if root.section-ids[i] == root.section: Rectangle { x: 0; width: 2px; height: parent.height - 12px; background: Theme.accent; }
                     Text {
                         x: 12px;
+                        width: parent.width - 16px;
                         text: s;
                         vertical-alignment: center;
+                        overflow: elide;
                         color: root.section-ids[i] == root.section ? Theme.accent : Theme.soft;
                         font-weight: root.section-ids[i] == root.section ? 600 : 400;
                     }
@@ -658,31 +756,97 @@ export component Page inherits Rectangle {
         }
         VerticalLayout {
             horizontal-stretch: 1;
-            VerticalLayout {
-                padding-left: 40px;
-                padding-right: 40px;
-                padding-top: 24px;
+            // The title over the column (the guided setup's is in it, centred).
+            // (Placed by hand in a plain rectangle: the column's place comes from the list's
+            // width, which a layout's padding would feed back into.)
+            if !setup: Rectangle {
+              height: head.preferred-height;
+              head := HorizontalLayout {
+                x: list.column-x;
+                width: list.column-width;
+                padding-top: Layout.compact ? 20px : 28px;
                 padding-bottom: 12px;
-                if sections.length == 0: Caps { text: root.kicker.to-uppercase(); color: Theme.accent; }
-                Text {
-                    text: (sections.length > 0 ? root.summary : root.title).to-uppercase();
-                    font-family: Type.cond;
-                    font-weight: 700;
-                    font-size: sections.length > 0 ? 26px : 40px;
-                    color: Theme.fg;
+                spacing: 16px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: end;
+                    if !has-sections: Caps { text: root.kicker.to-uppercase(); color: Theme.accent; }
+                    Text {
+                        text: (has-sections ? root.summary : root.title).to-uppercase();
+                        font-family: Type.cond;
+                        font-weight: 700;
+                        font-size: has-sections ? (Layout.compact ? 26px : 30px) : Layout.title-size;
+                        color: Theme.fg;
+                        wrap: word-wrap;
+                    }
+                    if !has-sections && root.summary != "": Text { text: root.summary; color: Theme.soft; font-size: Type.small; wrap: word-wrap; }
                 }
-                if sections.length == 0 && root.summary != "": Text { text: root.summary; color: Theme.soft; font-size: Type.small; wrap: word-wrap; }
+                if root.status != "": VerticalLayout {
+                    alignment: end;
+                    padding-bottom: root.actions.length > 0 ? 6px : 2px;
+                    StatusPill { text: root.status; tone: root.status-tone; }
+                }
+                for b in root.actions: VerticalLayout {
+                    alignment: end;
+                    Btn { text: b.label; kind: b.kind; enabled: b.enabled; big: true; clicked => { root.pressed(b.id); } }
+                }
+              }
             }
-            RowList {
+            list := RowList {
                 vertical-stretch: 1;
                 page: root.title + "/" + root.section;
                 rows: root.rows;
+                side: root.side;
+                split: root.split;
+                gap: Layout.gap;
+                centred: true;
+                middle: setup;
+                pad: Layout.gutter;
+                measure: setup ? Layout.narrow : (root.side.length > 0 || root.layout == "wide") ? Layout.columns : Layout.column;
                 toggled(a, b) => { root.toggled(a, b); }
                 chosen(a, b) => { root.chosen(a, b); }
                 slid(a, b) => { root.slid(a, b); }
                 edited(a, b) => { root.edited(a, b); }
                 accepted(a, b) => { root.accepted(a, b); }
                 pressed(a) => { root.pressed(a); }
+                // The guided setup's head: what it is, the mark, its title and the line under.
+                if setup: VerticalLayout {
+                    spacing: 14px;
+                    padding-bottom: 18px;
+                    Caps { text: root.kicker.to-uppercase(); color: Theme.accent; horizontal-alignment: center; }
+                    HorizontalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 64px;
+                            height: 64px;
+                            border-radius: 12px;
+                            background: Theme.control;
+                            border-width: 1px;
+                            border-color: Theme.control-line;
+                            EchelonMark { size: 34px; tile: false; }
+                        }
+                    }
+                    Text {
+                        text: root.title.to-uppercase();
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                        font-family: Type.cond;
+                        font-weight: 700;
+                        font-size: Layout.compact ? 34px : 40px;
+                        color: Theme.fg;
+                    }
+                    if root.summary != "": HorizontalLayout {
+                        alignment: center;
+                        Text {
+                            max-width: 620px;
+                            text: root.summary;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                            font-size: 16px;
+                            color: Theme.soft;
+                        }
+                    }
+                }
             }
         }
     }

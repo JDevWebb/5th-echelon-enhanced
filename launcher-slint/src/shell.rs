@@ -87,17 +87,7 @@ pub(crate) fn row(r: &R) -> crate::Row {
         max: r.max,
         placeholder: s(&r.placeholder),
         secret: r.secret,
-        buttons: ModelRc::new(VecModel::from(
-            r.buttons
-                .iter()
-                .map(|b| crate::RowButton {
-                    id: s(&b.id),
-                    label: s(&b.label),
-                    kind: s(b.kind),
-                    enabled: b.enabled,
-                })
-                .collect::<Vec<_>>(),
-        )),
+        buttons: ModelRc::new(VecModel::from(r.buttons.iter().map(button).collect::<Vec<_>>())),
         edge: r.edge,
     }
 }
@@ -124,6 +114,32 @@ fn set_rows(current: &ModelRc<crate::Row>, rows: &[R], replace: impl FnOnce(Mode
         return;
     }
     replace(ModelRc::new(VecModel::from(rows.iter().map(row).collect::<Vec<_>>())));
+}
+
+/// A page's view into the window (its rows row by row, as `set_rows`).
+pub(crate) fn show_page(w: &AppWindow, view: &PageView) {
+    w.set_page_kicker(s(&view.kicker));
+    w.set_page_title(s(&view.title));
+    w.set_page_summary(s(&view.summary));
+    w.set_page_sections(ModelRc::new(VecModel::from(view.sections.iter().map(|(_, l)| s(l)).collect::<Vec<_>>())));
+    w.set_page_section_ids(ModelRc::new(VecModel::from(view.sections.iter().map(|(i, _)| s(i)).collect::<Vec<_>>())));
+    w.set_page_section(s(&view.section));
+    set_rows(&w.get_page_rows(), &view.rows, |m| w.set_page_rows(m));
+    set_rows(&w.get_page_side(), &view.side, |m| w.set_page_side(m));
+    w.set_page_split(if view.split > 0.0 { view.split } else { 0.6 });
+    w.set_page_layout(s(view.layout));
+    w.set_page_status(s(&view.status.0));
+    w.set_page_status_tone(s(view.status.1));
+    w.set_page_actions(ModelRc::new(VecModel::from(view.actions.iter().map(button).collect::<Vec<_>>())));
+}
+
+fn button(b: &crate::pages::B) -> crate::RowButton {
+    crate::RowButton {
+        id: s(&b.id),
+        label: s(&b.label),
+        kind: s(b.kind),
+        enabled: b.enabled,
+    }
 }
 
 /// Two rows alike (their lists by content: the models compare by identity).
@@ -184,15 +200,7 @@ impl Ui {
     }
 
     fn push_page(self: &Arc<Self>, view: PageView) {
-        let _ = self.window().upgrade_in_event_loop(move |w| {
-            w.set_page_kicker(s(&view.kicker));
-            w.set_page_title(s(&view.title));
-            w.set_page_summary(s(&view.summary));
-            w.set_page_sections(ModelRc::new(VecModel::from(view.sections.iter().map(|(_, l)| s(l)).collect::<Vec<_>>())));
-            w.set_page_section_ids(ModelRc::new(VecModel::from(view.sections.iter().map(|(i, _)| s(i)).collect::<Vec<_>>())));
-            w.set_page_section(s(&view.section));
-            set_rows(&w.get_page_rows(), &view.rows, |m| w.set_page_rows(m));
-        });
+        let _ = self.window().upgrade_in_event_loop(move |w| show_page(&w, &view));
     }
 
     /// Something done on the page shown: `f`, then the page again.
@@ -417,6 +425,15 @@ impl Ui {
 
 /// The window's callbacks for the pages, the dialog and the banner.
 pub fn wire(w: &AppWindow, ui: &Arc<Ui>) {
+    // The window's size band: some pages show more at wide, or less at compact.
+    crate::pages::set_band(&w.get_band());
+    w.on_band_changed({
+        let ui = ui.clone();
+        move |band| {
+            crate::pages::set_band(&band);
+            ui.load_page();
+        }
+    });
     w.on_page_section_chosen({
         let ui = ui.clone();
         move |id| {
