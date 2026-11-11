@@ -79,6 +79,10 @@ pub fn run(dir: PathBuf) -> Result<(), slint::PlatformError> {
             name: "settings-save",
             set: settings_save,
         },
+        Shot {
+            name: "settings-about",
+            set: settings_about,
+        },
     ]);
     // Every shot in each look and size, one after another on the window's own clock.
     let mut steps = Vec::new();
@@ -798,6 +802,17 @@ fn banner(w: &AppWindow) {
 }
 
 /// Settings › Save game, from the page's own builder on a made-up save.
+fn settings_about(w: &AppWindow) {
+    use crate::pages::*;
+    settings(w);
+    w.set_page_summary(s("About"));
+    w.set_page_section(s("about"));
+    let v = serde_json::json!({ "product": "5th Echelon Enhanced", "release": "0.5.0" });
+    let mut r = Rows::default();
+    crate::pages::settings::SettingsPage::default().about(&v, &mut r);
+    w.set_page_rows(rows(r.done()));
+}
+
 fn settings_save(w: &AppWindow) {
     use crate::pages::*;
     settings(w);

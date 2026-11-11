@@ -235,6 +235,60 @@ pub fn mark(heading: impl Into<String>, line: impl Into<String>) -> R {
     }
 }
 
+/// The Ko-fi button's id (Settings › About, the What's new window).
+pub const KOFI_ID: &str = "kofi";
+
+/// Where About's links go, by their button's id.
+pub fn about_link(id: &str) -> &'static str {
+    match id {
+        "source" => "https://github.com/JDevWebb/5th-echelon-enhanced",
+        "profile" => "https://github.com/JDevWebb",
+        "upstream" => "https://github.com/unixoide/5th-echelon",
+        // The Ko-fi page is also where the developer's other game revivals are shown.
+        _ => "https://ko-fi.com/jdevwebb",
+    }
+}
+
+/// Slint's own "made with Slint" attribution (the AboutSlint widget), as its royalty-free licence
+/// asks of the About screen.
+pub fn made_with_slint() -> R {
+    R::new("made-with-slint")
+}
+/// A small heading in capitals (About's sections).
+pub fn caps(t: impl Into<String>) -> R {
+    R::new("caps").text(t)
+}
+/// About's head: the kicker over the product's name, its release, whether it's current (with
+/// its dot's tone), a line on what it is; its actions as buttons.
+pub fn about(kicker: impl Into<String>, product: impl Into<String>, release: impl Into<String>, status: impl Into<String>, status_tone: &'static str, line: impl Into<String>) -> R {
+    let status = status.into();
+    R {
+        label: product.into(),
+        placeholder: release.into(),
+        options: if status.is_empty() { Vec::new() } else { vec![status] },
+        ..R::new("about").sub(kicker).text(line).tone(status_tone)
+    }
+}
+/// A person: `initials` in a circle, or "jdevwebb" for the developer's own picture (the only one
+/// bundled, ui/assets/avatars), `size` its width in pixels; `lead` draws them larger, ringed in
+/// the accent (the developer).
+pub fn person(initials: &str, name: impl Into<String>, line: impl Into<String>, size: f32, lead: bool) -> R {
+    R {
+        label: name.into(),
+        value: size,
+        ..R::new("person").id(initials).text(line).on(lead)
+    }
+}
+/// Supporting the community servers (hosting only): a heading, what the money is for, the button, the address
+/// beside it and a line under; `compact`: one line and the button side by side.
+pub fn support(heading: impl Into<String>, line: impl Into<String>, address: impl Into<String>, under: impl Into<String>, compact: bool) -> R {
+    R {
+        label: heading.into(),
+        placeholder: address.into(),
+        ..R::new(if compact { "support-strip" } else { "support" }).text(line).sub(under)
+    }
+}
+
 /// A page's rows, gathered card by card.
 #[derive(Default)]
 pub struct Rows {

@@ -34,6 +34,8 @@ pub enum WindowCall {
     },
     /// The feedback dialog (Settings › Feedback's Send feedback, or after a game).
     Feedback,
+    /// This release's What's new (Settings › About, as the version in the side menu does).
+    WhatsNew,
     /// Close the launcher now (Close now, send it next time).
     Quit,
 }

@@ -180,6 +180,9 @@ impl Dialog {
             },
             Dialog::WhatsNew { on_start, closed, .. } => match id {
                 "community" => crate::whats_new::use_community_network(app.clone(), app.state::<Launcher>()),
+                super::KOFI_ID => {
+                    let _ = crate::core::open_url(super::about_link(id));
+                }
                 _ if id.starts_with("link:") => {
                     let _ = crate::core::open_url(&id[5..]);
                 }
@@ -419,6 +422,18 @@ pub(crate) fn whats_new(v: &Value) -> DialogView {
         notes.get(1).and_then(Value::as_str).unwrap_or_default(),
     );
     r.out();
+    // Supporting the community servers: under the notes, small, so the release still leads.
+    r.add(
+        super::support(
+            "Support the community servers",
+            "Free, always. If you'd like to chip in towards hosting, you can on Ko-fi. Entirely optional, no perks.",
+            "",
+            "",
+            true,
+        )
+        .button(super::b(super::KOFI_ID, "Ko-fi").kind("plain")),
+    );
+    r.add(space());
     let mut row = buttons(vec![super::b(format!("link:{url}"), label).kind("link"), super::b("done", "Got it").kind("primary")]);
     row.tone = "end";
     r.add(row);

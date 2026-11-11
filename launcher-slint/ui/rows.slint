@@ -4,7 +4,7 @@
 // or a list (Settings, Friends, Servers, Host, Intel, Support, the setup, the dialogs) looks and
 // works the same, by mouse, keyboard and controller.
 
-import { ScrollView } from "std-widgets.slint";
+import { ScrollView, AboutSlint } from "std-widgets.slint";
 import { Theme, Type } from "theme.slint";
 import { Btn, Link, Spinner, Dot, Caps, Rule, CheckBox, Segment, Choice, Field, Slide } from "widgets.slint";
 import { EchelonMark } from "brand.slint";
@@ -20,7 +20,9 @@ export struct RowButton {
 export struct Row {
     // "title" (a card's title), "text", "note", "switch", "choice", "segments", "slider",
     // "field", "area" (several lines), "buttons", "item", "result", "code", "working", "rule",
-    // "message" (a chat line), "mark" (the brand's mark and a heading, for empty pages).
+    // "message" (a chat line), "mark" (the brand's mark and a heading, for empty pages), and
+    // About's "caps" (a small heading), "about" (its head), "person", "support" and its
+    // smaller "support-strip".
     kind: string,
     id: string,
     label: string,
@@ -40,6 +42,32 @@ export struct Row {
     buttons: [RowButton],
     // Its place in its card: 0 not in one, 1 the first, 2 inside, 3 the last, 4 the only row.
     edge: int,
+}
+
+// A cup with a heart in it, in the accent: supporting the community servers.
+component Cup inherits Rectangle {
+    in property <length> size: 22px;
+    width: size;
+    height: size;
+    accessible-role: none;
+    Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M4 8h12v6a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5z M16 9h1.5a2.5 2.5 0 0 1 0 5H16";
+        stroke: Theme.accent;
+        stroke-width: 1.8px;
+        fill: transparent;
+    }
+    Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M10 11.2c-.7-.9-2.2-.5-2.2.6 0 1.2 2.2 2.4 2.2 2.4s2.2-1.2 2.2-2.4c0-1.1-1.5-1.5-2.2-.6z";
+        fill: Theme.accent;
+    }
 }
 
 // One row. Its card's background, edge and corners are drawn by the row itself (first, inside,
@@ -335,6 +363,193 @@ export component RowItem inherits Rectangle {
                 spacing: 10px;
                 padding-top: 6px;
                 for b in item.buttons: Btn { text: b.label; kind: b.kind; enabled: b.enabled; min-height: 44px; clicked => { root.pressed(b.id); } }
+            }
+        }
+        // Slint's own attribution (its royalty-free licence asks for it on the About screen).
+        if item.kind == "made-with-slint": HorizontalLayout {
+            alignment: start;
+            AboutSlint {
+                max-width: 360px;
+                max-height: 120px;
+            }
+        }
+        // A small label in capitals over what follows (About's sections).
+        if item.kind == "caps": Caps {
+            text: item.text.to-uppercase();
+            color: item.tone == "accent" ? Theme.accent : Theme.muted;
+        }
+        // About's head: the mark large, the product, its release and whether it's current,
+        // a line on what it is, and what to do. The echelon steps back across the card, faintly.
+        if item.kind == "about": Rectangle {
+            min-height: about-lay.preferred-height;
+            background: Theme.surface;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: Theme.line;
+            clip: true;
+            Rectangle {
+                x: parent.width - 300px;
+                y: -20px;
+                width: 300px;
+                height: 220px;
+                opacity: 0.10;
+                Rectangle { x: 20px; y: 150px; width: 44px; height: 44px; border-radius: 6px; background: Theme.muted; }
+                Rectangle { x: 74px; y: 110px; width: 44px; height: 44px; border-radius: 6px; background: Theme.muted; }
+                Rectangle { x: 128px; y: 70px; width: 44px; height: 44px; border-radius: 6px; background: Theme.muted; }
+                Rectangle { x: 182px; y: 30px; width: 44px; height: 44px; border-radius: 6px; background: Theme.muted; }
+                Rectangle { x: 236px; y: -10px; width: 44px; height: 44px; border-radius: 6px; background: Theme.accent; }
+            }
+            about-lay := HorizontalLayout {
+                padding: 26px;
+                spacing: 24px;
+                VerticalLayout { alignment: center; EchelonMark { size: 96px; } }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 8px;
+                    if item.sub != "": Caps { text: item.sub.to-uppercase(); color: Theme.accent; }
+                    Text { text: item.label.to-uppercase(); wrap: word-wrap; font-family: Type.cond; font-weight: 700; font-size: 34px; color: Theme.fg; accessible-role: text; }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        alignment: start;
+                        if item.placeholder != "": Rectangle {
+                            border-width: 1px;
+                            border-color: Theme.control-line;
+                            border-radius: 4px;
+                            width: version-text.preferred-width + 16px;
+                            height: version-text.preferred-height + 4px;
+                            version-text := Text { text: item.placeholder; font-family: Type.mono; font-size: 13px; color: Theme.fg; }
+                        }
+                        if item.options.length > 0: HorizontalLayout {
+                            spacing: 6px;
+                            VerticalLayout { alignment: center; Dot { tone: item.tone; } }
+                            Text { text: item.options[0]; font-size: Type.small; color: Theme.soft; vertical-alignment: center; }
+                        }
+                    }
+                    if item.text != "": Text { text: item.text; wrap: word-wrap; color: Theme.soft; }
+                    if item.buttons.length > 0: HorizontalLayout {
+                        spacing: 10px;
+                        alignment: start;
+                        padding-top: 6px;
+                        for b in item.buttons: Btn { text: b.label; kind: b.kind; enabled: b.enabled; clicked => { root.pressed(b.id); } }
+                    }
+                }
+            }
+        }
+        // A person: their initials (`id`) in a circle (the developer: their picture), name, a line and their links. `on`: the
+        // developer, larger and ringed in the accent.
+        if item.kind == "person": Rectangle {
+            // Its height from the layout at the card's width, so wrapped lines aren't cut off.
+            min-height: person-lay.preferred-height;
+            person-lay := HorizontalLayout {
+                spacing: 16px;
+                VerticalLayout {
+                    alignment: start;
+                    Rectangle {
+                        width: item.value * 1px;
+                        height: item.value * 1px;
+                        border-radius: item.value * 0.5px;
+                        background: item.on ? Theme.accent : Theme.control-line;
+                        Rectangle {
+                            x: item.on ? 2px : 1px;
+                            y: self.x;
+                            width: parent.width - 2 * self.x;
+                            height: self.width;
+                            border-radius: self.width / 2;
+                            background: Theme.surface;
+                            clip: true;
+                            accessible-role: none;
+                            if item.id == "jdevwebb": Image {
+                                width: parent.width;
+                                height: parent.height;
+                                image-fit: cover;
+                                source: @image-url("assets/avatars/jdevwebb.png");
+                                accessible-role: image;
+                                accessible-label: item.label + "'s picture";
+                            }
+                            if item.id != "jdevwebb": Text {
+                                text: item.id;
+                                font-size: parent.width * 0.38;
+                                font-weight: 700;
+                                color: item.on ? Theme.accent : Theme.fg;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                accessible-role: none;
+                            }
+                        }
+                    }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    spacing: 3px;
+                    Text {
+                        text: item.label;
+                        wrap: word-wrap;
+                        color: Theme.fg;
+                        font-family: item.on ? Type.cond : Type.sans;
+                        font-weight: item.on ? 700 : 600;
+                        font-size: item.on ? 24px : Type.body;
+                    }
+                    if item.text != "": Text { text: item.text; wrap: word-wrap; font-size: 14px; color: Theme.soft; }
+                    if item.buttons.length > 0: HorizontalLayout {
+                        spacing: 6px;
+                        alignment: start;
+                        for b in item.buttons: Btn { text: b.label; kind: b.kind; small: true; enabled: b.enabled; clicked => { root.pressed(b.id); } }
+                    }
+                }
+        
+            }
+        }
+        // Supporting the community servers: free always, hosting only, optional.
+        if item.kind == "support": Rectangle {
+            min-height: support-card.preferred-height;
+            background: Theme.selected;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: Theme.accent-soft;
+            support-card := VerticalLayout {
+                padding: 22px;
+                spacing: 10px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: start;
+                    VerticalLayout { alignment: center; Cup { size: 22px; } }
+                    Text { text: item.label; font-family: Type.cond; font-weight: 700; font-size: 22px; color: Theme.fg; vertical-alignment: center; }
+                }
+                Text { text: item.text; wrap: word-wrap; font-size: 14px; color: Theme.soft; }
+                HorizontalLayout {
+                    spacing: 14px;
+                    alignment: start;
+                    padding-top: 4px;
+                    for b in item.buttons: Btn { text: b.label; kind: b.kind; enabled: b.enabled; clicked => { root.pressed(b.id); } }
+                    if item.placeholder != "": Text { text: item.placeholder; font-family: Type.mono; font-size: 12.5px; color: Theme.muted; vertical-alignment: center; }
+                }
+                if item.sub != "": Text { text: item.sub; wrap: word-wrap; font-size: 12.5px; color: Theme.muted; }
+            }
+        }
+        // The same, as a strip (the What's new window): the line and its button side by side.
+        if item.kind == "support-strip": Rectangle {
+            min-height: support-strip.preferred-height;
+            background: Theme.selected;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: Theme.accent-soft;
+            support-strip := HorizontalLayout {
+                padding: 14px;
+                padding-left: 16px;
+                spacing: 14px;
+                VerticalLayout { alignment: center; Cup { size: 26px; } }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    spacing: 2px;
+                    Text { text: item.label; font-weight: 600; color: Theme.fg; wrap: word-wrap; }
+                    Text { text: item.text; wrap: word-wrap; font-size: 13.5px; color: Theme.soft; }
+                }
+                for b in item.buttons: VerticalLayout {
+                    alignment: center;
+                    Btn { text: b.label; kind: b.kind; enabled: b.enabled; clicked => { root.pressed(b.id); } }
+                }
             }
         }
         if item.kind == "space": Rectangle { height: 14px; }

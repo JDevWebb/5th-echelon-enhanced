@@ -383,6 +383,15 @@ impl Ui {
                 let app = self.app();
                 crate::feedback::ask_feedback(app.clone(), app.state::<crate::feedback::Feedback>());
             }
+            WindowCall::WhatsNew => {
+                if let Some(view) = crate::whats_new::whats_new_again() {
+                    self.open_dialog(Dialog::WhatsNew {
+                        view: crate::pages::json(&view),
+                        on_start: false,
+                        closed: false,
+                    });
+                }
+            }
             WindowCall::Quit => {
                 let _ = self.window().upgrade_in_event_loop(|w| {
                     let _ = w.hide();
