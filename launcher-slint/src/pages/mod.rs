@@ -220,6 +220,30 @@ pub fn message(who: impl Into<String>, what: impl Into<String>, when: impl Into<
 pub fn working(t: impl Into<String>) -> R {
     R::new("working").text(t)
 }
+/// A line with its buttons beside it.
+pub fn line(t: impl Into<String>) -> R {
+    R::new("line").text(t)
+}
+/// A name and its value side by side (`mono`: the value in the mono type, an address).
+pub fn pair(name: impl Into<String>, value: impl Into<String>, mono: bool) -> R {
+    R {
+        label: name.into(),
+        ..R::new("pair").text(value).on(mono)
+    }
+}
+/// Tiles side by side, each a small heading, a value and a line under it (`addresses`: the
+/// values are addresses, in the mono type).
+pub fn stats(tiles: &[(&str, String, String)], addresses: bool) -> R {
+    R {
+        current: tiles.len() as i32,
+        options: tiles.iter().flat_map(|(h, v, l)| [h.to_string(), v.clone(), l.clone()]).collect(),
+        ..R::new("stats").on(addresses)
+    }
+}
+/// An empty list's place: a line, and a smaller one under it.
+pub fn placeholder(t: impl Into<String>, under: impl Into<String>) -> R {
+    R::new("placeholder").text(t).sub(under)
+}
 pub fn rule() -> R {
     R::new("rule")
 }

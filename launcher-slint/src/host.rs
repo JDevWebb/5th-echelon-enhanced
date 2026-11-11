@@ -30,6 +30,8 @@ struct State {
     cfg: Option<ServerConfig>,
     cfg_error: Option<String>,
     process: Option<Child>,
+    /// When the server started here was started (its uptime).
+    started: Option<std::time::Instant>,
     starting: bool,
     downloading: bool,
     /// The server being managed: this PC's (after Start) or one connected to.
@@ -43,7 +45,9 @@ impl Host {
 
     /// Stops a server started here (the launcher is closing).
     pub fn stop(&self) {
-        if let Some(mut child) = self.lock().process.take() {
+        let mut st = self.lock();
+        st.started = None;
+        if let Some(mut child) = st.process.take() {
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -69,6 +73,7 @@ impl State {
             Some(Ok(None)) => true,
             Some(_) => {
                 self.process = None;
+                self.started = None;
                 false
             }
             None => false,
@@ -103,6 +108,8 @@ pub struct HostView {
     /// The admin API being managed, and whether it's this PC's.
     managing: Option<String>,
     local: bool,
+    /// How long the server started here has run, in seconds.
+    uptime: Option<u64>,
 }
 
 pub fn host(state: tauri::State<Host>) -> HostView {
@@ -130,6 +137,7 @@ pub fn host(state: tauri::State<Host>) -> HostView {
         }),
         managing: st.admin.as_ref().map(|a| a.api.clone()),
         local: st.process.is_some(),
+        uptime: st.started.filter(|_| running).map(|t| t.elapsed().as_secs()),
     }
 }
 
@@ -172,6 +180,7 @@ pub fn host_start(app: tauri::AppHandle, state: tauri::State<Host>, listen: Opti
     match started {
         Ok((child, key)) => {
             st.process = Some(child);
+            st.started = Some(std::time::Instant::now());
             st.admin = st.cfg.as_ref().map(|c| Admin { api: s::local_api(c), key });
             drop(st);
             say(&app, Ok("The server is running.".into()));
@@ -235,6 +244,8 @@ pub struct GameView {
     id: u32,
     kind: String,
     who: String,
+    /// Everyone in it by name, its creator first (what each player is doing, on the page).
+    players: Vec<String>,
 }
 
 /// The managed server's players and games.
@@ -264,6 +275,7 @@ pub fn host_lists(state: tauri::State<Host>) -> Option<Lists> {
                     id: g.id,
                     kind: g.game_type,
                     who: format!("{} with {}", g.creator, g.participants.join(", ")),
+                    players: std::iter::once(g.creator.clone()).chain(g.participants.iter().cloned()).collect(),
                 })
                 .collect()
         })

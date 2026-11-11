@@ -819,7 +819,10 @@ impl SettingsPage {
                 76.0,
                 true,
             )
-            .buttons(vec![super::b("profile", "github.com/JDevWebb").kind("link"), super::b("revivals", "Other game revivals").kind("link")]),
+            .buttons(vec![
+                super::b("profile", "github.com/JDevWebb").kind("link"),
+                super::b("revivals", "Other game revivals").kind("link"),
+            ]),
         );
         r.card("");
         r.add(caps("Built on the shoulders of").tone("accent"));

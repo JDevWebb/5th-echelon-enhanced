@@ -344,7 +344,7 @@ export component RowItem inherits Rectangle {
         if item.kind == "message": HorizontalLayout {
             spacing: 10px;
             Text { text: item.label; font-weight: 600; color: item.on ? Theme.accent : Theme.fg; vertical-alignment: TextVerticalAlignment.top; }
-            Text { text: item.text; color: item.tone == "muted" ? Theme.muted : Theme.fg; wrap: word-wrap; horizontal-stretch: 1; }
+            Text { text: item.text; color: item.tone == "" ? Theme.fg : tone-colour; wrap: word-wrap; horizontal-stretch: 1; }
             Text { text: item.sub; font-size: 11.5px; color: Theme.muted; font-family: Type.mono; }
             for b in item.buttons: Link { text: b.label; font-size: 12px; clicked => { root.pressed(b.id); } }
         }
@@ -369,6 +369,73 @@ export component RowItem inherits Rectangle {
                 padding-top: 6px;
                 for b in item.buttons: Btn { text: b.label; kind: b.kind; enabled: b.enabled; min-height: 44px; clicked => { root.pressed(b.id); } }
             }
+            if item.sub != "": Text { text: item.sub; horizontal-alignment: center; wrap: word-wrap; font-size: Type.small; color: Theme.muted; }
+        }
+        // A line and its buttons beside it ("Run a server elsewhere?" and Manage).
+        if item.kind == "line": HorizontalLayout {
+            spacing: 16px;
+            Text { text: item.text; wrap: word-wrap; color: Theme.soft; font-size: 14px; vertical-alignment: center; horizontal-stretch: 1; }
+            for b in item.buttons: VerticalLayout {
+                alignment: center;
+                Btn { text: b.label; kind: b.kind; small: true; enabled: b.enabled; clicked => { root.pressed(b.id); } }
+            }
+        }
+        // A name and its value, side by side over a hairline (a summary of settings).
+        if item.kind == "pair": VerticalLayout {
+            spacing: 6px;
+            HorizontalLayout {
+                spacing: 16px;
+                Text { text: item.label; color: Theme.muted; font-size: 14px; vertical-alignment: center; }
+                Text {
+                    text: item.text;
+                    color: Theme.fg;
+                    font-size: 14px;
+                    font-family: item.on ? Type.mono : Type.sans;
+                    horizontal-alignment: right;
+                    horizontal-stretch: 1;
+                    wrap: word-wrap;
+                }
+            }
+            Rule {}
+        }
+        // Tiles side by side: `current` of them, each three of `options` (a small heading, the
+        // value and a line under it); `on`: the values are addresses (mono, smaller); `tone`
+        // "warn" colours the last tile's value.
+        if item.kind == "stats": HorizontalLayout {
+            spacing: 14px;
+            for i in item.current: Rectangle {
+                // As wide as each other, whatever their text (the row's width shared out).
+                width: (root.width - 2 * root.pad-x - (item.current - 1) * 14px) / max(1, item.current);
+                min-height: tile.preferred-height;
+                border-radius: 6px;
+                border-width: 1px;
+                border-color: carded ? Theme.control-line : Theme.line;
+                background: carded ? transparent : Theme.surface;
+                tile := VerticalLayout {
+                    alignment: start;
+                    padding: 14px;
+                    padding-left: 16px;
+                    spacing: 4px;
+                    Caps { text: item.options[i * 3].to-uppercase(); overflow: elide; }
+                    Text {
+                        text: item.options[i * 3 + 1];
+                        font-family: item.on ? Type.mono : Type.cond;
+                        font-weight: item.on ? 400 : 700;
+                        font-size: item.on ? 18px : 30px;
+                        color: item.tone == "warn" && i == item.current - 1 ? Theme.warn : Theme.fg;
+                        wrap: word-wrap;
+                    }
+                    if item.options[i * 3 + 2] != "": Text { text: item.options[i * 3 + 2]; font-size: Type.small; color: Theme.soft; wrap: word-wrap; }
+                }
+            }
+        }
+        // An empty list's place: a line and a smaller one under it, centred.
+        if item.kind == "placeholder": VerticalLayout {
+            padding-top: 48px;
+            padding-bottom: 48px;
+            spacing: 8px;
+            Text { text: item.text; horizontal-alignment: center; wrap: word-wrap; color: Theme.soft; }
+            if item.sub != "": Text { text: item.sub; horizontal-alignment: center; wrap: word-wrap; font-size: Type.small; color: Theme.muted; }
         }
         // Slint's own attribution (its royalty-free licence asks for it on the About screen).
         // With its text (About's small print): the text, and the widget beside it.
@@ -841,7 +908,7 @@ export component Page inherits Rectangle {
                 centred: true;
                 middle: setup;
                 pad: Layout.gutter;
-                measure: setup ? Layout.narrow : (root.side.length > 0 || root.layout == "wide") ? Layout.columns : Layout.column;
+                measure: setup || root.layout == "narrow" ? Layout.narrow : (root.side.length > 0 || root.layout == "wide") ? Layout.columns : Layout.column;
                 toggled(a, b) => { root.toggled(a, b); }
                 chosen(a, b) => { root.chosen(a, b); }
                 slid(a, b) => { root.slid(a, b); }

@@ -127,6 +127,21 @@ pub fn run(dir: PathBuf) -> Result<(), slint::PlatformError> {
             set: settings_about,
             size: None,
         },
+        Shot {
+            name: "host-empty",
+            set: host_empty,
+            size: None,
+        },
+        Shot {
+            name: "host-stopped",
+            set: host_stopped,
+            size: None,
+        },
+        Shot {
+            name: "host-running",
+            set: host_running,
+            size: None,
+        },
         // About whole, to its small print and Slint's widget, on a window tall enough for it.
         Shot {
             name: "settings-about-full",
@@ -907,4 +922,62 @@ fn settings_save(w: &AppWindow) {
     let mut r = Rows::default();
     crate::pages::settings::SettingsPage::default().save(&v, &mut r);
     w.set_page_rows(rows(r.done()));
+}
+
+/// Host a server: what crate::host says, made up (no server here).
+fn host_view(found: bool, running: bool) -> serde_json::Value {
+    serde_json::json!({
+        "exe_name": "dedicated_server.exe",
+        "found": found,
+        "error": null,
+        "running": running,
+        "starting": false,
+        "downloading": false,
+        "listen": null,
+        "adapters": [["Ethernet", "192.168.1.20"]],
+        "trusted_subnet": "",
+        "api": { "info": true, "presence": true, "accounts": false, "unhandled": false },
+        "managing": if running { serde_json::json!("http://127.0.0.1:50050") } else { serde_json::Value::Null },
+        "local": running,
+        "uptime": if running { serde_json::json!(8040) } else { serde_json::Value::Null },
+    })
+}
+
+fn host_page(w: &AppWindow, v: serde_json::Value, lists: Option<serde_json::Value>, logs: Vec<serde_json::Value>) {
+    let mut page = crate::pages::host::HostPage::default();
+    let view = page.build(&v, lists.as_ref(), &logs, crate::pages::compact());
+    self::page(w, "host", view);
+}
+
+/// Not downloaded yet.
+fn host_empty(w: &AppWindow) {
+    host_page(w, host_view(false, false), None, vec![]);
+}
+
+/// Downloaded, stopped: its settings to change.
+fn host_stopped(w: &AppWindow) {
+    host_page(w, host_view(true, false), None, vec![]);
+}
+
+/// Running for 2 h 14 min, four players in two games, a warning in the log.
+fn host_running(w: &AppWindow) {
+    let lists = serde_json::json!({
+        "players": { "Ok": [
+            { "id": "1", "name": "Kestrel", "ips": "192.168.1.31" },
+            { "id": "2", "name": "Marlow", "ips": "198.51.100.24" },
+            { "id": "3", "name": "Quillon", "ips": "192.168.1.44" },
+            { "id": "4", "name": "Ravel_77", "ips": "192.168.1.52" },
+        ]},
+        "games": { "Ok": [
+            { "id": 12, "kind": "SvM Classic", "who": "Kestrel with Marlow", "players": ["Kestrel", "Marlow"] },
+            { "id": 14, "kind": "Co-op", "who": "Quillon with nobody yet", "players": ["Quillon"] },
+        ]},
+    });
+    let logs = vec![
+        serde_json::json!({ "time": "14:02:11", "tone": "", "msg": "Kestrel signed in from 192.168.1.31" }),
+        serde_json::json!({ "time": "14:02:40", "tone": "", "msg": "Game #12 created by Kestrel (SvM Classic)" }),
+        serde_json::json!({ "time": "14:05:02", "tone": "warn", "msg": "Relay: no answer from 198.51.100.24 for 20 s" }),
+        serde_json::json!({ "time": "14:05:09", "tone": "", "msg": "Marlow joined game #12" }),
+    ];
+    host_page(w, host_view(true, true), Some(lists), logs);
 }
