@@ -189,7 +189,7 @@ pub fn run(dir: PathBuf) -> Result<(), slint::PlatformError> {
         }
         for size in SIZES.into_iter().chain(EXTRA) {
             let named = format!("{}x{}", size.0, size.1);
-            if if sizes.is_empty() { !SIZES.contains(&size) } else { !sizes.contains(&named) } {
+            if !sizes.is_empty() && !sizes.contains(&named) {
                 continue;
             }
             for (i, shot) in shots.iter().enumerate() {
@@ -1018,9 +1018,12 @@ fn servers(w: &AppWindow) {
     let mut r = Rows::default();
     r.card("Network");
     r.add(
-        item("scbl.example.org", "The 5th Echelon community network · 3 servers · your friends and identity follow you between its servers")
-            .tone("accent")
-            .text("In use"),
+        item(
+            "scbl.example.org",
+            "The 5th Echelon community network · 3 servers · your friends and identity follow you between its servers",
+        )
+        .tone("accent")
+        .text("In use"),
     );
     r.add(rule());
     r.add(bold("Use another network"));
@@ -1031,7 +1034,11 @@ fn servers(w: &AppWindow) {
     );
     r.add(note("Another group's network of servers: its servers then fill the server menu on the Play screen."));
     r.card("A server of your own");
-    r.add(field("address", "", "").placeholder("play.example.org or 192.168.1.20").button(b("connect", "Connect").kind("primary").enabled(false)));
+    r.add(
+        field("address", "", "")
+            .placeholder("play.example.org or 192.168.1.20")
+            .button(b("connect", "Connect").kind("primary").enabled(false)),
+    );
     r.add(note("A private server for your group, outside the network: the server menu takes you back."));
     r.add(note("Recent"));
     r.add(item("LAN party · 192.168.1.20", "Yesterday").button(b("own", "Connect")));
@@ -1039,7 +1046,9 @@ fn servers(w: &AppWindow) {
     r.add(note("Looks for a server running at a LAN party, on this network."));
     r.add(buttons(vec![b("lan", "Find on my network")]));
     r.card("Host on this PC");
-    r.add(note("Run a server for your group: a LAN party, or friends over the internet. Their launchers find it on your network."));
+    r.add(note(
+        "Run a server for your group: a LAN party, or friends over the internet. Their launchers find it on your network.",
+    ));
     r.add(buttons(vec![b("host", "Host a server")]));
     page(
         w,
@@ -1057,15 +1066,17 @@ fn servers(w: &AppWindow) {
 fn intel(w: &AppWindow) {
     use crate::pages::*;
     let mut r = Rows::default();
-    r.add(segments(
-        "tab",
-        "",
-        &[("news".into(), "News".into()), ("roadmap".into(), "Roadmap".into())],
-        "news",
-    ));
+    r.add(segments("tab", "", &[("news".into(), "News".into()), ("roadmap".into(), "Roadmap".into())], "news"));
     r.add(note("From scbl.example.org, as the game's news screen shows it"));
     r.card("Briefings");
-    r.add(item("0.5.0: one matchmaking server for everyone", "Quick match finds a match on the whole network, and fair play checks").on(true).tone("accent"));
+    r.add(
+        item(
+            "0.5.0: one matchmaking server for everyone",
+            "Quick match finds a match on the whole network, and fair play checks",
+        )
+        .on(true)
+        .tone("accent"),
+    );
     r.add(item("Weekend SvM night", "Saturday 20:00 UTC on Germany: bring a friend"));
     r.add(item("Maintenance", "Australia restarts Tuesday 03:00 UTC for a few minutes"));
     r.card("0.5.0: one matchmaking server for everyone");
@@ -1081,7 +1092,14 @@ fn support(w: &AppWindow) {
     let mut r = Rows::default();
     r.card("Your conversation");
     r.add(message("You", "My game closes when the match ends, back to the lobby. Log attached.", "Mon 21:14"));
-    r.add(message("Admins", "Thanks: it's the crash on the way back to the lobby, fixed in 0.5.0. Update when it's out and tell us if it happens again.", "Tue 09:02").on(true));
+    r.add(
+        message(
+            "Admins",
+            "Thanks: it's the crash on the way back to the lobby, fixed in 0.5.0. Update when it's out and tell us if it happens again.",
+            "Tue 09:02",
+        )
+        .on(true),
+    );
     r.card("Message");
     r.add(area("message", "", "").placeholder("What went wrong, when, and on which server?"));
     r.add(note("0/2000"));
@@ -1109,7 +1127,11 @@ fn chat(w: &AppWindow) {
     use crate::pages::*;
     let mut r = Rows::default();
     r.card("");
-    r.add(field("text", "", "").placeholder("Say something to everyone…").button(b("send", "Send").kind("primary").enabled(false)));
+    r.add(
+        field("text", "", "")
+            .placeholder("Say something to everyone…")
+            .button(b("send", "Send").kind("primary").enabled(false)),
+    );
     r.out();
     r.add(message("Kestrel", "Anyone up for SvM Classic on Germany?", "21:02"));
     r.add(message("Marlow", "In 5, finishing a co-op run", "21:03"));
