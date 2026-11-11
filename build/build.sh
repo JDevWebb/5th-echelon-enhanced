@@ -157,8 +157,10 @@ case "${1:-test}" in
     docker build -q -t fes-slint:local -f build/Dockerfile.slint build >/dev/null
     rm -rf dist/slint-shots
     run -e CARGO_TARGET_DIR=/target/launcher-slint -w /src/launcher-slint fes-slint:local cargo build -q
+    # Xvfb started directly, and the launcher under a time limit: xvfb-run could wait forever
+    # for its server to come up. The screen fits the largest size taken (2560x1440).
     run --network none -e CARGO_TARGET_DIR=/target/launcher-slint -e SLINT_BACKEND=winit-software fes-slint:local \
-      xvfb-run -a -s "-screen 0 2000x1200x24" /target/launcher-slint/debug/launcher-slint --shots /src/dist/slint-shots
+      sh -c 'Xvfb :99 -screen 0 2600x1500x24 -nolisten tcp >/dev/null 2>&1 & sleep 3; DISPLAY=:99 timeout 1200 /target/launcher-slint/debug/launcher-slint --shots /src/dist/slint-shots'
     ;;
   slint-docs)
     # The README's and the wiki's screenshots -> dist/slint-docs (launcher-slint/src/docs_shots.rs):
