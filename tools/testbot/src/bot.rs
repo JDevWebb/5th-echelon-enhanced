@@ -1673,6 +1673,19 @@ impl ApiPlayer {
             .into_inner())
     }
 
+    /// Sends a chat message as the launcher does: to a room, or (`to`, an identity) a friend.
+    pub async fn chat_send(&self, room: server_api::chat::Room, to: &str, text: &str) -> std::result::Result<server_api::chat::SendResponse, tonic::Status> {
+        Ok(server_api::chat::chat_client::ChatClient::new(self.api.clone())
+            .send(self.authed(server_api::chat::SendRequest {
+                room: room.into(),
+                to: to.into(),
+                text: text.into(),
+                from_game: false,
+            }))
+            .await?
+            .into_inner())
+    }
+
     /// The launcher's New match (or, `on` false, taking it back): this player's searches find
     /// nothing until they host. The seconds it holds.
     pub async fn new_match(&self, on: bool) -> std::result::Result<u32, tonic::Status> {

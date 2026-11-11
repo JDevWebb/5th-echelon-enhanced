@@ -4375,6 +4375,9 @@ async fn run() -> Result<()> {
     if args.first().map(String::as_str) == Some("request") {
         return friend_request(server, &args[1..]).await;
     }
+    if args.first().map(String::as_str) == Some("say") {
+        return say(server, &args[1..]).await;
+    }
     if args.first().map(String::as_str) == Some("unfriend") {
         return unfriend(server, &args[1..]).await;
     }
@@ -4617,6 +4620,27 @@ async fn make_friends(server: IpAddr, names: &[String]) -> Result<()> {
             println!("{} and {}: friends", a.name, b.name);
         }
     }
+    Ok(())
+}
+
+/// `say NAME global|lobby|@IDENTITY TEXT...`: NAME (signed in to the API only, as the launcher)
+/// sends one chat message to Global, its lobby, or a friend by identity (`@K7QF-2M9D`).
+async fn say(server: IpAddr, args: &[String]) -> Result<()> {
+    let [name, to, words @ ..] = args else {
+        return Err(eyre!("say NAME global|lobby|@IDENTITY TEXT..."));
+    };
+    ensure!(!words.is_empty(), "say NAME global|lobby|@IDENTITY TEXT...");
+    let (room, friend) = match to.as_str() {
+        "global" => (server_api::chat::Room::Global, ""),
+        "lobby" => (server_api::chat::Room::Lobby, ""),
+        _ => match to.strip_prefix('@') {
+            Some(id) => (server_api::chat::Room::Direct, id),
+            None => return Err(eyre!("say NAME global|lobby|@IDENTITY TEXT...")),
+        },
+    };
+    let player = testbot::bot::ApiPlayer::sign_in(server, name, &account_password()?).await?;
+    let sent = player.chat_send(room, friend, &words.join(" ")).await.map_err(|e| eyre!("{name}: {e}"))?;
+    println!("{name} -> {to}: {sent:?}");
     Ok(())
 }
 
