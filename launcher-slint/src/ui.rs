@@ -1144,7 +1144,26 @@ fn fit_to_screen(window: &AppWindow) {
             let (area, at, scale) = (screen.size(), screen.position(), win.scale_factor());
             let size = win.outer_size();
             let room = PhysicalSize::new(area.width, (f64::from(area.height) * 0.9) as u32);
+            // Centred within the room (above a taskbar at the bottom).
+            let centre = |s: PhysicalSize<u32>| {
+                PhysicalPosition::new(
+                    at.x + (room.width.saturating_sub(s.width) / 2) as i32,
+                    at.y + (room.height.saturating_sub(s.height) / 2) as i32,
+                )
+            };
             if size.width <= room.width && size.height <= room.height {
+                // Its size fits, but where the system put it may not: Windows' default place
+                // (down and right of the corner) ran a 1280x800 window off a 2736x1824 screen at
+                // 200%, its close button past the edge. Wayland doesn't say (and doesn't move it).
+                let on_screen = win.outer_position().map_or(true, |p| {
+                    p.x >= at.x
+                        && p.y >= at.y
+                        && i64::from(p.x) + i64::from(size.width) <= i64::from(at.x) + i64::from(room.width)
+                        && i64::from(p.y) + i64::from(size.height) <= i64::from(at.y) + i64::from(room.height)
+                });
+                if !on_screen {
+                    win.set_outer_position(centre(size));
+                }
                 return;
             }
             // The window's smallest size (AppWindow's min-width and min-height).
@@ -1154,10 +1173,7 @@ fn fit_to_screen(window: &AppWindow) {
             }
             let fit = PhysicalSize::new(size.width.min(room.width), size.height.min(room.height));
             let _ = win.request_inner_size(fit);
-            win.set_outer_position(PhysicalPosition::new(
-                at.x + (area.width.saturating_sub(fit.width) / 2) as i32,
-                at.y + (area.height.saturating_sub(fit.height) / 2) as i32,
-            ));
+            win.set_outer_position(centre(fit));
         });
     });
 }
