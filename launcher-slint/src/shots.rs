@@ -424,49 +424,47 @@ fn settings(w: &AppWindow) {
     w.set_page_rows(rows(r.done()));
 }
 
+fn someone(id: &str, name: &str, identity: Option<&str>, activity: Option<&str>, relation: &'static str) -> launcher::flow::Person {
+    launcher::flow::Person {
+        id: id.into(),
+        name: name.into(),
+        identity: identity.map(String::from),
+        online: activity.is_some(),
+        activity: activity.filter(|a| !a.is_empty()).map(String::from),
+        joinable: id == "1",
+        with_me: false,
+        relation,
+    }
+}
+
+/// Friends, from the page's own builder on made-up people: tabs at compact and regular sizes,
+/// two columns at wide.
 fn friends(w: &AppWindow) {
-    use crate::pages::*;
-    w.set_screen(s("friends"));
-    w.set_page_kicker(s("Squad"));
-    w.set_page_title(s("Friends"));
-    w.set_page_summary(s(""));
-    w.set_page_sections(model(vec![]));
-    w.set_page_section_ids(model(vec![]));
-    let mut r = Rows::default();
-    r.add(segments(
-        "tab",
-        "",
-        &[
-            ("friends".into(), "Friends · 2/5".into()),
-            ("requests".into(), "Requests · 1".into()),
-            ("find".into(), "Find players".into()),
-            ("blocked".into(), "Blocked".into()),
+    let people = launcher::flow::People {
+        friends: vec![
+            someone("1", "Kestrel", Some("K7QF-2M9D"), Some("In a Spies vs Mercs lobby"), "friend"),
+            someone("2", "Marlow", None, Some("Co-op · Opium Farm, under way"), "friend"),
+            someone("5", "Quillon", None, None, "friend"),
         ],
-        "friends",
-    ));
-    r.out();
-    r.add(item("Kestrel", "In a Spies vs Mercs lobby · K7QF-2M9D").tone("accent").buttons(vec![
-        b("join", "Join").kind("primary"),
-        b("rm", "Remove").kind("fix"),
-        b("bl", "Block").kind("fix"),
-    ]));
-    r.add(
-        item("Marlow", "Co-op · Opium Farm, under way")
-            .tone("accent")
-            .buttons(vec![b("rm", "Remove").kind("fix"), b("bl", "Block").kind("fix")]),
-    );
-    r.add(
-        item("Quillon", "Offline")
-            .tone("muted")
-            .buttons(vec![b("rm", "Remove").kind("fix"), b("bl", "Block").kind("fix")]),
-    );
-    r.card("Playing on other servers");
-    r.add(
-        item("Ravel_77", "On EU (Falkenstein, Germany): to play together, one of you joins the other's server")
-            .tone("warn")
-            .button(b("sw", "Switch server")),
-    );
-    w.set_page_rows(rows(r.done()));
+        received: vec![someone("4", "Ravel_77", None, Some(""), "received")],
+        sent: vec![],
+        blocked: vec![someone("9", "Grief3r", None, None, "blocked")],
+        elsewhere: vec![launcher::flow::Elsewhere {
+            name: "Hollis".into(),
+            server: "EU".into(),
+            region: "Falkenstein, Germany".into(),
+            host: "eu.example.org".into(),
+        }],
+        everyone: true,
+    };
+    let mut page = crate::pages::friends::FriendsPage::default();
+    page.set_found(vec![
+        someone("6", "Tamsin", None, Some("In the menus"), ""),
+        someone("7", "Pell", None, Some("In a Co-op lobby"), ""),
+        someone("8", "Orrin", None, Some(""), "sent"),
+    ]);
+    let wide = crate::pages::wide();
+    self::page(w, "friends", page.build(&people, false, false, wide));
 }
 
 fn dialog(w: &AppWindow) {
@@ -839,28 +837,10 @@ fn page(w: &AppWindow, screen: &str, view: crate::pages::PageView) {
 
 /// An empty page: the mark, its heading, why, and what to do.
 fn friends_empty(w: &AppWindow) {
-    use crate::pages::*;
-    w.set_screen(s("friends"));
-    w.set_page_kicker(s("Squad"));
-    w.set_page_title(s("Friends"));
-    w.set_page_summary(s(""));
-    w.set_page_sections(model(vec![]));
-    w.set_page_section_ids(model(vec![]));
-    let mut r = Rows::default();
-    r.add(segments(
-        "tab",
-        "",
-        &[
-            ("friends".into(), "Friends".into()),
-            ("requests".into(), "Requests".into()),
-            ("find".into(), "Find players".into()),
-            ("blocked".into(), "Blocked".into()),
-        ],
-        "friends",
-    ));
-    r.out();
-    r.add(mark("No friends yet", "Find players to add some, or accept a request when one comes.").button(b("find", "Find players").kind("primary")));
-    w.set_page_rows(rows(r.done()));
+    let mut page = crate::pages::friends::FriendsPage::default();
+    page.set_found(vec![]);
+    let view = page.build(&launcher::flow::People::default(), false, false, crate::pages::wide());
+    self::page(w, "friends", view);
 }
 
 /// What's new after an update, from the dialog's own builder.

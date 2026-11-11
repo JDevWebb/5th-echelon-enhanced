@@ -2,6 +2,7 @@
 //! ways, finding players and who's blocked, with the same words as the overlay. Remove, Block
 //! and Switch server ask first; a block can be undone at once.
 
+use launcher::flow::People;
 use launcher::flow::Person;
 
 use super::*;
@@ -35,73 +36,127 @@ fn initial_line(p: &Person) -> String {
     line
 }
 
-impl Screen for FriendsPage {
-    fn refresh_every(&self) -> u64 {
-        20
+fn page(rows: Vec<R>, side: Vec<R>) -> PageView {
+    PageView {
+        kicker: "Squad".into(),
+        title: "Friends".into(),
+        rows,
+        side,
+        split: 0.6,
+        ..Default::default()
+    }
+}
+
+impl FriendsPage {
+    /// Who's online (or who a search found), as Find players lists them (the screenshots
+    /// set it, with no server).
+    pub fn set_found(&mut self, list: Vec<Person>) {
+        self.found = Some(Ok(list));
+        self.searched = None;
     }
 
-    fn view(&mut self, app: &AppHandle) -> PageView {
-        let core = app.state::<Launcher>().0.clone();
-        let info = crate::core::info(&core);
+    /// The page from the player's people: `busy` while connecting, `running` with the game
+    /// running. Compact and regular: tabs (Friends, Requests, Find players, Blocked). Wide:
+    /// two columns, the friends on the left (who's blocked a link under them) and requests,
+    /// finding players and friends on other servers as cards on the right.
+    pub fn build(&mut self, p: &People, busy: bool, running: bool, wide: bool) -> PageView {
         let mut r = Rows::default();
-        let page = |rows: Vec<R>| PageView {
-            kicker: "Squad".into(),
-            title: "Friends".into(),
-            rows,
-            ..Default::default()
-        };
-        if info.game_dir.is_none() || info.server.is_none() {
-            r.add(
-                mark("No server yet", "Set up the game and a server first: your friends are kept by your account there.")
-                    .button(super::b("go-play", "Set up on Play").kind("primary")),
-            );
-            return page(r.done());
-        }
-        let (people, signed_in, error) = crate::core::people(&core);
-        if !signed_in {
-            r.add(mark("No account yet", "Make an account on your server first: friends are kept by your account.").button(super::b("go-play", "Go to Play").kind("primary")));
-            return page(r.done());
-        }
-        let Some(p) = people else {
-            r.add(bad(format!("Couldn't read your friends: {}", error.unwrap_or_default())));
-            r.add(buttons(vec![super::b("reload", "Try again").kind("link")]));
-            return page(r.done());
-        };
         let online = p.friends.iter().filter(|f| f.online).count();
-        let tabs = [
-            (
-                "friends",
-                if p.friends.is_empty() {
-                    "Friends".to_string()
+        if !wide {
+            let tabs = [
+                (
+                    "friends",
+                    if p.friends.is_empty() {
+                        "Friends".to_string()
+                    } else {
+                        format!("Friends · {online}/{}", p.friends.len())
+                    },
+                ),
+                (
+                    "requests",
+                    match p.received.len() + p.sent.len() {
+                        0 => "Requests".into(),
+                        n => format!("Requests · {n}"),
+                    },
+                ),
+                ("find", "Find players".into()),
+                (
+                    "blocked",
+                    if p.blocked.is_empty() {
+                        "Blocked".into()
+                    } else {
+                        format!("Blocked · {}", p.blocked.len())
+                    },
+                ),
+            ];
+            r.add(segments(
+                "tab",
+                "",
+                &tabs.iter().map(|(i, l)| (i.to_string(), l.clone())).collect::<Vec<_>>(),
+                tabs[self.tab].0,
+            ));
+        }
+        self.asked(p, &mut r);
+        r.out();
+        if wide {
+            // The left: the friends (or, from its link, who's blocked).
+            if self.tab == 3 {
+                r.add(caps(format!("Blocked players · {}", p.blocked.len())));
+                blocked(p, busy, &mut r);
+                r.add(buttons(vec![super::b("tab:0", "Back to your friends").kind("link")]));
+            } else {
+                r.add(caps(if p.friends.is_empty() {
+                    "Your friends".to_string()
                 } else {
-                    format!("Friends · {online}/{}", p.friends.len())
-                },
-            ),
-            (
-                "requests",
-                match p.received.len() + p.sent.len() {
-                    0 => "Requests".into(),
-                    n => format!("Requests · {n}"),
-                },
-            ),
-            ("find", "Find players".into()),
-            (
-                "blocked",
-                if p.blocked.is_empty() {
-                    "Blocked".into()
-                } else {
-                    format!("Blocked · {}", p.blocked.len())
-                },
-            ),
-        ];
-        r.add(segments(
-            "tab",
-            "",
-            &tabs.iter().map(|(i, l)| (i.to_string(), l.clone())).collect::<Vec<_>>(),
-            tabs[self.tab].0,
-        ));
+                    format!("Your friends · {online} of {} online", p.friends.len())
+                }));
+                friends(p, busy, running, &mut r);
+                if !p.blocked.is_empty() {
+                    r.add(buttons(vec![super::b("tab:3", format!("Blocked players: {} · Show", p.blocked.len())).kind("link")]));
+                }
+            }
+            // The right: requests, finding players, friends on other servers.
+            let mut side = Rows::default();
+            side.card(&match p.received.len() + p.sent.len() {
+                0 => "Requests".to_string(),
+                n => format!("Requests · {n}"),
+            });
+            if p.received.is_empty() && p.sent.is_empty() {
+                side.add(note("Nobody's waiting for your answer, and you haven't asked anyone."));
+            }
+            requests(p, busy, &mut side);
+            side.card("Find players");
+            self.find(p, busy, 6, &mut side);
+            elsewhere(p, busy, running, &mut side);
+            return page(r.done(), side.done());
+        }
+        match self.tab {
+            0 => {
+                friends(p, busy, running, &mut r);
+                elsewhere(p, busy, running, &mut r);
+            }
+            1 => {
+                if p.received.is_empty() && p.sent.is_empty() {
+                    r.add(mark("No requests", "Nobody's waiting for your answer, and you haven't asked anyone."));
+                }
+                if !p.received.is_empty() {
+                    r.card("Waiting for your answer");
+                }
+                requests(p, busy, &mut r);
+            }
+            2 => self.find(p, busy, usize::MAX, &mut r),
+            _ => {
+                r.add(note(format!(
+                    "{BLOCK_MEANS} A block of a player with a 5th Echelon identity holds on every server that shares friends, when you have one too."
+                )));
+                blocked(p, busy, &mut r);
+            }
+        }
+        page(r.done(), Vec::new())
+    }
 
-        // Asked first.
+    /// Asked first (Remove, Block, Switch server), and what was just done that can be undone.
+    fn asked(&self, p: &People, r: &mut Rows) {
         if let Some((action, _, name)) = &self.asking {
             let (heading, means, button) = match action.as_str() {
                 "block" => (format!("Block {name}?"), BLOCK_MEANS.to_string(), "Block"),
@@ -130,112 +185,151 @@ impl Screen for FriendsPage {
             r.out();
             r.add(item(line.clone(), "").button(super::b("undo", "Undo").kind("fix")));
         }
-        r.out();
-        let busy = info.connecting;
-        match self.tab {
-            0 => {
-                if p.friends.is_empty() {
-                    r.add(mark("No friends yet", "Find players to add some, or accept a request when one comes.").button(super::b("tab:2", "Find players").kind("primary")));
+    }
+
+    /// The search field and who it found (or who's online): at most `most` of them.
+    fn find(&self, p: &People, busy: bool, most: usize, r: &mut Rows) {
+        r.add(field("query", "", self.query.clone()).placeholder("A player's name").button(super::b("search", "Search")));
+        match &self.found {
+            Some(Err(e)) => {
+                r.add(bad(e.clone()));
+            }
+            Some(Ok(list)) if list.is_empty() => {
+                r.add(note(match &self.searched {
+                    Some(q) => format!("Nobody called \u{201c}{q}\u{201d} here."),
+                    None if !p.everyone => "None of your friends are online right now.".into(),
+                    None => "Nobody else is online right now.".into(),
+                }));
+            }
+            Some(Ok(list)) => {
+                let heading = match &self.searched {
+                    Some(q) => format!("Players called \u{201c}{q}\u{201d}"),
+                    None if !p.everyone => "Friends online now".into(),
+                    None => "Online now".into(),
+                };
+                if most == usize::MAX {
+                    r.card(&heading);
+                } else {
+                    r.add(caps(heading));
                 }
-                for f in &p.friends {
-                    let mut acts = Vec::new();
-                    if f.with_me {
-                        acts.push(super::b("none", "You're in it").kind("fix").enabled(false));
-                    } else if f.joinable {
-                        acts.push(super::b(format!("join:{}:{}", f.id, f.name), "Join").kind("primary").enabled(!busy));
-                    } else if f.online && info.running {
-                        acts.push(super::b(format!("invite:{}:{}", f.id, f.name), "Invite").enabled(!busy));
-                    }
-                    acts.push(super::b(format!("ask-remove:{}:{}", f.id, f.name), "Remove").kind("fix"));
-                    acts.push(super::b(format!("ask-block:{}:{}", f.id, f.name), "Block").kind("fix"));
-                    r.add(item(f.name.clone(), initial_line(f)).tone(if f.online { "accent" } else { "muted" }).buttons(acts));
+                for q in list.iter().take(most) {
+                    let act = match q.relation {
+                        "friend" => super::b("none", "Your friend").kind("fix").enabled(false),
+                        "sent" => super::b("none", "Asked").kind("fix").enabled(false),
+                        "received" => super::b(format!("accept:{}:{}", q.id, q.name), "Accept").kind("primary").enabled(!busy),
+                        _ => super::b(format!("request:{}:{}", q.id, q.name), "Add friend").enabled(!busy),
+                    };
+                    r.add(
+                        item(q.name.clone(), initial_line(q))
+                            .tone(if q.online { "accent" } else { "" })
+                            .buttons(vec![act, super::b(format!("ask-block:{}:{}", q.id, q.name), "Block").kind("fix")]),
+                    );
                 }
-                if !p.elsewhere.is_empty() {
-                    r.card("Playing on other servers");
-                    for e in &p.elsewhere {
-                        let region = if e.region.is_empty() { String::new() } else { format!(" ({})", e.region) };
-                        r.add(
-                            item(e.name.clone(), format!("On {}{region}: to play together, one of you joins the other's server", e.server))
-                                .tone("warn")
-                                .button(super::b(format!("ask-switch:{}:{}", e.host, e.name), "Switch server").enabled(!busy && !info.running)),
-                        );
-                    }
+                if list.len() > most {
+                    r.add(note(format!("And {} more: search for a name to find them.", list.len() - most)));
                 }
             }
-            1 => {
-                if p.received.is_empty() && p.sent.is_empty() {
-                    r.add(mark("No requests", "Nobody's waiting for your answer, and you haven't asked anyone."));
-                }
-                if !p.received.is_empty() {
-                    r.card("Waiting for your answer");
-                    for q in &p.received {
-                        r.add(item(q.name.clone(), "Wants to be friends").tone(if q.online { "accent" } else { "" }).buttons(vec![
-                            super::b(format!("accept:{}:{}", q.id, q.name), "Accept").kind("primary").enabled(!busy),
-                            super::b(format!("decline:{}:{}", q.id, q.name), "Decline").enabled(!busy),
-                            super::b(format!("ask-block:{}:{}", q.id, q.name), "Block").kind("fix"),
-                        ]));
-                    }
-                }
-                if !p.sent.is_empty() {
-                    r.card("You asked");
-                    for q in &p.sent {
-                        r.add(item(q.name.clone(), "Hasn't answered yet").button(super::b(format!("cancel-request:{}:{}", q.id, q.name), "Cancel request").enabled(!busy)));
-                    }
-                }
-            }
-            2 => {
-                r.add(field("query", "", self.query.clone()).placeholder("A player's name").button(super::b("search", "Search")));
-                if self.found.is_none() {
-                    self.found = Some(crate::core::find_players(&app.state::<Launcher>().0, ""));
-                    self.searched = None;
-                }
-                match &self.found {
-                    Some(Err(e)) => {
-                        r.add(bad(e.clone()));
-                    }
-                    Some(Ok(list)) if list.is_empty() => {
-                        r.add(note(match &self.searched {
-                            Some(q) => format!("Nobody called \u{201c}{q}\u{201d} here."),
-                            None if !p.everyone => "None of your friends are online right now.".into(),
-                            None => "Nobody else is online right now.".into(),
-                        }));
-                    }
-                    Some(Ok(list)) => {
-                        r.card(&match &self.searched {
-                            Some(q) => format!("Players called \u{201c}{q}\u{201d}"),
-                            None if !p.everyone => "Friends online now".into(),
-                            None => "Online now".into(),
-                        });
-                        for q in list {
-                            let act = match q.relation {
-                                "friend" => super::b("none", "Your friend").kind("fix").enabled(false),
-                                "sent" => super::b("none", "Asked").kind("fix").enabled(false),
-                                "received" => super::b(format!("accept:{}:{}", q.id, q.name), "Accept").kind("primary").enabled(!busy),
-                                _ => super::b(format!("request:{}:{}", q.id, q.name), "Add friend").enabled(!busy),
-                            };
-                            r.add(
-                                item(q.name.clone(), initial_line(q))
-                                    .tone(if q.online { "accent" } else { "" })
-                                    .buttons(vec![act, super::b(format!("ask-block:{}:{}", q.id, q.name), "Block").kind("fix")]),
-                            );
-                        }
-                    }
-                    None => {}
-                }
-            }
-            _ => {
-                r.add(note(format!(
-                    "{BLOCK_MEANS} A block of a player with a 5th Echelon identity holds on every server that shares friends, when you have one too."
-                )));
-                if p.blocked.is_empty() {
-                    r.add(mark("Nobody blocked", "You haven't blocked anyone."));
-                }
-                for q in &p.blocked {
-                    r.add(item(q.name.clone(), q.identity.clone().unwrap_or_default()).button(super::b(format!("unblock:{}:{}", q.id, q.name), "Unblock").enabled(!busy)));
-                }
-            }
+            None => {}
         }
-        page(r.done())
+    }
+}
+
+/// The friends, with what can be done with each (Join, Invite, Remove, Block).
+fn friends(p: &People, busy: bool, running: bool, r: &mut Rows) {
+    if p.friends.is_empty() {
+        r.add(mark("No friends yet", "Find players to add some, or accept a request when one comes.").button(super::b("tab:2", "Find players").kind("primary")));
+    }
+    for f in &p.friends {
+        let mut acts = Vec::new();
+        if f.with_me {
+            acts.push(super::b("none", "You're in it").kind("fix").enabled(false));
+        } else if f.joinable {
+            acts.push(super::b(format!("join:{}:{}", f.id, f.name), "Join").kind("primary").enabled(!busy));
+        } else if f.online && running {
+            acts.push(super::b(format!("invite:{}:{}", f.id, f.name), "Invite").enabled(!busy));
+        }
+        acts.push(super::b(format!("ask-remove:{}:{}", f.id, f.name), "Remove").kind("fix"));
+        acts.push(super::b(format!("ask-block:{}:{}", f.id, f.name), "Block").kind("fix"));
+        r.add(item(f.name.clone(), initial_line(f)).tone(if f.online { "accent" } else { "muted" }).buttons(acts));
+    }
+}
+
+/// Friends playing on other servers, as a card.
+fn elsewhere(p: &People, busy: bool, running: bool, r: &mut Rows) {
+    if p.elsewhere.is_empty() {
+        return;
+    }
+    r.card("Playing on other servers");
+    for e in &p.elsewhere {
+        let region = if e.region.is_empty() { String::new() } else { format!(" ({})", e.region) };
+        r.add(
+            item(e.name.clone(), format!("On {}{region}: to play together, one of you joins the other's server", e.server))
+                .tone("warn")
+                .button(super::b(format!("ask-switch:{}:{}", e.host, e.name), "Switch server").enabled(!busy && !running)),
+        );
+    }
+}
+
+/// Requests both ways: waiting for the player's answer, and the ones they sent.
+fn requests(p: &People, busy: bool, r: &mut Rows) {
+    for q in &p.received {
+        r.add(item(q.name.clone(), "Wants to be friends").tone(if q.online { "accent" } else { "" }).buttons(vec![
+            super::b(format!("accept:{}:{}", q.id, q.name), "Accept").kind("primary").enabled(!busy),
+            super::b(format!("decline:{}:{}", q.id, q.name), "Decline").enabled(!busy),
+            super::b(format!("ask-block:{}:{}", q.id, q.name), "Block").kind("fix"),
+        ]));
+    }
+    if !p.sent.is_empty() {
+        r.card("You asked");
+        for q in &p.sent {
+            r.add(item(q.name.clone(), "Hasn't answered yet").button(super::b(format!("cancel-request:{}:{}", q.id, q.name), "Cancel request").enabled(!busy)));
+        }
+    }
+}
+
+/// Who the player blocked, each with Unblock.
+fn blocked(p: &People, busy: bool, r: &mut Rows) {
+    if p.blocked.is_empty() {
+        r.add(mark("Nobody blocked", "You haven't blocked anyone."));
+    }
+    for q in &p.blocked {
+        r.add(item(q.name.clone(), q.identity.clone().unwrap_or_default()).button(super::b(format!("unblock:{}:{}", q.id, q.name), "Unblock").enabled(!busy)));
+    }
+}
+
+impl Screen for FriendsPage {
+    fn refresh_every(&self) -> u64 {
+        20
+    }
+
+    fn view(&mut self, app: &AppHandle) -> PageView {
+        let core = app.state::<Launcher>().0.clone();
+        let info = crate::core::info(&core);
+        let mut r = Rows::default();
+        if info.game_dir.is_none() || info.server.is_none() {
+            r.add(
+                mark("No server yet", "Set up the game and a server first: your friends are kept by your account there.")
+                    .button(super::b("go-play", "Set up on Play").kind("primary")),
+            );
+            return page(r.done(), Vec::new());
+        }
+        let (people, signed_in, error) = crate::core::people(&core);
+        if !signed_in {
+            r.add(mark("No account yet", "Make an account on your server first: friends are kept by your account.").button(super::b("go-play", "Go to Play").kind("primary")));
+            return page(r.done(), Vec::new());
+        }
+        let Some(p) = people else {
+            r.add(bad(format!("Couldn't read your friends: {}", error.unwrap_or_default())));
+            r.add(buttons(vec![super::b("reload", "Try again").kind("link")]));
+            return page(r.done(), Vec::new());
+        };
+        let wide = super::wide();
+        // Who's online, for Find players (its tab, or its card at wide).
+        if self.found.is_none() && (wide || self.tab == 2) {
+            self.found = Some(crate::core::find_players(&app.state::<Launcher>().0, ""));
+            self.searched = None;
+        }
+        self.build(&p, info.connecting, info.running, wide)
     }
 
     fn chosen(&mut self, _app: &AppHandle, id: &str, index: usize) {
