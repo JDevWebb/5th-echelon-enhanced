@@ -127,6 +127,12 @@ pub fn run(dir: PathBuf) -> Result<(), slint::PlatformError> {
             set: settings_about,
             size: None,
         },
+        // About whole, to its small print and Slint's widget, on a window tall enough for it.
+        Shot {
+            name: "settings-about-full",
+            set: settings_about,
+            size: Some((1280, 1900)),
+        },
     ]);
     // Every shot in each look and size, one after another on the window's own clock; or only
     // some while working on a screen: FE_SHOTS (names starting so, comma-separated),

@@ -371,8 +371,18 @@ export component RowItem inherits Rectangle {
             }
         }
         // Slint's own attribution (its royalty-free licence asks for it on the About screen).
+        // With its text (About's small print): the text, and the widget beside it.
         if item.kind == "made-with-slint": HorizontalLayout {
             alignment: start;
+            spacing: 20px;
+            if item.text != "": Text {
+                horizontal-stretch: 1;
+                text: item.text;
+                wrap: word-wrap;
+                font-size: Type.small;
+                color: Theme.muted;
+                vertical-alignment: center;
+            }
             AboutSlint {
                 max-width: 360px;
                 max-height: 120px;
@@ -392,12 +402,13 @@ export component RowItem inherits Rectangle {
             border-width: 1px;
             border-color: Theme.line;
             clip: true;
-            Rectangle {
+            // Kept to the top corner, clear of the text (none at compact sizes).
+            if !Layout.compact: Rectangle {
                 x: parent.width - 300px;
-                y: -20px;
+                y: -80px;
                 width: 300px;
                 height: 220px;
-                opacity: 0.10;
+                opacity: 0.08;
                 Rectangle { x: 20px; y: 150px; width: 44px; height: 44px; border-radius: 6px; background: Theme.muted; }
                 Rectangle { x: 74px; y: 110px; width: 44px; height: 44px; border-radius: 6px; background: Theme.muted; }
                 Rectangle { x: 128px; y: 70px; width: 44px; height: 44px; border-radius: 6px; background: Theme.muted; }
@@ -405,14 +416,14 @@ export component RowItem inherits Rectangle {
                 Rectangle { x: 236px; y: -10px; width: 44px; height: 44px; border-radius: 6px; background: Theme.accent; }
             }
             about-lay := HorizontalLayout {
-                padding: 26px;
-                spacing: 24px;
-                VerticalLayout { alignment: center; EchelonMark { size: 96px; } }
+                padding: Layout.compact ? 20px : 26px;
+                spacing: Layout.compact ? 18px : 24px;
+                VerticalLayout { alignment: center; EchelonMark { size: Layout.compact ? 60px : 96px; } }
                 VerticalLayout {
                     horizontal-stretch: 1;
                     spacing: 8px;
                     if item.sub != "": Caps { text: item.sub.to-uppercase(); color: Theme.accent; }
-                    Text { text: item.label.to-uppercase(); wrap: word-wrap; font-family: Type.cond; font-weight: 700; font-size: 34px; color: Theme.fg; accessible-role: text; }
+                    Text { text: item.label.to-uppercase(); wrap: word-wrap; font-family: Type.cond; font-weight: 700; font-size: Layout.compact ? 30px : 34px; color: Theme.fg; accessible-role: text; }
                     HorizontalLayout {
                         spacing: 10px;
                         alignment: start;
@@ -486,20 +497,47 @@ export component RowItem inherits Rectangle {
                 VerticalLayout {
                     horizontal-stretch: 1;
                     alignment: center;
-                    spacing: 3px;
-                    Text {
-                        text: item.label;
-                        wrap: word-wrap;
-                        color: Theme.fg;
-                        font-family: item.on ? Type.cond : Type.sans;
-                        font-weight: item.on ? 700 : 600;
-                        font-size: item.on ? 24px : Type.body;
+                    spacing: 6px;
+                    // The name, what they are beside it (`sub`), and a badge (`options[0]`).
+                    HorizontalLayout {
+                        spacing: 10px;
+                        Text {
+                            text: item.label;
+                            color: Theme.fg;
+                            font-family: item.on || item.value >= 56 ? Type.cond : Type.sans;
+                            font-weight: item.on || item.value >= 56 ? 700 : 600;
+                            font-size: item.on ? 26px : item.value >= 56 ? 24px : 19px;
+                            vertical-alignment: center;
+                        }
+                        if item.sub != "": Text { text: item.sub; font-size: 14px; color: Theme.muted; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1; }
+                        if item.options.length > 0: VerticalLayout {
+                            alignment: center;
+                            Rectangle {
+                                height: badge.preferred-height;
+                                width: badge.preferred-width;
+                                border-radius: self.height / 2;
+                                background: Theme.selected;
+                                border-width: 1px;
+                                border-color: Theme.accent-soft;
+                                badge := HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    padding-top: 3px;
+                                    padding-bottom: 3px;
+                                    spacing: 6px;
+                                    VerticalLayout { alignment: center; Dot { size: 6px; } }
+                                    Text { text: item.options[0]; font-size: 12px; color: Theme.accent; vertical-alignment: center; }
+                                }
+                            }
+                        }
+                        if item.sub == "": Rectangle { horizontal-stretch: 1; }
                     }
-                    if item.text != "": Text { text: item.text; wrap: word-wrap; font-size: 14px; color: Theme.soft; }
-                    if item.buttons.length > 0: HorizontalLayout {
-                        spacing: 6px;
+                    if item.text != "": Text { text: item.text; wrap: word-wrap; font-size: 15px; color: Theme.soft; }
+                    if item.buttons.length > 0 || item.placeholder != "": HorizontalLayout {
+                        spacing: 16px;
                         alignment: start;
                         for b in item.buttons: Btn { text: b.label; kind: b.kind; small: true; enabled: b.enabled; clicked => { root.pressed(b.id); } }
+                        if item.placeholder != "": Text { text: item.placeholder; font-size: 13px; color: Theme.muted; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1; }
                     }
                 }
         
@@ -550,6 +588,7 @@ export component RowItem inherits Rectangle {
                     spacing: 2px;
                     Text { text: item.label; font-weight: 600; color: Theme.fg; wrap: word-wrap; }
                     Text { text: item.text; wrap: word-wrap; font-size: 13.5px; color: Theme.soft; }
+                    if item.sub != "": Text { text: item.sub; wrap: word-wrap; font-size: 12.5px; color: Theme.muted; }
                 }
                 for b in item.buttons: VerticalLayout {
                     alignment: center;

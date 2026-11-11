@@ -295,7 +295,7 @@ impl Screen for SettingsPage {
             "whats-new" => {
                 app.window(WindowCall::WhatsNew);
             }
-            "source" | "profile" | "revivals" | "upstream" | super::KOFI_ID => {
+            "source" | "profile" | "revivals" | "upstream" | "mpw" | super::KOFI_ID => {
                 let _ = crate::core::open_url(super::about_link(id));
             }
             "smaller" => self.set_size(app, self.size - 0.1),
@@ -816,52 +816,53 @@ impl SettingsPage {
                 "jdevwebb",
                 "JDevWebb",
                 "Builds the launcher, the servers and the game client, and runs the community network.",
-                72.0,
+                76.0,
                 true,
             )
-            .buttons(vec![
-                super::b("profile", "github.com/JDevWebb").kind("link"),
-                super::b("revivals", "Other game revivals").kind("link"),
-            ]),
+            .buttons(vec![super::b("profile", "github.com/JDevWebb").kind("link"), super::b("revivals", "Other game revivals").kind("link")]),
         );
+        r.card("");
+        r.add(caps("Built on the shoulders of").tone("accent"));
+        let mut unixoide = person(
+            "U",
+            "unixoide",
+            "5th Echelon is where this began: unixoide reverse-engineered Blacklist's online services and wrote the original server, launcher and game hook. Everything here, the matchmaking, the relays and the fixes, stands on that work.",
+            64.0,
+            false,
+        )
+        .sub("· creator of 5th Echelon")
+        .button(super::b("upstream", "github.com/unixoide/5th-echelon").kind("link"));
+        unixoide.placeholder = "Upstream's code keeps its authors' rights (see the licence)".into();
+        r.add(unixoide);
+        r.card("");
+        r.add(caps("Contributors"));
+        let mut mpw = person(
+            "MW",
+            "Matthias Walther",
+            "Host migration, so a match carries on when its host leaves; in-match chat that reaches every player; quick start straight into Spies vs Mercs or Co-op; a fix for the crash on the way back to the lobby; and much of the Linux and Steam Deck support.",
+            56.0,
+            false,
+        )
+        .sub("(MPW1412)")
+        .button(super::b("mpw", "github.com/MPW1412").kind("link"));
+        mpw.options = vec!["Active contributor".into()];
+        r.add(mpw);
+        r.add(rule());
+        r.add(note("And every player who reports a problem, sends a log or tests a release."));
         r.out().add(
             support(
                 "Support the community servers",
                 "5th Echelon Enhanced is free, and always will be. If you'd like to, you can chip in towards hosting the community servers, about US$40 a month. It's entirely optional: there are no perks, and any amount is appreciated.",
                 "ko-fi.com/jdevwebb",
                 "Servers in Germany, Canada and Australia, and relays in Singapore, Chile and California.",
-                false,
+                true,
             )
             .button(super::b(super::KOFI_ID, "Support on Ko-fi").kind("primary")),
         );
-        r.card("");
-        r.add(caps("Built on 5th Echelon"));
-        r.add(
-            person(
-                "U",
-                "unixoide",
-                "Created 5th Echelon: reverse-engineered the game's online services, and wrote the original server, launcher and game hook. None of this would exist without that work.",
-                56.0,
-                false,
-            )
-            .button(super::b("upstream", "github.com/unixoide/5th-echelon").kind("link")),
-        );
-        r.add(rule());
-        r.add(caps("Contributors"));
-        r.add(person(
-            "MW",
-            "Matthias Walther (MPW1412)",
-            "The lobby carrying on when its host leaves, invites into private matches, joining a friend's game, and the Linux findings.",
-            48.0,
-            false,
-        ));
-        r.add(note("And every player who reports a problem, sends a log or tests a release."));
         r.out();
-        r.add(note("Free, and provided as is, without warranty of any kind. Not affiliated with or endorsed by Ubisoft."));
-        r.add(note(
-            "The launcher is made with Slint (slint.dev), under its royalty-free licence; its type is IBM Plex (SIL Open Font License). Every library it uses and its licence is listed in THIRD-PARTY-NOTICES.txt, with each release's downloads.",
+        r.add(super::made_with_slint(
+            "Free, and provided as is, without warranty of any kind. Not affiliated with or endorsed by Ubisoft. The launcher is made with Slint (slint.dev), under its royalty-free licence; its type is IBM Plex (SIL Open Font License). Every library it uses and its licence is listed in THIRD-PARTY-NOTICES.txt, with each release's downloads.",
         ));
-        r.add(super::made_with_slint());
     }
 }
 

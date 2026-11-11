@@ -244,6 +244,7 @@ pub fn about_link(id: &str) -> &'static str {
         "source" => "https://github.com/JDevWebb/5th-echelon-enhanced",
         "profile" => "https://github.com/JDevWebb",
         "upstream" => "https://github.com/unixoide/5th-echelon",
+        "mpw" => "https://github.com/MPW1412",
         // The Ko-fi page is also where the developer's other game revivals are shown.
         _ => "https://ko-fi.com/jdevwebb",
     }
@@ -251,8 +252,8 @@ pub fn about_link(id: &str) -> &'static str {
 
 /// Slint's own "made with Slint" attribution (the AboutSlint widget), as its royalty-free licence
 /// asks of the About screen.
-pub fn made_with_slint() -> R {
-    R::new("made-with-slint")
+pub fn made_with_slint(beside: impl Into<String>) -> R {
+    R::new("made-with-slint").text(beside)
 }
 /// A small heading in capitals (About's sections).
 pub fn caps(t: impl Into<String>) -> R {
