@@ -278,12 +278,88 @@ fn esc_still_stopping(state: &std::sync::atomic::AtomicU8, held: bool) -> bool {
     }
 }
 
+/// The keyboard's Esc in DirectInput: its byte in the keyboard's state, and an event's offset.
+const DIK_ESCAPE: usize = 0x01;
+
+/// The Esc that stopped the quick start, kept from DirectInput until it's been let go: 0 not
+/// started, 1 keeping it, 2 done. A tap is down and up again before the game next reads its
+/// keyboard, so holding back only while the key was down ([`esc_after_abort`]) let the press
+/// through in DirectInput's buffer: at the title, where the online startup still is, the game
+/// read it as "exit" and closed (rb-esc, reproduced on Windows 2026-11-12).
+static STOP_ESC: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// When [`STOP_ESC`] started (milliseconds since the Unix epoch).
+static STOP_ESC_SINCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// The longest the stopping Esc is kept from the game: a later Esc is always the game's.
+const STOP_ESC_FOR_MS: u64 = 2000;
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// Whether the stopping Esc is still kept from the game's DirectInput.
+fn stop_esc_kept() -> bool {
+    if !crate::quickstart::aborted() {
+        return false;
+    }
+    stop_esc_step(&STOP_ESC, &STOP_ESC_SINCE, now_ms())
+}
+
+/// [`stop_esc_kept`]'s state at `now`.
+fn stop_esc_step(state: &std::sync::atomic::AtomicU8, since: &std::sync::atomic::AtomicU64, now: u64) -> bool {
+    match state.load(Ordering::SeqCst) {
+        0 => {
+            since.store(now, Ordering::SeqCst);
+            state.store(1, Ordering::SeqCst);
+            true
+        }
+        1 if now.saturating_sub(since.load(Ordering::SeqCst)) > STOP_ESC_FOR_MS => {
+            state.store(2, Ordering::SeqCst);
+            false
+        }
+        1 => true,
+        _ => false,
+    }
+}
+
+/// Takes the keyboard's Esc events out of `count` events of `stride` bytes each (DirectInput's
+/// DIDEVICEOBJECTDATA: the offset, then the data, whose 0x80 is down): the rest moved up, their
+/// number returned, and whether one taken out was Esc let go.
+fn take_out_esc(events: &mut [u8], stride: usize, count: usize) -> (usize, bool) {
+    if stride < 8 {
+        return (count, false);
+    }
+    let (mut kept, mut released) = (0, false);
+    for i in 0..count.min(events.len() / stride) {
+        let at = i * stride;
+        let ofs = u32::from_le_bytes([events[at], events[at + 1], events[at + 2], events[at + 3]]) as usize;
+        if ofs == DIK_ESCAPE {
+            released |= events[at + 4] & 0x80 == 0;
+            continue;
+        }
+        if kept != i {
+            events.copy_within(at..at + stride, kept * stride);
+        }
+        kept += 1;
+    }
+    (kept, released)
+}
+
 /// The device's state, as if nothing moved or was pressed while the panel is open.
 fn device_state(detour: &retour::StaticDetour<GetDeviceState>, device: *mut c_void, size: u32, buffer: *mut c_void) -> HRESULT {
     let result = unsafe { detour.call(device, size, buffer) };
     if held_back() && result.is_ok() && !buffer.is_null() {
         // SAFETY: the caller gave a buffer of `size` bytes for the state.
         unsafe { std::ptr::write_bytes(buffer.cast::<u8>(), 0, size as usize) };
+    } else if result.is_ok() && !buffer.is_null() && size == 256 && stop_esc_kept() {
+        // The keyboard's state (256 keys): the stopping Esc reads as up until it's let go.
+        // SAFETY: the caller gave a buffer of 256 bytes.
+        let esc = unsafe { &mut *buffer.cast::<u8>().add(DIK_ESCAPE) };
+        if *esc & 0x80 == 0 {
+            STOP_ESC.store(2, Ordering::SeqCst);
+        }
+        *esc = 0;
     }
     result
 }
@@ -295,6 +371,16 @@ fn device_data(detour: &retour::StaticDetour<GetDeviceData>, device: *mut c_void
     if held_back() && result.is_ok() && !count.is_null() {
         // SAFETY: `count` is the caller's in/out item count.
         unsafe { *count = 0 };
+    } else if result.is_ok() && !count.is_null() && !data.is_null() && stop_esc_kept() {
+        // SAFETY: DirectInput filled `*count` events of `size` bytes at `data`.
+        let n = unsafe { *count } as usize;
+        let events = unsafe { std::slice::from_raw_parts_mut(data.cast::<u8>(), n * size as usize) };
+        let (kept, released) = take_out_esc(events, size as usize, n);
+        // SAFETY: as above; fewer events than DirectInput gave.
+        unsafe { *count = u32::try_from(kept).unwrap_or(0) };
+        if released {
+            STOP_ESC.store(2, Ordering::SeqCst);
+        }
     }
     result
 }
@@ -309,5 +395,40 @@ mod tests {
         assert!(!super::esc_still_stopping(&state, false), "let go");
         assert!(!super::esc_still_stopping(&state, true), "a later press is the game's");
         assert!(!super::esc_still_stopping(&state, true), "and stays the game's while held");
+    }
+
+    /// DIDEVICEOBJECTDATA as DirectInput 8 has it on 32-bit Windows: 20 bytes.
+    fn event(ofs: u32, data: u32) -> Vec<u8> {
+        let mut e = ofs.to_le_bytes().to_vec();
+        e.extend(data.to_le_bytes());
+        e.extend([0u8; 12]);
+        e
+    }
+
+    #[test]
+    fn the_stopping_esc_is_taken_out_of_the_buffer_and_the_rest_kept_in_order() {
+        let w = 0x11; // DIK_W
+        let mut events: Vec<u8> = [event(w, 0x80), event(0x01, 0x80), event(w, 0), event(0x01, 0)].concat();
+        let (kept, released) = super::take_out_esc(&mut events, 20, 4);
+        assert_eq!((kept, released), (2, true), "both Esc events gone, its release seen");
+        assert_eq!(&events[..20], &event(w, 0x80)[..]);
+        assert_eq!(&events[20..40], &event(w, 0)[..], "W's release moved up");
+
+        let mut down_only: Vec<u8> = event(0x01, 0x80);
+        assert_eq!(super::take_out_esc(&mut down_only, 20, 1), (0, false), "pressed, not let go yet");
+        let mut none: Vec<u8> = [event(w, 0x80), event(0x1C, 0x80)].concat();
+        assert_eq!(super::take_out_esc(&mut none, 20, 2), (2, false), "no Esc: nothing changes");
+    }
+
+    #[test]
+    fn the_stopping_esc_is_kept_for_two_seconds_at_most() {
+        let state = std::sync::atomic::AtomicU8::new(0);
+        let since = std::sync::atomic::AtomicU64::new(0);
+        assert!(super::stop_esc_step(&state, &since, 10_000), "starts when the stop is seen");
+        assert!(super::stop_esc_step(&state, &since, 11_500));
+        assert!(!super::stop_esc_step(&state, &since, 12_001), "past two seconds: the game's");
+        assert!(!super::stop_esc_step(&state, &since, 12_002), "and stays so");
+        let done = std::sync::atomic::AtomicU8::new(2);
+        assert!(!super::stop_esc_step(&done, &since, 10_100), "let go already: the game's");
     }
 }
