@@ -828,13 +828,13 @@ fn setup(w: &AppWindow) {
         .manage(crate::commands::Launcher(core))
         .build(std::sync::Arc::new(|_| {}), std::sync::Arc::new(|_| true));
     let view = crate::pages::setup::SetupPage::new(true).view(&app);
-    w.set_screen(s("setup"));
-    w.set_page_kicker(s(&view.kicker));
-    w.set_page_title(s(&view.title));
-    w.set_page_summary(s(&view.summary));
-    w.set_page_sections(model(vec![]));
-    w.set_page_section_ids(model(vec![]));
-    w.set_page_rows(rows(view.rows));
+    page(w, "setup", view);
+}
+
+/// A page's view on the window, as the launcher shows it.
+fn page(w: &AppWindow, screen: &str, view: crate::pages::PageView) {
+    w.set_screen(s(screen));
+    crate::shell::show_page(w, &view);
 }
 
 /// An empty page: the mark, its heading, why, and what to do.

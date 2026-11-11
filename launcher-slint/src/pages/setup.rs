@@ -70,12 +70,8 @@ impl Screen for SetupPage {
         let step = self.step(&info);
         let mut r = Rows::default();
         const WHAT: &str = "The launcher sets everything up and keeps the game's original files, so you can undo it any time. You need your own copy of the game.";
-        // A first setup's first page: the mark and the name, as the launcher's welcome.
-        if self.fresh && step <= 1 && !info.connecting {
-            r.add(mark("Welcome to 5th Echelon Enhanced", WHAT));
-        } else {
-            r.add(note(WHAT));
-        }
+        // What it is goes under the title, with the mark, in the page's head (the setup's
+        // layout: a dialog's width, centred both ways).
         let steps: Vec<(String, String)> = STEPS.iter().enumerate().map(|(i, n)| (i.to_string(), format!("{}  {n}", i + 1))).collect();
         r.add(segments("steps", format!("Step {} of {}", step + 1, STEPS.len()), &steps, &step.to_string()));
         match step {
@@ -202,7 +198,9 @@ impl Screen for SetupPage {
         PageView {
             kicker: "Operative setup".into(),
             title: "Get online in a minute".into(),
+            summary: WHAT.into(),
             rows: r.done(),
+            layout: "setup",
             ..Default::default()
         }
     }
