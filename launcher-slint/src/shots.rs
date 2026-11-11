@@ -128,6 +128,26 @@ pub fn run(dir: PathBuf) -> Result<(), slint::PlatformError> {
             size: None,
         },
         Shot {
+            name: "servers",
+            set: servers,
+            size: None,
+        },
+        Shot {
+            name: "intel",
+            set: intel,
+            size: None,
+        },
+        Shot {
+            name: "support",
+            set: support,
+            size: None,
+        },
+        Shot {
+            name: "chat",
+            set: chat,
+            size: None,
+        },
+        Shot {
             name: "host-empty",
             set: host_empty,
             size: None,
@@ -980,4 +1000,135 @@ fn host_running(w: &AppWindow) {
         serde_json::json!({ "time": "14:05:09", "tone": "", "msg": "Marlow joined game #12" }),
     ];
     host_page(w, host_view(true, true), Some(lists), logs);
+}
+
+fn view(kicker: &str, title: &str, summary: &str, rows: Vec<crate::pages::R>) -> crate::pages::PageView {
+    crate::pages::PageView {
+        kicker: kicker.into(),
+        title: title.into(),
+        summary: summary.into(),
+        rows,
+        ..Default::default()
+    }
+}
+
+/// Servers, as pages/servers.rs lays it out, on made-up servers.
+fn servers(w: &AppWindow) {
+    use crate::pages::*;
+    let mut r = Rows::default();
+    r.card("Network");
+    r.add(
+        item("scbl.example.org", "The 5th Echelon community network · 3 servers · your friends and identity follow you between its servers")
+            .tone("accent")
+            .text("In use"),
+    );
+    r.add(rule());
+    r.add(bold("Use another network"));
+    r.add(
+        field("network", "", "")
+            .placeholder("its address, e.g. play.mygroup.org")
+            .button(b("look-up", "Look it up").enabled(false)),
+    );
+    r.add(note("Another group's network of servers: its servers then fill the server menu on the Play screen."));
+    r.card("A server of your own");
+    r.add(field("address", "", "").placeholder("play.example.org or 192.168.1.20").button(b("connect", "Connect").kind("primary").enabled(false)));
+    r.add(note("A private server for your group, outside the network: the server menu takes you back."));
+    r.add(note("Recent"));
+    r.add(item("LAN party · 192.168.1.20", "Yesterday").button(b("own", "Connect")));
+    r.card("On your network");
+    r.add(note("Looks for a server running at a LAN party, on this network."));
+    r.add(buttons(vec![b("lan", "Find on my network")]));
+    r.card("Host on this PC");
+    r.add(note("Run a server for your group: a LAN party, or friends over the internet. Their launchers find it on your network."));
+    r.add(buttons(vec![b("host", "Host a server")]));
+    page(
+        w,
+        "servers",
+        view(
+            "Network",
+            "Servers",
+            "The community network is on the Play screen. Here: a server of your own, a LAN party, or another network.",
+            r.done(),
+        ),
+    );
+}
+
+/// Intel, as pages/intel.rs lays it out: the server's briefings.
+fn intel(w: &AppWindow) {
+    use crate::pages::*;
+    let mut r = Rows::default();
+    r.add(segments(
+        "tab",
+        "",
+        &[("news".into(), "News".into()), ("roadmap".into(), "Roadmap".into())],
+        "news",
+    ));
+    r.add(note("From scbl.example.org, as the game's news screen shows it"));
+    r.card("Briefings");
+    r.add(item("0.5.0: one matchmaking server for everyone", "Quick match finds a match on the whole network, and fair play checks").on(true).tone("accent"));
+    r.add(item("Weekend SvM night", "Saturday 20:00 UTC on Germany: bring a friend"));
+    r.add(item("Maintenance", "Australia restarts Tuesday 03:00 UTC for a few minutes"));
+    r.card("0.5.0: one matchmaking server for everyone");
+    r.add(note("Briefing 1 of 3").tone("accent"));
+    r.add(text("Quick match now looks across the whole network for a match near you, and the relays carry players who can't reach each other directly. Fair play checks run on every server."));
+    r.add(buttons(vec![b("link", "Read more on example.org").kind("link")]));
+    page(w, "intel", view("From your server", "Intel", "", r.done()));
+}
+
+/// Support, as pages/support.rs lays it out: a conversation with the admins.
+fn support(w: &AppWindow) {
+    use crate::pages::*;
+    let mut r = Rows::default();
+    r.card("Your conversation");
+    r.add(message("You", "My game closes when the match ends, back to the lobby. Log attached.", "Mon 21:14"));
+    r.add(message("Admins", "Thanks: it's the crash on the way back to the lobby, fixed in 0.5.0. Update when it's out and tell us if it happens again.", "Tue 09:02").on(true));
+    r.card("Message");
+    r.add(area("message", "", "").placeholder("What went wrong, when, and on which server?"));
+    r.add(note("0/2000"));
+    r.add(switch("game_log", "The game's log (its last part, and the one before)", true));
+    r.add(switch("launcher_log", "The launcher's log", false));
+    r.add(note("Your PC's name, your user folder and your internet address are hidden in them first."));
+    r.add(buttons(vec![b("send", "Send").kind("primary").enabled(false)]));
+    r.card("Something went wrong?");
+    r.add(note("Send a report with the logs, or run every check on the Play screen."));
+    r.add(buttons(vec![b("feedback", "Send a report with the logs"), b("checks", "Run all checks")]));
+    page(
+        w,
+        "support",
+        view(
+            "The network's admins",
+            "Support",
+            "Write to the community network's admins about anything that goes wrong. They answer here, and you're told when they do, here and in the game.",
+            r.done(),
+        ),
+    );
+}
+
+/// Chat, as pages/chat.rs lays it out: # Global with a few lines.
+fn chat(w: &AppWindow) {
+    use crate::pages::*;
+    let mut r = Rows::default();
+    r.card("");
+    r.add(field("text", "", "").placeholder("Say something to everyone…").button(b("send", "Send").kind("primary").enabled(false)));
+    r.out();
+    r.add(message("Kestrel", "Anyone up for SvM Classic on Germany?", "21:02"));
+    r.add(message("Marlow", "In 5, finishing a co-op run", "21:03"));
+    r.add(message("Nightshade", "I'm in. Penthouse?", "21:03").on(true));
+    r.add(message("Tamsin", "gg last night, that Silo round was close", "21:05"));
+    let sections = vec![
+        ("global".to_string(), "# Global".to_string()),
+        ("lobby".to_string(), "# Lobby".to_string()),
+        ("with:1".to_string(), "Kestrel · 2".to_string()),
+        ("with:2".to_string(), "Marlow".to_string()),
+    ];
+    let v = crate::pages::PageView {
+        kicker: "Community network".into(),
+        title: "Chat".into(),
+        summary: "# Global · the whole community network".into(),
+        sections,
+        section: "global".into(),
+        rows: r.done(),
+        ..Default::default()
+    };
+    page(w, "chat", v);
 }
