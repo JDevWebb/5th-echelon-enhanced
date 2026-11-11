@@ -547,6 +547,7 @@ extern "system" {
 extern "system" {
     fn GetForegroundWindow() -> isize;
     fn GetWindowThreadProcessId(window: isize, process: *mut u32) -> u32;
+    fn IsIconic(window: isize) -> i32;
 }
 
 /// The game's main thread (the one that loaded this DLL), the one that last drew a frame, and
@@ -633,12 +634,14 @@ pub fn watch_for_freezes() {
     }
 }
 
-/// Whether the window in front is the game's.
+/// Whether the window in front is the game's, and not minimised: a fullscreen game that lost the
+/// focus (another program's window, Alt+Tab) can be in front again but still minimised, drawing
+/// nothing until it's restored, which read as a freeze (seen on a Surface, DirectX 9).
 fn in_front() -> bool {
     unsafe {
         let window = GetForegroundWindow();
         let mut process = 0;
-        window != 0 && GetWindowThreadProcessId(window, &mut process) != 0 && process == GetCurrentProcessId()
+        window != 0 && GetWindowThreadProcessId(window, &mut process) != 0 && process == GetCurrentProcessId() && IsIconic(window) == 0
     }
 }
 
