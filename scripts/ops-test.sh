@@ -61,9 +61,9 @@ die() { echo "  error: $*"; exit 1; }
 # --- Tools ------------------------------------------------------------------
 
 need=()
-for c in curl python3 openssl unzip sqlite3 update-ca-certificates setsid setpriv flock; do command -v "$c" >/dev/null || need+=("$c"); done
+for c in curl python3 openssl unzip sqlite3 update-ca-certificates setsid setpriv flock age; do command -v "$c" >/dev/null || need+=("$c"); done
 if [ "${#need[@]}" -gt 0 ]; then
-  apt-get -qq update >/dev/null && apt-get -qq install -y --no-install-recommends curl python3 openssl unzip sqlite3 ca-certificates util-linux >/dev/null 2>&1
+  apt-get -qq update >/dev/null && apt-get -qq install -y --no-install-recommends curl python3 openssl unzip sqlite3 ca-certificates util-linux age >/dev/null 2>&1
 fi
 cd /tmp
 arch=amd64; [ "$(uname -m)" = aarch64 ] && arch=arm64
@@ -75,6 +75,8 @@ install -m 755 "$bin/coordinator" /usr/local/bin/fes-coordinator
 
 # The installer's settings, as it has them.
 eval "$(sed -n '/^REPO=/,/^CADDY_SHA512_arm64=/p' "$S")"
+# And its checks of settings (backup.sh carries a restored server's settings with them).
+eval "$(grep -E '^(DOMAIN_RE|COORD_RE|IPV4_RE|NAME_RE|BOOL_RE)=' "$S")"
 mkdir -p /etc/systemd/system "$ETC_DIR" "$STATE_DIR" "$PROGRAM_DIR" "$UPDATE_DIR"
 # Caddy at the installer's pinned version, for the Cloudflare checks at the end (fetched now,
 # before GitHub is replaced by the test's stand-in).
@@ -237,7 +239,7 @@ systemctl stop 5th-echelon; systemctl stop 5th-echelon-standby
 # --- backup.sh ----------------------------------------------------------------
 
 echo "--- backup.sh"
-mkdir -p /tmp/s3/live /tmp/s3/archive
+mkdir -p /tmp/s3/live /tmp/s3/archive /tmp/s3/eu1-own
 rclone --config /dev/null serve s3 /tmp/s3 --auth-key testkey,testsecret123 --addr 127.0.0.1:9000 >/tmp/s3.log 2>&1 &
 sleep 3
 cat > "$BACKUP_ENV" <<ENV
@@ -320,6 +322,59 @@ check "a database restores as it is in the latest snapshot" no_users
 python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("DELETE FROM users"); c.commit()' "$STATE_DIR/5th-echelon.db"
 /tmp/eu1-backup.sh restore game --archive "$(date -u +%F)" >/dev/null
 check "a database restores from the archive" kiwi_back
+
+# Encrypted (docs/backups.md, Encryption): from here on, everything goes up sealed with age,
+# failovers included; the key that opens them is on this machine (both standbys).
+echo "--- backup.sh, encrypted"
+age-keygen -o "$BACKUP_AGE_KEY" 2>/dev/null
+chmod 600 "$BACKUP_AGE_KEY"
+echo "BACKUP_AGE_RECIPIENT=$(age-keygen -y "$BACKUP_AGE_KEY")" >> "$BACKUP_ENV"
+plain_until="$(date -u +%FT%TZ)"
+sleep 2
+python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("INSERT INTO users VALUES (\"Sealed\")"); c.commit()' "$STATE_DIR/5th-echelon.db"
+sealed_up() {
+  /tmp/eu1-backup.sh snapshot 2>/tmp/snap.err >/dev/null && ! grep -q UNENCRYPTED /tmp/snap.err \
+    && f="$(rclone --config /dev/null lsf T:live/snapshots/eu1/game | grep '\.db\.gz\.age$' | tail -1)" && [ -n "$f" ] \
+    && [ "$(rclone --config /dev/null cat "T:live/snapshots/eu1/game/$f" | head -c 21)" = age-encryption.org/v1 ] \
+    && rclone --config /dev/null lsf T:live/live/eu1 | grep -qx coordinator-files.tar.age \
+    && ! rclone --config /dev/null lsf -R T:live/live/eu1/coordinator-files 2>/dev/null | grep -q .
+}
+check "a snapshot goes up sealed, the coordinator's files as one sealed tar (the plaintext ones gone)" sealed_up
+sealed_back() { [ "$(users)" = Kiwi,Sealed ]; }
+python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("DELETE FROM users"); c.commit()' "$STATE_DIR/5th-echelon.db"
+/tmp/eu1-backup.sh restore game >/dev/null
+check "  and restores with the key" sealed_back
+# The last snapshot before encryption was taken with no users (above).
+/tmp/eu1-backup.sh restore game --time "$plain_until" >/dev/null
+check "  one from before encryption still restores" no_users
+mv "$BACKUP_AGE_KEY" /tmp/backup.age.aside
+no_key_refused() { ! /tmp/eu1-backup.sh restore game >/dev/null 2>&1 && no_users; }
+check "  without the key, a sealed one is refused and nothing changes" no_key_refused
+check "  the archive goes to B2 sealed (no key needed)" bash -c "/tmp/eu1-backup.sh archive >/dev/null 2>&1 && rclone --config /dev/null lsf -R T:archive | grep -q \"$(date -u +%F)-game.db.gz.age\""
+mv /tmp/backup.age.aside "$BACKUP_AGE_KEY"
+cp "$BACKUP_ENV" /tmp/backup.env.sealed
+sed -i '/^BACKUP_AGE_RECIPIENT=/d' "$BACKUP_ENV"
+n_sealed="$(rclone --config /dev/null lsf T:live/snapshots/eu1/game | wc -l)"
+python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("INSERT INTO users VALUES (\"Late\")"); c.commit()' "$STATE_DIR/5th-echelon.db"
+check "once sealed, a backup.env without the recipient sends nothing" bash -c "! /tmp/eu1-backup.sh snapshot >/dev/null 2>&1 && ! /tmp/eu1-backup.sh files >/dev/null 2>&1 && [ \"\$(rclone --config /dev/null lsf T:live/snapshots/eu1/game | wc -l)\" = $n_sealed ]"
+cp /tmp/backup.env.sealed "$BACKUP_ENV"
+# A bucket each: eu1's in its own (sent to straight away, unchanged or not), na1 reading it
+# with a read-only key (backup-peers.env).
+rclone --config /dev/null serve s3 /tmp/s3 --read-only --auth-key peerkey,peersecret123 --addr 127.0.0.1:9001 >/tmp/s3ro.log 2>&1 &
+sleep 2
+sed 's/^BACKUP_R2_BUCKET=.*/BACKUP_R2_BUCKET=eu1-own/' /tmp/backup.env.sealed > "$BACKUP_ENV"
+own_bucket() {
+  /tmp/eu1-backup.sh snapshot >/dev/null && rclone --config /dev/null lsf T:eu1-own/snapshots/eu1/coordinator | grep -q '\.age$' \
+    && rclone --config /dev/null lsf T:eu1-own/live/eu1 | grep -qx coordinator-files.tar.age
+}
+check "a server moved to a bucket of its own sends there straight away" own_bucket
+cp /tmp/backup.env.sealed "$BACKUP_ENV"
+printf 'PEER_eu1_R2_ENDPOINT=http://127.0.0.1:9001\nPEER_eu1_R2_BUCKET=eu1-own\nPEER_eu1_R2_ACCESS_KEY_ID=peerkey\nPEER_eu1_R2_SECRET_ACCESS_KEY=peersecret123\n' > "$BACKUP_PEERS_ENV"
+chmod 600 "$BACKUP_PEERS_ENV"
+python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("DELETE FROM users"); c.commit()' "$STATE_DIR/5th-echelon.db"
+late_back() { /tmp/na1-backup.sh restore game --from eu1 >/dev/null && [ "$(users)" = Late ]; }
+check "--from reads another server's own bucket with its read-only key" late_back
+rm -f "$BACKUP_PEERS_ENV"
 systemctl stop 5th-echelon
 
 # --- Failover -------------------------------------------------------------------
@@ -445,7 +500,7 @@ mm_machine() { # mm_machine NAME LOCAL ADDRESS ID
   mkdir -p "$state/geoip" "$BACKUP_STATE"
   echo "$4" > "$state/server-id.txt"
   for f in federation.key api.key nat.key metrics.key; do echo "$4-$f" > "$state/$f"; done
-  printf '[public]\nhost = "%s"\n' "$1.test" > "$state/service.toml"
+  printf '[public]\nhost = "%s"\n\n[federation]\nname = "%s server"\n' "$1.test" "$1" > "$state/service.toml"
   echo "geo" > "$state/geoip/db"
   python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("CREATE TABLE who (id TEXT)"); c.execute("INSERT INTO who VALUES (?)", (sys.argv[2],)); c.commit()' "$state/5th-echelon.db" "$4"
   touch "/etc/systemd/system/$SERVICE.service"
@@ -478,18 +533,18 @@ mm_machine mmeu1 127.0.0.5 192.0.2.5 relay1
 id_in() { head -c 64 "/var/lib/$1-game/server-id.txt"; }
 db_of() { python3 -c 'import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute("SELECT id FROM who").fetchone()[0])' "/var/lib/$1-game/5th-echelon.db"; }
 systemctl start mmna1-game; systemctl start mmeu1-game
-check "the matchmaking server's key files and settings go to R2 with its snapshot" bash -c "/tmp/mmna1-mmbackup.sh snapshot >/dev/null && rclone --config /dev/null lsf T:live/live/mmna1/game-files | grep -q server-id.txt && rclone --config /dev/null lsf T:live/live/mmna1/game-files | grep -q service.toml"
+check "the matchmaking server's key files and settings go to R2 with its snapshot, sealed" bash -c "/tmp/mmna1-mmbackup.sh snapshot >/dev/null && rclone --config /dev/null lsf T:live/live/mmna1 | grep -qx game-files.tar.age"
 systemctl start mmna1-mmstandby; systemctl start mmeu1-mmstandby
 sleep 5
 mm_stays() { [ "$(mm_record)" = 192.0.2.4 ] && [ "$(id_in mmeu1)" = relay1 ]; }
-mm_as_itself() { [ "$(id_in mmeu1)" = mmid1 ] && [ "$(db_of mmeu1)" = mmid1 ] && grep -q mmid1-federation.key /var/lib/mmeu1-game/federation.key && grep -q mmna1.test /var/lib/mmeu1-game/service.toml; }
+mm_as_itself() { [ "$(id_in mmeu1)" = mmid1 ] && [ "$(db_of mmeu1)" = mmid1 ] && grep -q mmid1-federation.key /var/lib/mmeu1-game/federation.key && grep -qx 'name = "mmna1 server"' /var/lib/mmeu1-game/service.toml && grep -qx 'host = "mmeu1.test"' /var/lib/mmeu1-game/service.toml; }
 relay_kept() { [ "$(head -c 64 /var/lib/mmeu1-game.own/server-id.txt)" = relay1 ] && [ -f /var/lib/mmeu1-game/geoip/db ]; }
 mm_moved_back() { [ "$(mm_record)" = 192.0.2.4 ] && [ "$(id_in mmna1)" = mmid1 ] && [ ! -e /var/lib/mmna1-game.own ] && ls -d /var/lib/mmna1-game.matchmaking-* >/dev/null 2>&1; }
 check "the relay stands by while the matchmaking server answers" mm_stays
 # mmna1 goes down, machine and all.
 systemctl stop mmna1-mmstandby; systemctl stop mmna1-game
 check "the relay takes over a matchmaking server that stays down, and moves its record" wait_for 120 '[ "$(mm_record)" = 192.0.2.5 ]'
-check "  as the same server: its id, keys, settings and database" mm_as_itself
+check "  as the same server: its id, keys, settings and database (this machine's [public] kept)" mm_as_itself
 check "  the relay's own state kept beside it, the geolocation data carried over" relay_kept
 check "  answering at its name" bash -c "curl -fs http://127.0.0.1:8443/mm/api/info | grep -q mmid1"
 # mmna1 comes back with its old matchmaking server running.

@@ -226,6 +226,11 @@ COORD_CERT="/etc/caddy/5th-echelon-coordinator.crt"
 COORD_KEY="/etc/caddy/5th-echelon-coordinator.key"
 # Backups (see install_backups and docs/backups.md): on when this file exists. Root's only.
 BACKUP_ENV="$ETC_DIR/backup.env"
+# The key that opens the encrypted backups (age's identity; docs/backups.md): only on the
+# machines that may restore. Root's only. backup.env's BACKUP_AGE_RECIPIENT is its public half.
+BACKUP_AGE_KEY="$ETC_DIR/backup.age"
+# Read-only keys to other servers' buckets, for restoring them (--from NAME). Root's only.
+BACKUP_PEERS_ENV="$ETC_DIR/backup-peers.env"
 BACKUP_SCRIPT="$PROGRAM_DIR/backup.sh"
 BACKUP_STATE="/var/lib/5th-echelon-backup"
 # How often each database's snapshot goes to R2: each is one write request (none when
@@ -756,6 +761,18 @@ install_backups() {
     return 0
   fi
   [ "$(stat -c '%u %a' "$BACKUP_ENV")" = "0 600" ] || { chown root:root "$BACKUP_ENV"; chmod 600 "$BACKUP_ENV"; }
+  local f
+  for f in "$BACKUP_AGE_KEY" "$BACKUP_PEERS_ENV"; do
+    if [ -L "$f" ]; then die "$f is a link: make it a plain file, root's, mode 600"; fi
+    if [ -f "$f" ] && [ "$(stat -c '%u %a' "$f")" != "0 600" ]; then chown root:root "$f"; chmod 600 "$f"; fi
+  done
+  # Encrypted backups (age): BACKUP_AGE_RECIPIENT in backup.env, the key on the machines that
+  # restore. Without it, the snapshots go up as they are, with every key file in them.
+  if grep -qE '^BACKUP_AGE_RECIPIENT=.+' "$BACKUP_ENV" || [ -f "$BACKUP_AGE_KEY" ]; then
+    command -v age >/dev/null || install_packages age
+  else
+    notes+=("Backups go up UNENCRYPTED: anyone with the bucket's key reads this server's keys in them. Set BACKUP_AGE_RECIPIENT in $BACKUP_ENV (docs/backups.md, Encryption) and run this again.")
+  fi
   # Before 0.4.6, Litestream streamed every change to R2, a second or so after it: a write
   # request each time, and more for its compaction, well past R2's free requests. Its
   # services, settings and what it kept beside the databases go; what it sent to R2
@@ -857,8 +874,10 @@ write_backup_script() {
   {
     echo '#!/usr/bin/env bash'
     echo '# Written by install-server.sh: backups (docs/backups.md).'
-    printf 'BACKUP_ENV=%q\nBACKUP_STATE=%q\nETC_DIR=%q\nSTATE_DIR=%q\nCOORD_DIR=%q\nSERVICE=%q\nCOORD_SERVICE=%q\nBACKUP_NAME_DEFAULT=%q\n' \
-      "$BACKUP_ENV" "$BACKUP_STATE" "$ETC_DIR" "$STATE_DIR" "$COORD_DIR" "$SERVICE" "$COORD_SERVICE" "$(backup_name)"
+    printf 'BACKUP_ENV=%q\nBACKUP_AGE_KEY=%q\nBACKUP_PEERS_ENV=%q\nBACKUP_STATE=%q\nETC_DIR=%q\nSTATE_DIR=%q\nCOORD_DIR=%q\nSERVICE=%q\nCOORD_SERVICE=%q\nBACKUP_NAME_DEFAULT=%q\n' \
+      "$BACKUP_ENV" "$BACKUP_AGE_KEY" "$BACKUP_PEERS_ENV" "$BACKUP_STATE" "$ETC_DIR" "$STATE_DIR" "$COORD_DIR" "$SERVICE" "$COORD_SERVICE" "$(backup_name)"
+    # The installer's own checks, for the settings a restore carries over.
+    printf 'DOMAIN_RE=%q\nCOORD_RE=%q\nNAME_RE=%q\nBOOL_RE=%q\n' "$DOMAIN_RE" "$COORD_RE" "$NAME_RE" "$BOOL_RE"
     cat <<'BACKUP'
 # Usage:
 #   backup.sh status                    what's backed up, and the last snapshot and archive
@@ -871,10 +890,15 @@ write_backup_script() {
 #                     [--from NAME]     put a copy back: a snapshot (the latest, or the last
 #                     [--with-files]    one at or before --time), or an archive (a day, or a
 #                                       month's), from this machine's backups or another's
-#                                       (--from); the coordinator's join token and reports, or
-#                                       the game server's key files and settings, too
-#                                       (--with-files, from R2: a matchmaking standby takes
-#                                       over as the same server)
+#                                       (--from: its bucket and read-only key in
+#                                       backup-peers.env, else this machine's buckets); the
+#                                       coordinator's join token and reports, or the game
+#                                       server's key files (and the settings that make it the
+#                                       same server), too (--with-files, from R2: a
+#                                       matchmaking standby takes over as the same server)
+# Everything sent is encrypted with age for BACKUP_AGE_RECIPIENT (backup.env) when it's set;
+# restoring an encrypted copy needs the key ($BACKUP_AGE_KEY), only on the machines that
+# restore. Copies sent before encryption was set still restore.
 set -euo pipefail
 umask 077
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -900,6 +924,82 @@ if has_b2; then
     RCLONE_CONFIG_B2_NO_CHECK_BUCKET=true
 fi
 RCLONE=(/usr/local/bin/rclone --config /dev/null --retries 3 --low-level-retries 5)
+# This machine's buckets (what it sends to), and where a restore reads from: these, or
+# another server's (use_peer).
+own_r2="R2:$BACKUP_R2_BUCKET" own_b2=""
+if has_b2; then own_b2="B2:$BACKUP_B2_BUCKET"; fi
+r2="$own_r2" b2="$own_b2"
+# Encryption: age, to each public key in BACKUP_AGE_RECIPIENT (comma-separated). No key is
+# needed to send; only a restore opens a copy, with $BACKUP_AGE_KEY.
+age_to=()
+if [ -n "${BACKUP_AGE_RECIPIENT:-}" ]; then
+  IFS=', ' read -r -a recipients <<< "$BACKUP_AGE_RECIPIENT"
+  for r in "${recipients[@]}"; do
+    [ -n "$r" ] || continue
+    [[ "$r" =~ ^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$ ]] || die "BACKUP_AGE_RECIPIENT: \"$r\" isn't an age public key (age1..., from age-keygen; docs/backups.md)"
+    age_to+=(-r "$r")
+  done
+fi
+encrypting() { [ "${#age_to[@]}" -gt 0 ]; }
+# Before anything is sent. Once this machine has sent encrypted backups, it never sends them
+# as they are again: a backup.env that lost BACKUP_AGE_RECIPIENT stops the backups instead.
+# Until it's set, they go as before, with a warning each time.
+sending() {
+  if encrypting; then
+    command -v age >/dev/null || die "age isn't installed (run the installer again: it installs it)"
+    touch "$BACKUP_STATE/encrypted"
+  elif [ -e "$BACKUP_STATE/encrypted" ]; then
+    die "this machine's backups are encrypted, but BACKUP_AGE_RECIPIENT isn't in $BACKUP_ENV: nothing sent unencrypted. Put it back (to really send them unencrypted again, delete $BACKUP_STATE/encrypted)"
+  else
+    echo "warning: backups go up UNENCRYPTED, with this server's keys in them: set BACKUP_AGE_RECIPIENT in $BACKUP_ENV (docs/backups.md, Encryption)" >&2
+  fi
+}
+# Sends FILE to REMOTE: sealed for BACKUP_AGE_RECIPIENT, as REMOTE.age, when encrypting (the
+# sealed copy beside FILE, in the work folder), else as it is.
+send() {
+  if encrypting; then
+    age -e "${age_to[@]}" -o "$1.age" "$1"
+    "${RCLONE[@]}" copyto "$1.age" "$2.age"
+    rm -f "$1.age"
+  else
+    [ ! -e "$BACKUP_STATE/encrypted" ] || die "not sending $2 unencrypted"
+    "${RCLONE[@]}" copyto "$1" "$2"
+  fi
+}
+# Opens FILE.age (sealed, in the work folder) into FILE with this machine's key. WHAT names it.
+unseal() {
+  { [ -f "$BACKUP_AGE_KEY" ] && [ ! -L "$BACKUP_AGE_KEY" ]; } \
+    || die "$2 is encrypted, and this machine has no key to open it ($BACKUP_AGE_KEY; docs/backups.md); nothing changed"
+  [ "$(stat -c '%u %a' "$BACKUP_AGE_KEY")" = "0 600" ] || die "$BACKUP_AGE_KEY must be root's, mode 600"
+  command -v age >/dev/null || die "age isn't installed (run the installer again: it installs it)"
+  age -d -i "$BACKUP_AGE_KEY" -o "$1" "$1.age" || die "couldn't open $2 with $BACKUP_AGE_KEY (sealed for another key?); nothing changed"
+  rm -f "$1.age"
+}
+# Restores read NAME's backups (--from NAME) from its own bucket, with the read-only key for
+# it in $BACKUP_PEERS_ENV, when that has one (PEER_<NAME, - as _>_R2_ENDPOINT, _BUCKET,
+# _ACCESS_KEY_ID, _SECRET_ACCESS_KEY; the same with B2_ for its archive). Otherwise this
+# machine's buckets, as with one bucket shared by every server.
+use_peer() {
+  [ -f "$BACKUP_PEERS_ENV" ] || return 0
+  { [ ! -L "$BACKUP_PEERS_ENV" ] && [ "$(stat -c '%u %a' "$BACKUP_PEERS_ENV")" = "0 600" ]; } || die "$BACKUP_PEERS_ENV must be root's, mode 600"
+  local prefix="PEER_${1//-/_}_" line k s
+  local -A p=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [[ "$line" =~ ^${prefix}(R2|B2)_(ENDPOINT|BUCKET|ACCESS_KEY_ID|SECRET_ACCESS_KEY)=(.+)$ ]]; then
+      p["${BASH_REMATCH[1]}_${BASH_REMATCH[2]}"]="${BASH_REMATCH[3]}"
+    fi
+  done < "$BACKUP_PEERS_ENV"
+  for s in R2 B2; do
+    local n=0
+    for k in ENDPOINT BUCKET ACCESS_KEY_ID SECRET_ACCESS_KEY; do [ -z "${p[${s}_$k]:-}" ] || n=$((n + 1)); done
+    [ "$n" -eq 0 ] && continue
+    [ "$n" -eq 4 ] || die "$BACKUP_PEERS_ENV: ${prefix}${s}_ needs ENDPOINT, BUCKET, ACCESS_KEY_ID and SECRET_ACCESS_KEY"
+    export "RCLONE_CONFIG_P${s}_TYPE=s3" "RCLONE_CONFIG_P${s}_PROVIDER=$( [ "$s" = R2 ] && echo Cloudflare || echo Other )" \
+      "RCLONE_CONFIG_P${s}_ENDPOINT=${p[${s}_ENDPOINT]}" "RCLONE_CONFIG_P${s}_ACCESS_KEY_ID=${p[${s}_ACCESS_KEY_ID]}" \
+      "RCLONE_CONFIG_P${s}_SECRET_ACCESS_KEY=${p[${s}_SECRET_ACCESS_KEY]}" "RCLONE_CONFIG_P${s}_NO_CHECK_BUCKET=true"
+    if [ "$s" = R2 ]; then r2="PR2:${p[R2_BUCKET]}"; else b2="PB2:${p[B2_BUCKET]}"; fi
+  done
+}
 database() { case "$1" in game) echo "$STATE_DIR/5th-echelon.db" ;; coordinator) echo "$COORD_DIR/coordinator.db" ;; *) die "game or coordinator, not $1" ;; esac; }
 service() { case "$1" in game) echo "$SERVICE" ;; coordinator) echo "$COORD_SERVICE" ;; esac; }
 here() { [ -f "/etc/systemd/system/$(service "$1").service" ]; }
@@ -909,10 +1009,10 @@ runs() { here "$1" && { [ "$1" != coordinator ] || systemctl is-active --quiet "
 # A snapshot and a restore, one at a time: a snapshot taken while a restore swaps the
 # database would be sent as the newest.
 lock() { exec 9>"$BACKUP_STATE/lock"; flock 9; }
-# The snapshots of WHAT kept under NAME (this machine's, or another's) in R2, oldest first.
-# Each is named for when it was taken (UTC), so they sort by name.
+# The snapshots of WHAT kept under NAME (this machine's, or another's) in the bucket REMOTE.
+# Each is named for when it was taken (UTC), so they sort by name; .age when encrypted.
 snapshots() {
-  "${RCLONE[@]}" lsf --files-only "R2:$BACKUP_R2_BUCKET/snapshots/$1/$2" 2>/dev/null | grep -E '^[0-9]{8}T[0-9]{6}Z\.db\.gz$' || true
+  "${RCLONE[@]}" lsf --files-only "$1/snapshots/$2/$3" 2>/dev/null | grep -E '^[0-9]{8}T[0-9]{6}Z\.db\.gz(\.age)?$' || true
 }
 # Restores the snapshot of WHAT kept under NAME to FILE: the latest, or the last one taken at
 # or before TIME. Sets $picked to its name.
@@ -923,10 +1023,15 @@ restore_snapshot() {
   fi
   picked=""
   while read -r s; do
-    if [[ ! "${s%.db.gz}" > "$upto" ]]; then picked="$s"; fi
-  done < <(snapshots "$from" "$what" | sort)
+    if [[ ! "${s%%.*}" > "$upto" ]]; then picked="$s"; fi
+  done < <(snapshots "$r2" "$from" "$what" | sort)
   [ -n "$picked" ] || die "there's no snapshot of $from's $what${time:+ from $time or before}; nothing changed"
-  "${RCLONE[@]}" copyto "R2:$BACKUP_R2_BUCKET/snapshots/$from/$what/$picked" "$out.gz"
+  case "$picked" in
+    *.age)
+      "${RCLONE[@]}" copyto "$r2/snapshots/$from/$what/$picked" "$out.gz.age"
+      unseal "$out.gz" "the snapshot $picked of $from's $what" ;;
+    *) "${RCLONE[@]}" copyto "$r2/snapshots/$from/$what/$picked" "$out.gz" ;;
+  esac
   gunzip -f "$out.gz"
 }
 # Takes a snapshot of WHAT to FILE (in $work): SQLite's own backup, as the database's owner
@@ -963,6 +1068,42 @@ sound() {
   rm -rf "$d"
   [ "$ok" = ok ]
 }
+# Encrypted, a folder of files (a copy only root touches) goes up as one sealed tar,
+# REMOTE.tar.age, of its files and folders (never a link): when it changed (or went to another
+# bucket), or a day on. What went up unencrypted before (REMOTE/) goes once it's there.
+send_folder() {
+  local folder="$1" remote="$2" tag="$3" tarball="$work/$3.tar" sum last cleared
+  (cd "$folder" && find . -mindepth 1 \( -type f -o -type d \) -print0 | LC_ALL=C sort -z) \
+    | tar -C "$folder" --null --no-recursion -T - --owner=0 --group=0 --numeric-owner -cf "$tarball"
+  sum="$(sha256sum < "$tarball" | cut -d' ' -f1) $remote"
+  last="$BACKUP_STATE/last-$BACKUP_NAME-$tag.sha256"
+  if [ -z "$(find "$last" -mmin -1380 2>/dev/null)" ] || [ "$sum" != "$(cat "$last")" ]; then
+    send "$tarball" "$remote.tar"
+    echo "$sum" > "$last"
+  fi
+  rm -f "$tarball"
+  cleared="$BACKUP_STATE/cleared-$BACKUP_NAME-$tag"
+  if [ "$(cat "$cleared" 2>/dev/null)" != "$remote" ]; then
+    "${RCLONE[@]}" delete "$remote" >/dev/null 2>&1 || true
+    echo "$remote" > "$cleared"
+  fi
+}
+# REMOTE's files into FOLDER, for a restore: REMOTE.tar.age (opened with this machine's key)
+# when it's there, else REMOTE/ as it was sent before encryption. A tar holding anything but
+# files and folders (a link, a device) or a name outside FOLDER is refused.
+fetch_folder() {
+  local remote="$1" folder="$2" base="${1##*/}"
+  if "${RCLONE[@]}" lsf --files-only "${remote%/*}" 2>/dev/null | grep -qxF "$base.tar.age"; then
+    "${RCLONE[@]}" copyto "$remote.tar.age" "$work/$base.tar.age"
+    unseal "$work/$base.tar" "$base.tar.age"
+    if tar -tvf "$work/$base.tar" | cut -c1 | grep -qv '^[-d]$'; then die "$base.tar.age holds something other than files and folders; nothing changed"; fi
+    if tar -tf "$work/$base.tar" | grep -qE '^/|(^|/)\.\.(/|$)'; then die "$base.tar.age has a name outside its folder; nothing changed"; fi
+    tar -C "$folder" --no-same-owner --no-same-permissions -xf "$work/$base.tar"
+    rm -f "$work/$base.tar"
+  else
+    "${RCLONE[@]}" copy "$remote" "$folder"
+  fi
+}
 # The coordinator's join token and reports, to R2 (where it runs).
 copy_files() {
   runs coordinator || return 0
@@ -994,15 +1135,17 @@ copy_files() {
     if ! copy; then cat "$mirror.err" >&2; rm -rf "$mirror" "$snapshot"; die "couldn't copy the coordinator's files"; fi
   fi
   rm -f "$mirror.err"
-  if [ -L "$mirror/join-token.txt" ]; then
-    echo "warning: $COORD_DIR/join-token.txt is a link; not backed up" >&2
-  elif [ -f "$mirror/join-token.txt" ]; then
-    "${RCLONE[@]}" copyto "$mirror/join-token.txt" "R2:$BACKUP_R2_BUCKET/live/$BACKUP_NAME/coordinator-files/join-token.txt"
-  fi
-  if [ -L "$mirror/reports" ]; then
-    echo "warning: $COORD_DIR/reports is a link; not backed up" >&2
-  elif [ -d "$mirror/reports" ]; then
-    "${RCLONE[@]}" sync "$mirror/reports" "R2:$BACKUP_R2_BUCKET/live/$BACKUP_NAME/coordinator-files/reports"
+  if [ -L "$mirror/join-token.txt" ]; then echo "warning: $COORD_DIR/join-token.txt is a link; not backed up" >&2; fi
+  if [ -L "$mirror/reports" ]; then echo "warning: $COORD_DIR/reports is a link; not backed up" >&2; fi
+  if encrypting; then
+    send_folder "$mirror" "$own_r2/live/$BACKUP_NAME/coordinator-files" coordinator-files
+  else
+    if [ -f "$mirror/join-token.txt" ] && [ ! -L "$mirror/join-token.txt" ]; then
+      "${RCLONE[@]}" copyto "$mirror/join-token.txt" "$own_r2/live/$BACKUP_NAME/coordinator-files/join-token.txt"
+    fi
+    if [ -d "$mirror/reports" ] && [ ! -L "$mirror/reports" ]; then
+      "${RCLONE[@]}" sync "$mirror/reports" "$own_r2/live/$BACKUP_NAME/coordinator-files/reports"
+    fi
   fi
   date -u +%FT%TZ > "$BACKUP_STATE/last-files"
 }
@@ -1025,16 +1168,118 @@ copy_game_files() {
     fi
   done
   [ -s "$mirror/server-id.txt" ] || return 0
-  "${RCLONE[@]}" sync "$mirror" "R2:$BACKUP_R2_BUCKET/live/$BACKUP_NAME/game-files"
+  if encrypting; then
+    send_folder "$mirror" "$own_r2/live/$BACKUP_NAME/game-files" game-files
+  else
+    "${RCLONE[@]}" sync "$mirror" "$own_r2/live/$BACKUP_NAME/game-files"
+  fi
   date -u +%FT%TZ > "$BACKUP_STATE/last-game-files"
+}
+
+# The game server's settings after a restore --with-files. Never the backup's service.toml as
+# it is: whoever could write that server's backups (its root, or its bucket's key) could put
+# anything there for the machine restoring it (debug switches, trusted proxies, federation
+# over plain HTTP, other files to serve). This machine's own settings, as its installer
+# wrote them, are the base; from the backup come only the settings that make it the same
+# server to the network, each checked as the installer checks them. Missing there, they go
+# here too (their defaults). The coordinator stays this machine's (taken from the backup only
+# when this machine has none).
+CARRIED=(role.kind role.ticket_key role.moved_to matchmaking.network_relays federation.name federation.region
+  federation.listed federation.listed_as federation.auto_update friends.mode admin.enabled
+  limits.open_registration limits.require_identity nat.relay)
+carried_ok() { # carried_ok SECTION.KEY VALUE (as written in the file)
+  local q='^"(.*)"$'
+  case "$1" in
+    role.kind) [[ "$2" =~ ^\"(game|relay)\"$ ]] ;;
+    role.ticket_key) [[ "$2" =~ ^\"[A-Z2-7]{52}\"$ ]] ;;
+    role.moved_to|federation.listed_as) [[ "$2" =~ $q ]] && [[ "${BASH_REMATCH[1]}" =~ $DOMAIN_RE ]] ;;
+    federation.name|federation.region) [[ "$2" =~ $q ]] && [[ "${BASH_REMATCH[1]}" =~ $NAME_RE ]] ;;
+    federation.coordinator) [[ "$2" =~ $q ]] && [[ "${BASH_REMATCH[1]}" =~ $COORD_RE ]] ;;
+    friends.mode) [[ "$2" =~ ^\"(mutual|everyone)\"$ ]] ;;
+    nat.relay) [[ "$2" =~ ^\"(auto|all|off)\"$ ]] ;;
+    *) [[ "$2" =~ $BOOL_RE ]] ;;
+  esac
+}
+# SECTION<tab>KEY<tab>VALUE for each `key = value` of a service.toml.
+toml_values() {
+  awk '/^\[[^]]*\][ \t]*$/ { s = $0; sub(/^\[/, "", s); sub(/\][ \t]*$/, "", s); next }
+       /^[A-Za-z0-9_]+ = / { k = $0; sub(/ = .*/, "", k); v = substr($0, length(k) + 4); print s "\t" k "\t" v }' "$1"
+}
+# This machine's own settings: the game server's folder's, or (a standby that moved its own
+# state aside to take over) the relay's kept beside it, or the newest set aside before.
+settings_base() {
+  local c
+  local -a older=()
+  mapfile -t older < <(compgen -G "$STATE_DIR.matchmaking-*/service.toml" | sort -r)
+  for c in "$STATE_DIR/service.toml" "$STATE_DIR.own/service.toml" "${older[@]}"; do
+    if [ -f "$c" ] && [ ! -L "$c" ]; then
+      timeout 10 dd if="$c" iflag=nofollow,nonblock status=none > "$1" 2>/dev/null && [ -s "$1" ] && return 0
+    fi
+  done
+  return 1
+}
+# Writes OUT: this machine's settings with the backup's (FILE) carried over.
+settings_for_here() {
+  local backup="$1" out="$2" base="$work/settings.base" overlay="$work/settings.overlay" entry section key n value base_coord
+  settings_base "$base" || die "there's no service.toml on this machine to build the restored server's settings on (install it first); nothing changed"
+  : > "$overlay"
+  for entry in "${CARRIED[@]}" federation.coordinator; do
+    section="${entry%%.*}" key="${entry#*.}"
+    n="$(toml_values "$backup" | awk -F'\t' -v s="$section" -v k="$key" '$1 == s && $2 == k' | wc -l)"
+    [ "$n" -le 1 ] || die "the backup's service.toml has [$section] $key more than once; nothing changed"
+    value="$(toml_values "$backup" | awk -F'\t' -v s="$section" -v k="$key" '$1 == s && $2 == k { print $3 }')"
+    if [ -n "$value" ] && ! carried_ok "$entry" "$value"; then
+      die "the backup's service.toml has a [$section] $key this installer wouldn't write; nothing changed"
+    fi
+    if [ "$entry" = federation.coordinator ]; then
+      base_coord="$(toml_values "$base" | awk -F'\t' '$1 == "federation" && $2 == "coordinator" { print $3; exit }')"
+      if [ -n "$base_coord" ]; then
+        [ -z "$value" ] || [ "$value" = "$base_coord" ] || echo "warning: the backup's coordinator is $value; this machine's ($base_coord) is kept" >&2
+        continue
+      fi
+      [ -n "$value" ] || continue
+    fi
+    printf '%s\t%s\t%s\n' "$section" "$key" "$value" >> "$overlay"
+  done
+  # Each one in its section (after its heading; the section added when missing); one missing
+  # from the backup removed.
+  awk -F'\t' '
+    FNR == NR { want[$1 SUBSEP $2] = $3; keys[$1] = keys[$1] SUBSEP $2; next }
+    /^\[[^]]*\][ \t]*$/ {
+      s = $0; sub(/^\[/, "", s); sub(/\][ \t]*$/, "", s); print; seen[s] = 1
+      n = split(keys[s], ks, SUBSEP)
+      for (i = 2; i <= n; i++) if (want[s SUBSEP ks[i]] != "") print ks[i] " = " want[s SUBSEP ks[i]]
+      next
+    }
+    /^[A-Za-z0-9_]+ = / { k = $0; sub(/ = .*/, "", k); if ((s SUBSEP k) in want) next }
+    { print }
+    END {
+      for (s in keys) {
+        if (s in seen) continue
+        out = ""
+        n = split(keys[s], ks, SUBSEP)
+        for (i = 2; i <= n; i++) if (want[s SUBSEP ks[i]] != "") out = out ks[i] " = " want[s SUBSEP ks[i]] "\n"
+        if (out != "") printf "\n[%s]\n%s", s, out
+      }
+    }' "$overlay" "$base" > "$out"
 }
 
 case "${1:-status}" in
   status)
     echo "Backups of $BACKUP_NAME: snapshots to $BACKUP_R2_BUCKET (R2)$(has_b2 && echo ", archive to $BACKUP_B2_BUCKET (B2)" || echo ", no archive (B2 isn't set)")"
+    if encrypting; then
+      echo "  encrypted with age, for $(( ${#age_to[@]} / 2 )) key(s); the key to open them is $( [ -f "$BACKUP_AGE_KEY" ] && echo "here ($BACKUP_AGE_KEY)" || echo "not on this machine" )"
+    elif [ -e "$BACKUP_STATE/encrypted" ]; then
+      echo "  STOPPED: they were encrypted, and BACKUP_AGE_RECIPIENT is gone from $BACKUP_ENV"
+    else
+      echo "  UNENCRYPTED: set BACKUP_AGE_RECIPIENT (docs/backups.md, Encryption)"
+    fi
+    if [ -f "$BACKUP_PEERS_ENV" ]; then
+      echo "  restores other servers from: $(sed -n 's/^PEER_\([a-z0-9_]*\)_R2_BUCKET=.*/\1/p' "$BACKUP_PEERS_ENV" | tr '_' '-' | tr '\n' ' ')"
+    fi
     for what in game coordinator; do
       here "$what" || continue
-      latest="$(snapshots "$BACKUP_NAME" "$what" | sort | tail -1)"
+      latest="$(snapshots "$own_r2" "$BACKUP_NAME" "$what" | sort | tail -1)"
       echo "  $what: latest snapshot ${latest:-none yet}"
     done
     echo "  last snapshot run: $(cat "$BACKUP_STATE/last-snapshot" 2>/dev/null || echo never)"
@@ -1044,6 +1289,7 @@ case "${1:-status}" in
     ;;
   snapshot)
     lock
+    sending
     work="$(mktemp -d)"
     trap 'rm -rf "$work"' EXIT
     # Each database's owner writes its snapshot in a folder of its own in here.
@@ -1055,18 +1301,19 @@ case "${1:-status}" in
       take "$what" "$work/$what.db" || die "couldn't take a snapshot of $what"
       sound "$work/$what.db" || die "the snapshot of $what isn't a whole database"
       # Unchanged since the last one sent: nothing to send (but one a day all the same, so
-      # a week's always there).
-      sum="$(sha256sum < "$work/$what.db" | cut -d' ' -f1)"
+      # a week's always there). Encryption turned on, or another bucket, sends one straight
+      # away.
+      sum="$(sha256sum < "$work/$what.db" | cut -d' ' -f1) $own_r2$(if encrypting; then echo " sealed"; fi)"
       last="$BACKUP_STATE/last-$BACKUP_NAME-$what.sha256"
       if [ -n "$(find "$last" -mmin -1380 2>/dev/null)" ] && [ "$sum" = "$(cat "$last")" ]; then continue; fi
       gzip -9 "$work/$what.db"
-      dest="R2:$BACKUP_R2_BUCKET/snapshots/$BACKUP_NAME/$what"
-      "${RCLONE[@]}" copyto "$work/$what.db.gz" "$dest/$stamp.db.gz"
+      dest="$own_r2/snapshots/$BACKUP_NAME/$what"
+      send "$work/$what.db.gz" "$dest/$stamp.db.gz"
       echo "$sum" > "$last"
       # A week of them.
       while read -r s; do
-        if [[ "${s%.db.gz}" < "$cutoff" ]]; then "${RCLONE[@]}" deletefile "$dest/$s"; fi
-      done < <(snapshots "$BACKUP_NAME" "$what")
+        if [[ "${s%%.*}" < "$cutoff" ]]; then "${RCLONE[@]}" deletefile "$dest/$s"; fi
+      done < <(snapshots "$own_r2" "$BACKUP_NAME" "$what")
     done
     copy_files
     copy_game_files
@@ -1074,30 +1321,52 @@ case "${1:-status}" in
     ;;
   archive)
     has_b2 || die "B2 isn't set in $BACKUP_ENV: no archive"
+    sending
     work="$(mktemp -d)"
     trap 'rm -rf "$work"' EXIT
     day="$(date -u +%F)"
     month="$(date -u +%Y-%m)"
-    base="B2:$BACKUP_B2_BUCKET/archive/$BACKUP_NAME"
+    base="$own_b2/archive/$BACKUP_NAME"
     # From the latest snapshot in R2, not the database: nothing touches the running
-    # service, and each day proves the snapshots restore.
+    # service, and each day proves the snapshots restore (an encrypted one where this
+    # machine has the key to open it; it goes to B2 still sealed).
     for what in game coordinator; do
       runs "$what" || continue
-      restore_snapshot "$what" "$BACKUP_NAME" "$work/$what.db"
-      sound "$work/$what.db" || die "the snapshot of $what didn't restore whole"
-      gzip -9 "$work/$what.db"
-      "${RCLONE[@]}" copyto "$work/$what.db.gz" "$base/daily/$day-$what.db.gz"
+      latest="$(snapshots "$own_r2" "$BACKUP_NAME" "$what" | sort | tail -1)"
+      case "$latest" in
+        *.age)
+          out="$work/$what.db.gz.age"
+          "${RCLONE[@]}" copyto "$own_r2/snapshots/$BACKUP_NAME/$what/$latest" "$out"
+          [ "$(head -c 21 "$out")" = "age-encryption.org/v1" ] || die "the snapshot $latest of $what isn't sealed with age"
+          if [ -f "$BACKUP_AGE_KEY" ]; then
+            cp "$out" "$work/check.db.gz.age"
+            unseal "$work/check.db.gz" "the snapshot $latest of $what"
+            gunzip "$work/check.db.gz"
+            sound "$work/check.db" || die "the snapshot of $what didn't restore whole"
+            rm -f "$work/check.db"
+          fi
+          ;;
+        *)
+          restore_snapshot "$what" "$BACKUP_NAME" "$work/$what.db"
+          sound "$work/$what.db" || die "the snapshot of $what didn't restore whole"
+          gzip -9 "$work/$what.db"
+          out="$work/$what.db.gz"
+          if encrypting; then age -e "${age_to[@]}" -o "$out.age" "$out"; rm -f "$out"; out="$out.age"; fi
+          ;;
+      esac
+      suffix="${out#"$work/$what.db.gz"}"
+      "${RCLONE[@]}" copyto "$out" "$base/daily/$day-$what.db.gz$suffix"
       if [ "$(date -u +%d)" = 01 ]; then
-        "${RCLONE[@]}" copyto "$work/$what.db.gz" "$base/monthly/$month-$what.db.gz"
+        "${RCLONE[@]}" copyto "$out" "$base/monthly/$month-$what.db.gz$suffix"
       fi
     done
     files=()
     for f in join-token.txt reports; do [ -e "$COORD_DIR/$f" ] && files+=("$f"); done
     if runs coordinator && [ "${#files[@]}" -gt 0 ]; then
       tar -czf "$work/coordinator-files.tar.gz" -C "$COORD_DIR" "${files[@]}"
-      "${RCLONE[@]}" copyto "$work/coordinator-files.tar.gz" "$base/daily/$day-coordinator-files.tar.gz"
+      send "$work/coordinator-files.tar.gz" "$base/daily/$day-coordinator-files.tar.gz"
       if [ "$(date -u +%d)" = 01 ]; then
-        "${RCLONE[@]}" copyto "$work/coordinator-files.tar.gz" "$base/monthly/$month-coordinator-files.tar.gz"
+        send "$work/coordinator-files.tar.gz" "$base/monthly/$month-coordinator-files.tar.gz"
       fi
     fi
     "${RCLONE[@]}" delete --min-age 31d "$base/daily"
@@ -1105,15 +1374,21 @@ case "${1:-status}" in
     date -u +%FT%TZ > "$BACKUP_STATE/last-archive"
     echo "Archived $BACKUP_NAME for $day"
     ;;
-  files) copy_files; copy_game_files ;;
+  files)
+    sending
+    work="$(mktemp -d)"
+    trap 'rm -rf "$work"' EXIT
+    copy_files
+    copy_game_files
+    ;;
   restore)
     what="${2:-}"; shift 2 || die "restore game|coordinator"
-    time="" archive="" from="$BACKUP_NAME" with_files=0
+    time="" archive="" from="$BACKUP_NAME" from_given=0 with_files=0
     while [ $# -gt 0 ]; do
       case "$1" in
         --time) time="${2:?}"; shift ;;
         --archive) archive="${2:?}"; shift ;;
-        --from) from="${2:?}"; shift ;;
+        --from) from="${2:?}"; from_given=1; shift ;;
         --with-files) with_files=1 ;;
         *) die "unknown option $1" ;;
       esac
@@ -1122,15 +1397,20 @@ case "${1:-status}" in
     [[ "$from" =~ ^[a-z0-9-]{1,64}$ ]] || die "--from: a backup name (letters, digits, -)"
     db="$(database "$what")"
     here "$what" || die "there's no $what service on this machine"
+    if [ "$from_given" -eq 1 ]; then use_peer "$from"; fi
     lock
     work="$(mktemp -d)"
     trap 'rm -rf "$work"' EXIT
     if [ -n "$archive" ]; then
-      has_b2 || die "B2 isn't set in $BACKUP_ENV"
+      [ -n "$b2" ] || die "B2 isn't set in $BACKUP_ENV"
       if [[ "$archive" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then kind=daily
       elif [[ "$archive" =~ ^[0-9]{4}-[0-9]{2}$ ]]; then kind=monthly
       else die "--archive: a day (2026-10-05) or a month (2026-10)"; fi
-      "${RCLONE[@]}" copyto "B2:$BACKUP_B2_BUCKET/archive/$from/$kind/$archive-$what.db.gz" "$work/restored.db.gz" 2>/dev/null || true
+      for suffix in .age ""; do
+        "${RCLONE[@]}" copyto "$b2/archive/$from/$kind/$archive-$what.db.gz$suffix" "$work/restored.db.gz$suffix" 2>/dev/null || true
+        if [ -s "$work/restored.db.gz$suffix" ]; then break; fi
+      done
+      if [ -s "$work/restored.db.gz.age" ]; then unseal "$work/restored.db.gz" "the $kind archive $archive of $from's $what"; fi
       [ -s "$work/restored.db.gz" ] || die "there's no $kind archive $archive of $from's $what; nothing changed"
       gunzip "$work/restored.db.gz"
     else
@@ -1141,11 +1421,15 @@ case "${1:-status}" in
       [ -z "$archive" ] || die "--with-files comes from R2, not an archive"
       install -d -m 700 "$work/files"
       if [ "$what" = coordinator ]; then
-        "${RCLONE[@]}" copy "R2:$BACKUP_R2_BUCKET/live/$from/coordinator-files" "$work/files"
+        fetch_folder "$r2/live/$from/coordinator-files" "$work/files"
         [ -s "$work/files/join-token.txt" ] || die "there's no join token in $from's backup in R2; nothing changed"
       else
-        "${RCLONE[@]}" copy "R2:$BACKUP_R2_BUCKET/live/$from/game-files" "$work/files"
+        fetch_folder "$r2/live/$from/game-files" "$work/files"
         [ -s "$work/files/server-id.txt" ] || die "there's no server id in $from's game files in R2; nothing changed"
+        if [ -f "$work/files/service.toml" ]; then
+          settings_for_here "$work/files/service.toml" "$work/files/service.toml.here"
+          mv -f "$work/files/service.toml.here" "$work/files/service.toml"
+        fi
       fi
     fi
     svc="$(service "$what")"
@@ -1181,7 +1465,7 @@ case "${1:-status}" in
       fi
     fi
     systemctl start "$svc"
-    echo "Restored $what from $( [ -n "$archive" ] && echo "the $kind archive $archive" || echo "the snapshot ${picked%.db.gz}" ) of $from$( [ "$with_files" -eq 1 ] && { [ "$what" = game ] && echo ", with its key files and settings" || echo ", with its join token and reports"; })."
+    echo "Restored $what from $( [ -n "$archive" ] && echo "the $kind archive $archive" || echo "the snapshot ${picked%%.*}" ) of $from$( [ "$with_files" -eq 1 ] && { [ "$what" = game ] && echo ", with its key files and the settings that make it the same server" || echo ", with its join token and reports"; })."
     echo "The one it replaced: $db.before-restore-$stamp"
     ;;
   *) die "status, snapshot, archive, files or restore (see the top of $0)" ;;
@@ -2553,6 +2837,17 @@ running_version() {
 if [ "$use_systemd" -eq 1 ]; then install_updater; fi
 if [ "$use_systemd" -eq 1 ]; then install_backups; fi
 
+# A standby restores another server's encrypted backups: it needs the key that opens them,
+# and (with a bucket each) a read-only key to the others' buckets.
+standby_keys_note() {
+  [ -f "$BACKUP_ENV" ] || return 0
+  if grep -qE '^BACKUP_AGE_RECIPIENT=.+' "$BACKUP_ENV" && [ ! -f "$BACKUP_AGE_KEY" ]; then
+    notes+=("This standby can't open the encrypted backups it would restore: put the network's private key in $BACKUP_AGE_KEY (root's, mode 600; docs/backups.md, step 4).")
+  fi
+  if [ ! -f "$BACKUP_PEERS_ENV" ]; then
+    notes+=("No $BACKUP_PEERS_ENV: a takeover reads the other servers' backups from this server's own bucket, as with one shared bucket. With a bucket each, list their buckets and read-only keys there (docs/backups.md, step 4).")
+  fi
+}
 # A failover group's standby (docs/failover.md): the coordinator binary, as root, watching
 # the coordinator's record through Cloudflare's API.
 install_standby() {
@@ -2613,6 +2908,7 @@ UNIT
   systemctl daemon-reload
   systemctl enable "$STANDBY_SERVICE" >/dev/null 2>&1
   [ -f "$BACKUP_ENV" ] || notes+=("Failover needs backups: the standbys restore the coordinator from its live backup. Write $BACKUP_ENV (docs/backups.md) and run this again.")
+  standby_keys_note
   if [ -f "$STANDBY_ENV" ]; then
     [ "$(stat -c '%u %a' "$STANDBY_ENV")" = "0 600" ] || die "$STANDBY_ENV must be root's, mode 600"
     systemctl restart "$STANDBY_SERVICE"
@@ -2700,6 +2996,7 @@ UNIT
   systemctl daemon-reload
   systemctl enable "$MM_STANDBY_SERVICE" >/dev/null 2>&1
   [ -f "$BACKUP_ENV" ] || notes+=("The matchmaking failover needs backups: the relays restore it from its backup. Write $BACKUP_ENV (docs/backups.md) and run this again.")
+  standby_keys_note
   if [ -f "$STANDBY_ENV" ]; then
     [ "$(stat -c '%u %a' "$STANDBY_ENV")" = "0 600" ] || die "$STANDBY_ENV must be root's, mode 600"
     systemctl restart "$MM_STANDBY_SERVICE"
