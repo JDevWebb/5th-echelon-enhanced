@@ -377,6 +377,12 @@ pub struct Config {
     pub overlay_debug: bool,
     pub config_server: Option<String>,
     pub api_server: url::Url,
+    /// The server's id as its `/api/info` gives it, which the launcher writes whenever it sets
+    /// the server: what the game salts this PC's hardware hashes with ([`hardware_salt`]), the
+    /// same as the launcher. Missing (an older launcher, a file written by hand), the API's host
+    /// name is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
     #[serde(default)]
     #[serde(skip_serializing_if = "Networking::is_default")]
     pub networking: Networking,
@@ -619,6 +625,27 @@ impl Config {
                 .host_str()
                 .map(|h| h.trim_end_matches('.').to_ascii_lowercase())
                 .is_some_and(|h| h == COMMUNITY_DOMAIN || h.ends_with(&format!(".{COMMUNITY_DOMAIN}")))
+    }
+
+    /// The salt for this PC's hardware hashes on the game's server ([`hardware_salt`]).
+    pub fn hardware_salt(&self) -> String {
+        hardware_salt(self.server_id.as_deref(), &self.api_server)
+    }
+}
+
+/// The salt for this PC's hardware hashes (the hwid crate) on the server whose API is
+/// `api_server`: the server's stable id, as its `/api/info` gives it, else its host name (lower
+/// case, no port, no trailing dot). The launcher and the game both use this, so they send the
+/// same server the same hashes, and every other server unrelated ones: servers can't link a
+/// player across them by their PC. An id that isn't one (empty, over 128 characters, spaces or
+/// control characters) is taken as missing.
+pub fn hardware_salt(server_id: Option<&str>, api_server: &Url) -> String {
+    match server_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_graphic()))
+    {
+        Some(id) => format!("id:{id}"),
+        None => format!("host:{}", api_server.host_str().unwrap_or_default().trim_end_matches('.').to_ascii_lowercase()),
     }
 }
 
@@ -956,6 +983,9 @@ pub fn adapter_name_matches(friendly_name: &str, wanted: &str) -> bool {
 pub struct Overrides {
     pub config_server: Option<String>,
     pub api_server: Option<url::Url>,
+    /// The server's id (`/api/info`), for the hardware hashes' salt ([`hardware_salt`]). An
+    /// override of the API server to another host without it salts by that host's name.
+    pub server_id: Option<String>,
     pub user: Option<User>,
     pub networking: Option<Networking>,
     pub managed: Option<Managed>,
@@ -982,7 +1012,14 @@ impl Overrides {
             cfg.config_server = Some(server);
         }
         if let Some(api) = self.api_server {
+            // uplay.toml's server id is another server's when the host changes.
+            if api.host_str() != cfg.api_server.host_str() {
+                cfg.server_id = None;
+            }
             cfg.api_server = api;
+        }
+        if let Some(id) = self.server_id {
+            cfg.server_id = Some(id);
         }
         if let Some(user) = self.user {
             // Keep CD keys from uplay.toml unless the overrides set their own.
@@ -1480,6 +1517,53 @@ mod tests {
         cfg.overlay_key = "F8".into();
         let back: Config = toml::from_str(&toml::to_string(&cfg).unwrap()).unwrap();
         assert_eq!(back.overlay_key, "F8");
+    }
+
+    #[test]
+    fn the_hardware_salt_is_the_servers_id_else_its_host() {
+        let mut cfg = super::default();
+        cfg.api_server = "https://Play.Example.NET.:8443/api".parse().unwrap();
+        assert_eq!(cfg.server_id, None, "none unless the launcher wrote one");
+        assert_eq!(cfg.hardware_salt(), "host:play.example.net");
+        assert!(!toml::to_string(&cfg).unwrap().contains("ServerId"), "nothing written without one");
+        cfg.server_id = Some("6jjuqf7i6cbxxcss".into());
+        let text = toml::to_string(&cfg).unwrap();
+        assert!(text.contains("ServerId = \"6jjuqf7i6cbxxcss\""), "{text}");
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.server_id.as_deref(), Some("6jjuqf7i6cbxxcss"));
+        assert_eq!(back.hardware_salt(), "id:6jjuqf7i6cbxxcss");
+        // The same server by another of its names: still its id.
+        let other: Url = "http://10.8.0.10:50051".parse().unwrap();
+        assert_eq!(hardware_salt(Some("6jjuqf7i6cbxxcss"), &other), "id:6jjuqf7i6cbxxcss");
+        assert_eq!(hardware_salt(None, &other), "host:10.8.0.10");
+        for bad in ["", "  ", "has space", "tab\there", &"x".repeat(129)] {
+            assert_eq!(hardware_salt(Some(bad), &other), "host:10.8.0.10", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn overrides_to_another_server_drop_its_id() {
+        let mut cfg = super::default();
+        cfg.api_server = "https://a.example.net".parse().unwrap();
+        cfg.server_id = Some("aaaa".into());
+        Overrides {
+            api_server: Some("https://a.example.net:8443".parse().unwrap()),
+            ..Default::default()
+        }
+        .apply(&mut cfg);
+        assert_eq!(cfg.server_id.as_deref(), Some("aaaa"), "the same host keeps it");
+        Overrides {
+            api_server: Some("https://b.example.net".parse().unwrap()),
+            ..Default::default()
+        }
+        .apply(&mut cfg);
+        assert_eq!(cfg.hardware_salt(), "host:b.example.net");
+        Overrides {
+            server_id: Some("bbbb".into()),
+            ..Default::default()
+        }
+        .apply(&mut cfg);
+        assert_eq!(cfg.hardware_salt(), "id:bbbb");
     }
 
     #[test]

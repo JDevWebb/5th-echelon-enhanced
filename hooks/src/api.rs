@@ -478,14 +478,26 @@ fn hardware() -> &'static hwid::Hardware {
     static FOUND: std::sync::OnceLock<hwid::Hardware> = std::sync::OnceLock::new();
     FOUND.get_or_init(|| {
         let found = hwid::collect(hooks_config::running_under_wine());
+        let kinds = found.kinds();
         info!(
             "Hardware ids for sign-in: {} ({}){}",
-            found.ids.len(),
-            found.ids.iter().map(|i| i.kind).collect::<Vec<_>>().join(", "),
+            kinds.len(),
+            kinds.join(", "),
             found.vm.as_ref().map(|v| format!(", a {v} virtual machine")).unwrap_or_default()
         );
         found
     })
+}
+
+/// The salt for the hardware hashes on the server signed in to: uplay.toml's (its `ServerId`,
+/// else the API's host name), the launcher's for the same server ([`hooks_config::hardware_salt`]).
+fn hardware_salt() -> String {
+    match (hooks_config::get(), crate::config::URL.get()) {
+        (Some(cfg), Some(url)) => hooks_config::hardware_salt(cfg.server_id.as_deref(), url),
+        (Some(cfg), None) => cfg.hardware_salt(),
+        (None, Some(url)) => hooks_config::hardware_salt(None, url),
+        (None, None) => hooks_config::hardware_salt(None, &hooks_config::default().api_server),
+    }
 }
 
 async fn login_async(username: &str, password: &str) -> Result<(), Error> {
@@ -531,13 +543,15 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
         // a current one has.
         client: concat!("game/", env!("FE_RELEASE")).into(),
         build: BUILD.get().cloned().unwrap_or_default(),
-        // This PC's hardware ids, hashed (F10: a ban holds for the PC too).
+        // This PC's hardware ids, hashed (F10: a ban holds for the PC too), salted for this
+        // server as the launcher salts them (its id from uplay.toml, else its host name), so
+        // they mean nothing to any other.
         hardware: hardware()
-            .ids
-            .iter()
+            .ids(&hardware_salt())
+            .into_iter()
             .map(|i| server_api::users::HardwareId {
                 kind: i.kind.to_string(),
-                hash: i.hash.clone(),
+                hash: i.hash,
             })
             .collect(),
         vm: hardware().vm.clone().unwrap_or_default(),

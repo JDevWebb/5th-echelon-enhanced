@@ -22,7 +22,7 @@ pub(super) async fn login(api_url: &str, username: &str, password: &str) -> Resu
                 password: password.to_string(),
                 client: super::CLIENT.into(),
                 build: super::build(),
-                hardware: super::hardware(),
+                hardware: super::hardware(api_url),
                 vm: super::vm(),
                 nat_key: vec![],
                 graphics: String::new(),
@@ -172,7 +172,7 @@ async fn identity_login_now(api_url: &str, identity: &identity::Identity, host: 
         host: identity::host_key(host),
         client: super::CLIENT.into(),
         build: super::build(),
-        hardware: super::hardware(),
+        hardware: super::hardware(api_url),
         vm: super::vm(),
     };
     match client.key_login(request).await {

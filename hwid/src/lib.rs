@@ -2,6 +2,12 @@
 //! plan's F10). Only hashes leave the PC: each id is hashed here ([`hash`]), and the
 //! coordinator keys the hashes again with a secret of its own before it keeps them.
 //!
+//! The hashes are salted per server ([`Hardware::ids`]): the salt is the server's id as its
+//! `/api/info` gives it, or its host name when it gives none (hooks-config's `hardware_salt`,
+//! the same in the launcher and the game). The same PC gives the same server the same hashes,
+//! so a ban for the PC holds there, and every other server unrelated ones: one server's
+//! hashes mean nothing to another, so servers can't link a player across them by their PC.
+//!
 //! On Windows: the Windows install's MachineGuid, the SMBIOS system UUID and board serial,
 //! and the fixed disks' serials. Under Wine or Proton (a Steam Deck, Linux), Windows' values
 //! are Wine's own (one MachineGuid per prefix, SMBIOS and disks zeroed or made up), so the
@@ -22,12 +28,43 @@ pub struct Id {
     pub hash: String,
 }
 
-/// What was found.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// What was found: the ids, cleaned ([`clean`]) but not hashed, kept in this process only and
+/// hashed for one server at a time ([`Hardware::ids`]).
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Hardware {
-    pub ids: Vec<Id>,
+    found: Vec<(&'static str, String)>,
     /// The PC is a virtual machine: its maker as the firmware names it ("VMware", "QEMU"…).
     pub vm: Option<String>,
+}
+
+/// Never the ids themselves, even in a log: their kinds only.
+impl std::fmt::Debug for Hardware {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Hardware").field("kinds", &self.kinds()).field("vm", &self.vm).finish()
+    }
+}
+
+impl Hardware {
+    /// The ids, hashed for the server `salt` names (hooks-config's `hardware_salt`).
+    pub fn ids(&self, salt: &str) -> Vec<Id> {
+        self.found
+            .iter()
+            .map(|(kind, value)| Id {
+                kind,
+                hash: digest(salt, kind, value),
+            })
+            .collect()
+    }
+
+    /// The kinds of id found, in order.
+    pub fn kinds(&self) -> Vec<&'static str> {
+        self.found.iter().map(|(kind, _)| *kind).collect()
+    }
+}
+
+/// `value` as an id of `kind`, cleaned ([`clean`]): None for a placeholder.
+fn found(kind: &'static str, value: &str) -> Option<(&'static str, String)> {
+    clean(value).map(|v| (kind, v))
 }
 
 /// The kinds of id, as sent.
@@ -59,18 +96,31 @@ pub fn collect(under_wine: bool) -> Hardware {
     }
 }
 
-/// The hash of `value` as an id of `kind`, once cleaned ([`clean`]): None for a placeholder.
-pub fn hash(kind: &'static str, value: &str) -> Option<Id> {
+/// The scheme, first in what's hashed. v1 (0.5.0 before its release, never shipped) had no
+/// salt; v2 has the server's ([`hash`]).
+pub const SCHEME: &str = "fes-hw-v2";
+
+/// The hash of `value` as an id of `kind` for the server `salt` names, once cleaned
+/// ([`clean`]): None for a placeholder. SHA-256 of the scheme, the salt, the kind and the
+/// value, each but the last ended by a NUL, as 64 hex characters.
+pub fn hash(salt: &str, kind: &'static str, value: &str) -> Option<Id> {
     let value = clean(value)?;
+    Some(Id {
+        kind,
+        hash: digest(salt, kind, &value),
+    })
+}
+
+fn digest(salt: &str, kind: &str, value: &str) -> String {
     let mut h = sha2::Sha256::new();
-    h.update(b"fes-hw-v1\0");
+    h.update(SCHEME.as_bytes());
+    h.update(b"\0");
+    h.update(salt.as_bytes());
+    h.update(b"\0");
     h.update(kind.as_bytes());
     h.update(b"\0");
     h.update(value.as_bytes());
-    Some(Id {
-        kind,
-        hash: h.finalize().iter().map(|b| format!("{b:02x}")).collect(),
-    })
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// `value` trimmed and upper case, or None when it's a placeholder many PCs share: empty, too
@@ -130,7 +180,7 @@ pub fn linux(root: &Path) -> Hardware {
     let at = |parts: &[&str]| parts.iter().fold(root.to_path_buf(), |p, part| p.join(part));
     let mut ids = Vec::new();
     if let Some(id) = read(&at(&["etc", "machine-id"])).or_else(|| read(&at(&["var", "lib", "dbus", "machine-id"]))) {
-        ids.extend(hash("linux-machine-id", &id));
+        ids.extend(found("linux-machine-id", &id));
     }
     let mut serials = Vec::new();
     // NVMe controllers (a Steam Deck's own drive).
@@ -148,13 +198,13 @@ pub fn linux(root: &Path) -> Hardware {
     }
     serials.sort();
     serials.dedup();
-    ids.extend(serials.iter().take(MOST_DISKS).filter_map(|s| hash("disk-serial", s)));
+    ids.extend(serials.iter().take(MOST_DISKS).filter_map(|s| found("disk-serial", s)));
     let vm = vm_maker(
         &read(&at(&["sys", "class", "dmi", "id", "sys_vendor"])).unwrap_or_default(),
         &read(&at(&["sys", "class", "dmi", "id", "product_name"])).unwrap_or_default(),
     );
     ids.truncate(MOST_IDS);
-    Hardware { ids, vm }
+    Hardware { found: ids, vm }
 }
 
 /// The entries of `dir`, by name (none when it can't be read).
@@ -235,7 +285,7 @@ pub fn parse_smbios(data: &[u8]) -> Smbios {
 mod windows {
     use std::ffi::c_void;
 
-    use super::hash;
+    use super::found;
     use super::parse_smbios;
     use super::vm_maker;
     use super::Hardware;
@@ -280,17 +330,17 @@ mod windows {
 
     pub fn collect() -> Hardware {
         let mut ids = Vec::new();
-        ids.extend(machine_guid().and_then(|g| hash("machine-guid", &g)));
+        ids.extend(machine_guid().and_then(|g| found("machine-guid", &g)));
         let smbios = smbios().map(|d| parse_smbios(&d)).unwrap_or_default();
-        ids.extend(smbios.uuid.as_deref().and_then(|u| hash("smbios-uuid", u)));
-        ids.extend(smbios.board_serial.as_deref().and_then(|s| hash("board-serial", s)));
+        ids.extend(smbios.uuid.as_deref().and_then(|u| found("smbios-uuid", u)));
+        ids.extend(smbios.board_serial.as_deref().and_then(|s| found("board-serial", s)));
         let mut serials = disk_serials();
         serials.sort();
         serials.dedup();
-        ids.extend(serials.iter().take(MOST_DISKS).filter_map(|s| hash("disk-serial", s)));
+        ids.extend(serials.iter().take(MOST_DISKS).filter_map(|s| found("disk-serial", s)));
         ids.truncate(MOST_IDS);
         Hardware {
-            ids,
+            found: ids,
             vm: vm_maker(&smbios.vendor, &smbios.product),
         }
     }
@@ -402,10 +452,37 @@ mod tests {
 
     #[test]
     fn the_same_value_hashes_the_same_whatever_its_case_and_kind_apart() {
-        let a = hash("disk-serial", "abc123").unwrap();
-        assert_eq!(a, hash("disk-serial", " ABC123 ").unwrap());
-        assert_ne!(a.hash, hash("board-serial", "abc123").unwrap().hash);
+        let a = hash("id:eu", "disk-serial", "abc123").unwrap();
+        assert_eq!(a, hash("id:eu", "disk-serial", " ABC123 ").unwrap());
+        assert_ne!(a.hash, hash("id:eu", "board-serial", "abc123").unwrap().hash);
+        // What servers take: 64 hex characters.
         assert_eq!(a.hash.len(), 64);
+        assert!(a.hash.bytes().all(|b| b.is_ascii_hexdigit()));
+    }
+
+    /// The same PC gives the same server the same hashes (a ban for the PC holds there), and
+    /// another server unrelated ones: servers can't link a player by their PC.
+    #[test]
+    fn hashes_are_salted_per_server() {
+        let pc = Hardware {
+            found: vec![("machine-guid", "6B1F0E5C-0D0E-4F2A".into()), ("disk-serial", "WD-123456".into())],
+            vm: None,
+        };
+        let eu = pc.ids("id:6jjuqf7i6cbxxcss");
+        assert_eq!(eu, pc.ids("id:6jjuqf7i6cbxxcss"));
+        assert_eq!(eu.len(), 2);
+        let na = pc.ids("id:q2m4x8c1v9b7n3zz");
+        for (a, b) in eu.iter().zip(&na) {
+            assert_eq!(a.kind, b.kind);
+            assert_ne!(a.hash, b.hash);
+        }
+        // A server known by its host name (one that reports no id) is another salt again.
+        assert!(pc.ids("host:play.example.net").iter().zip(&eu).all(|(a, b)| a.hash != b.hash));
+        assert_eq!(pc.ids("id:x")[1], hash("id:x", "disk-serial", "wd-123456").unwrap());
+        // The salt can't run into the kind: each part is ended.
+        assert_ne!(digest("a", "bc", "v"), digest("ab", "c", "v"));
+        // The ids themselves never show, even debug printed.
+        assert!(!format!("{pc:?}").contains("WD-123456"));
     }
 
     #[test]
@@ -457,9 +534,8 @@ mod tests {
         mk("sys/class/dmi/id/sys_vendor", "Valve\n");
         mk("sys/class/dmi/id/product_name", "Jupiter\n");
         let hw = linux(&root);
-        let kinds: Vec<&str> = hw.ids.iter().map(|i| i.kind).collect();
-        assert_eq!(kinds, ["linux-machine-id", "disk-serial", "disk-serial"]);
-        assert_eq!(hw.ids[1], hash("disk-serial", "STEAMDECK0042").unwrap());
+        assert_eq!(hw.kinds(), ["linux-machine-id", "disk-serial", "disk-serial"]);
+        assert_eq!(hw.ids("host:localhost")[1], hash("host:localhost", "disk-serial", "STEAMDECK0042").unwrap());
         assert_eq!(hw.vm, None);
         let _ = std::fs::remove_dir_all(&root);
     }

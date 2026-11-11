@@ -30,6 +30,8 @@ pub struct Game {
 impl Game {
     pub fn open(dir: PathBuf) -> Self {
         let cfg = Config::load(&dir);
+        // The servers' ids the setup kept: the salt of the hardware hashes sent to each.
+        crate::network::note_server_ids(&cfg);
         let managed = setup::overrides::managed_by(&dir);
         let uplay_dlls = uplay_dlls(&dir);
         let uplay_emulator = setup::install::uplay_emulator(&dir);
@@ -47,6 +49,7 @@ impl Game {
     /// Picks up changes to the settings made on another thread or by hand.
     pub fn reload(&mut self) {
         self.cfg.reload_if_changed();
+        crate::network::note_server_ids(&self.cfg);
         self.managed = setup::overrides::managed_by(&self.dir);
         // Read again only when a DLL changed (an install, a crack put in or taken out).
         let dlls = uplay_dlls(&self.dir);

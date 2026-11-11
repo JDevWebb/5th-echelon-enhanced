@@ -846,11 +846,13 @@ async fn chat(ctx: &mut Ctx, other: IpAddr) -> Result<()> {
 }
 
 /// This run's PC: hardware ids made from `FES_HW_SEED` (the federation test sets one per run).
+/// Hashed with one salt for every server, unlike real clients (which salt per server, so a
+/// network's servers can't match one PC across them): this tests the coordinator's matching.
 fn test_pc() -> Vec<server_api::users::HardwareId> {
     let seed = std::env::var("FES_HW_SEED").unwrap_or_else(|_| String::from("testbot"));
     ["machine-guid", "smbios-uuid", "disk-serial"]
         .into_iter()
-        .filter_map(|kind| hwid::hash(kind, &format!("{seed}-{kind}-pc")))
+        .filter_map(|kind| hwid::hash("id:testbot", kind, &format!("{seed}-{kind}-pc")))
         .map(|id| server_api::users::HardwareId {
             kind: id.kind.to_string(),
             hash: id.hash,

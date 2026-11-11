@@ -51,6 +51,11 @@ pub struct Profile {
     /// the way, so the setup stops rather than send the password readable.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub https: bool,
+    /// The server's id, as its `/api/info` last gave it (servers with friend lists): the salt
+    /// of this PC's hardware hashes there (`hooks_config::hardware_salt`), written for the game
+    /// too ([`Config::apply_profile`]). None: the server's host name is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
 }
 
 /// The NAT helper's usual port (`nat_proto::DEFAULT_PORT`).
@@ -184,6 +189,8 @@ impl Config {
         let hook = &mut self.hook_config;
         hook.config_server = Some(profile.server.clone());
         hook.api_server = profile.api_server_url();
+        // The game salts its hardware hashes with it, as the launcher does for this server.
+        hook.server_id = profile.server_id.clone();
         let cd_keys = std::mem::take(&mut hook.user.cd_keys);
         hook.user = hooks_config::User {
             cd_keys: if profile.user.cd_keys.is_empty() { cd_keys } else { profile.user.cd_keys.clone() },
@@ -400,6 +407,43 @@ mod tests {
         });
         assert_eq!(p.api_server_url().as_str(), "https://blacklist.example.com/");
         assert!(!p.unencrypted());
+    }
+
+    /// The game salts its hardware hashes as the launcher does: the server's id goes into
+    /// uplay.toml with the server, and away with it when the player picks a server without one.
+    #[test]
+    fn the_servers_id_is_written_for_the_game() {
+        let dir = temp_dir("config-server-id");
+        let with_id = Profile {
+            name: "EU".into(),
+            server: "eu.example.net".into(),
+            server_id: Some("6jjuqf7i6cbxxcss".into()),
+            ..Default::default()
+        };
+        let without = Profile {
+            name: "Home".into(),
+            server: "10.8.0.10".into(),
+            ..Default::default()
+        };
+        let mut cfg = Config::load(&dir);
+        cfg.update(|c| {
+            c.upsert_profile(with_id.clone());
+            c.apply_profile(&with_id);
+        })
+        .unwrap();
+        let text = std::fs::read_to_string(dir.join("uplay.toml")).unwrap();
+        assert_eq!(text.matches("ServerId = \"6jjuqf7i6cbxxcss\"").count(), 2, "the profile's and the game's: {text}");
+        let game: hooks_config::Config = toml::from_str(&text).unwrap();
+        assert_eq!(game.hardware_salt(), "id:6jjuqf7i6cbxxcss");
+        assert_eq!(
+            game.hardware_salt(),
+            hooks_config::hardware_salt(with_id.server_id.as_deref(), &with_id.api_server_url()),
+            "the launcher's salt for the profile"
+        );
+        cfg.update(|c| c.apply_profile(&without)).unwrap();
+        let game: hooks_config::Config = toml::from_str(&std::fs::read_to_string(dir.join("uplay.toml")).unwrap()).unwrap();
+        assert_eq!(game.server_id, None);
+        assert_eq!(game.hardware_salt(), "host:10.8.0.10");
     }
 
     #[test]

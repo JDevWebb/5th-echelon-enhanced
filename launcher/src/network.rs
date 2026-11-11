@@ -30,20 +30,59 @@ pub fn secret_fingerprint(secret: &str) -> String {
 /// What this launcher signs in to servers as: they refuse launchers older than they allow.
 pub const CLIENT: &str = concat!("launcher/", env!("FE_RELEASE"));
 
-/// This PC's hardware ids, hashed, as found once (the hwid crate; F10): sent when signing in.
+/// This PC's hardware ids, as found once (the hwid crate; F10): hashed for each server when
+/// signing in there ([`hardware`]).
 fn found_hardware() -> &'static hwid::Hardware {
     static FOUND: std::sync::OnceLock<hwid::Hardware> = std::sync::OnceLock::new();
     FOUND.get_or_init(|| hwid::collect(hooks_config::running_under_wine()))
 }
 
-/// The hardware ids for a sign-in.
-pub fn hardware() -> Vec<server_api::users::HardwareId> {
+/// The servers' ids (`/api/info`) by their API's host name, as last heard: the salt of the
+/// hardware hashes there ([`hardware`]).
+static SERVER_IDS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Option<String>>>> = std::sync::LazyLock::new(Default::default);
+
+/// The host name a server's id is kept by: the salt's own ([`hooks_config::hardware_salt`]).
+fn id_key(api_url: &url::Url) -> String {
+    api_url.host_str().unwrap_or_default().trim_end_matches('.').to_ascii_lowercase()
+}
+
+/// Notes the id the server whose API is `api_url` gives (`/api/info`; None when it gives none),
+/// for the hardware hashes sent to it from now on. The setup does this whenever it asks a server,
+/// and stores it in the server's profile, which the game's settings then take
+/// (`Config::apply_profile`): the game salts as the launcher does.
+pub fn note_server_id(api_url: &url::Url, id: Option<&str>) {
+    SERVER_IDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(id_key(api_url), id.map(str::to_string));
+}
+
+/// Notes the ids the settings' profiles keep, those the setup asked of their servers before;
+/// one heard since this launcher started stays.
+pub fn note_server_ids(cfg: &setup::config::Config) {
+    let mut ids = SERVER_IDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for p in &cfg.profiles {
+        ids.entry(id_key(&p.api_server_url())).or_insert_with(|| p.server_id.clone());
+    }
+}
+
+/// The salt for the hardware hashes sent to the server at `api_url`: its id if it gave one,
+/// else its host name; the game's for the same server.
+fn hardware_salt(api_url: &str) -> String {
+    let url: url::Url = api_url.parse().unwrap_or_else(|_| hooks_config::default().api_server);
+    let id = SERVER_IDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id_key(&url)).cloned().flatten();
+    hooks_config::hardware_salt(id.as_deref(), &url)
+}
+
+/// The hardware ids for a sign-in to the server at `api_url`, salted for it: one server's hashes
+/// mean nothing to another.
+pub fn hardware(api_url: &str) -> Vec<server_api::users::HardwareId> {
     found_hardware()
-        .ids
-        .iter()
+        .ids(&hardware_salt(api_url))
+        .into_iter()
         .map(|i| server_api::users::HardwareId {
             kind: i.kind.to_string(),
-            hash: i.hash.clone(),
+            hash: i.hash,
         })
         .collect()
 }
@@ -443,5 +482,38 @@ async fn ping(host: String, nat_port: Option<u16>) -> Ping {
     match tokio::time::timeout(std::time::Duration::from_secs(2), tokio::net::TcpStream::connect((ip, setup::CONFIG_PORT))).await {
         Ok(Ok(_)) => Ping::Ms(ms(started)),
         _ => Ping::NoAnswer,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The launcher salts the hardware hashes for a server as the game does from uplay.toml:
+    /// by the id the server gave, else by its host name.
+    #[test]
+    fn hardware_is_salted_for_each_server_as_the_game_salts_it() {
+        let eu: url::Url = "https://eu.salt-test.example/".parse().unwrap();
+        assert_eq!(hardware_salt(eu.as_str()), "host:eu.salt-test.example", "nothing heard yet: the host");
+        let mut cfg = setup::config::Config::default();
+        cfg.profiles.push(setup::config::Profile {
+            name: "EU".into(),
+            server: "eu.salt-test.example".into(),
+            api_server_url: Some(eu.clone()),
+            server_id: Some("6jjuqf7i6cbxxcss".into()),
+            ..Default::default()
+        });
+        note_server_ids(&cfg);
+        assert_eq!(hardware_salt("https://EU.salt-test.example:443/"), "id:6jjuqf7i6cbxxcss");
+        let profile = cfg.profiles[0].clone();
+        cfg.apply_profile(&profile);
+        assert_eq!(hardware_salt(eu.as_str()), cfg.hook_config.hardware_salt(), "the game's salt");
+        note_server_id(&"http://na.salt-test.example:50051".parse().unwrap(), Some("q2m4x8c1v9b7n3zz"));
+        if !found_hardware().kinds().is_empty() {
+            assert_ne!(hardware(eu.as_str()), hardware("http://na.salt-test.example:50051/"));
+        }
+        // A server that gives no id now: its host again.
+        note_server_id(&eu, None);
+        assert_eq!(hardware_salt(eu.as_str()), "host:eu.salt-test.example");
     }
 }

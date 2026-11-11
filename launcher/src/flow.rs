@@ -716,6 +716,12 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done,
             say(log, format!("The server uses API port {}, game port {}.", ports.api, ports.login));
         }
     }
+    // The server's id salts this PC's hardware hashes there, in the launcher and the game (the
+    // profile takes it to uplay.toml); one that said nothing keeps the one it gave before.
+    if let Some(info) = &info {
+        profile.server_id = info.id.clone();
+    }
+    crate::network::note_server_id(&profile.api_server_url(), profile.server_id.as_deref());
     // An HTTPS API that doesn't answer (the port closed on a firewall in front): the plain
     // one, but only on a server that never had HTTPS here, and never quietly (the checklist
     // keeps warning).
@@ -1056,6 +1062,8 @@ pub fn probe(game_dir: &Path, server: &str) -> Result<Probe, String> {
     if let Some(ports) = info.ports {
         profile.use_ports(&ports);
     }
+    // For the hardware hashes sent there (the setup that follows stores it).
+    crate::network::note_server_id(&profile.api_server_url(), info.id.as_deref());
     let ip = net::resolve(server).ok_or_else(|| format!("\"{server}\" isn't an address this PC can find."))?;
     let started = Instant::now();
     let ping = net::port_open(ip, profile.api_port(), Duration::from_secs(3)).then(|| u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX));
