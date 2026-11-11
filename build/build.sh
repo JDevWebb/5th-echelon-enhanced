@@ -54,12 +54,35 @@ cd "$(dirname "$0")/.."
 IMAGE=fes-build:local
 docker build -q -t "$IMAGE" -f build/Dockerfile . >/dev/null
 
+# The containers run as the checkout's owner, so what they write into it (dist/, the admin UI's
+# node_modules and dist) is that user's, not root's: a synced folder (Syncthing) or the next
+# build as that user can then change it. With rootless Docker, root in the container already
+# is that user, so nothing is passed. FE_DOCKER_USER overrides it ("" for root).
+if [ -z "${FE_DOCKER_USER+x}" ]; then
+  if docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q rootless; then FE_DOCKER_USER=
+  else FE_DOCKER_USER="$(stat -c %u .):$(stat -c %g .)"; fi
+fi
+USER_ARGS=${FE_DOCKER_USER:+--user $FE_DOCKER_USER}
+
+# The volumes the builds write to, owned by that user. These are "fes-" and not the "fe-" ones
+# another checkout may share as root. A volume left root's by an older build.sh is handed over
+# once (the whole of it, so cargo can rewrite what's inside). Mounted where the builds mount them:
+# Docker fills a new volume from the image's folder at that path, as root.
+if [ -n "$FE_DOCKER_USER" ]; then
+  docker run --rm -v fes-cargo-registry:/usr/local/cargo/registry -v fes-xwin-cache:/cache/cargo-xwin \
+    -v fes-target:/target -v fes-npm-cache:/cache/npm "$IMAGE" sh -c '
+      for v in /usr/local/cargo/registry /cache/cargo-xwin /target /cache/npm; do
+        [ -z "$(find "$v" -maxdepth 3 ! -user "${1%:*}" -print -quit)" ] || chown -R "$1" "$v"
+      done' fix "$FE_DOCKER_USER"
+fi
+
 run() {
-  docker run --rm ${TTY:-} \
+  docker run --rm ${TTY:-} $USER_ARGS \
     -v "$PWD":/src \
-    -v fe-cargo-registry:/usr/local/cargo/registry \
-    -v fe-xwin-cache:/root/.cache/cargo-xwin \
+    -v fes-cargo-registry:/usr/local/cargo/registry \
+    -v fes-xwin-cache:/cache/cargo-xwin \
     -v fes-target:/target \
+    -e HOME=/tmp -e XDG_CACHE_HOME=/cache \
     -e CARGO_TARGET_DIR=/target/native \
     -e XWIN_ACCEPT_LICENSE=1 -e XWIN_ARCH=x86,x86_64 \
     "$@"
@@ -68,7 +91,7 @@ run() {
 # The admin UI the coordinator embeds (coordinator/admin-ui/dist), built when its sources
 # or lock file are newer than the last build. npm's cache lives in a volume too.
 ui() {
-  run -v fes-npm-cache:/root/.npm "$IMAGE" sh -c '
+  run -v fes-npm-cache:/cache/npm -e npm_config_cache=/cache/npm "$IMAGE" sh -c '
     set -e
     cd coordinator/admin-ui
     if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then npm ci --ignore-scripts --no-audit --no-fund; touch node_modules; fi
@@ -197,7 +220,9 @@ case "${1:-test}" in
   latency)
     # The test players with delay and loss added (scripts/latency-test.sh; PROFILES to choose).
     shift
-    run --cap-add NET_ADMIN -e PROFILES "$IMAGE" bash -c 'cargo build -q -p dedicated_server -p testbot && scripts/latency-test.sh /target/native/debug "$@"' latency "$@"
+    # Built as the user; run as root in the container, which tc needs (it writes nothing).
+    run "$IMAGE" cargo build -q -p dedicated_server -p testbot
+    USER_ARGS= run --cap-add NET_ADMIN -e PROFILES "$IMAGE" scripts/latency-test.sh /target/native/debug "$@"
     ;;
   federation-test)
     run "$IMAGE" cargo build -q -p dedicated_server -p testbot -p coordinator
