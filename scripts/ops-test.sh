@@ -193,7 +193,9 @@ touch /tmp/enabled-5th-echelon-standby
 mkdir -p "$COORD_DIR"
 echo "the database before the update" > "$STATE_DIR/5th-echelon.db"
 systemctl start 5th-echelon; systemctl start 5th-echelon-standby
-release_version=0.9.0 binary="" coord_binary="" auto_update="" work="$(mktemp -d)"
+release_version=0.9.0 binary="" coord_binary="" auto_update="" force_downgrade=0 work="$(mktemp -d)"
+eval "$(grep -E '^version_older\(\) ' "$S")"
+eval "$(fn downgrade_from)"
 eval "$(fn install_updater)"
 install_updater >/dev/null
 update() { # update VERSION: asks for it, runs the updater, says what it recorded
