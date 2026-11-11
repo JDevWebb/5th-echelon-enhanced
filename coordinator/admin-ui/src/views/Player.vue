@@ -39,7 +39,7 @@
             <button type="button" title="Their launcher and overlay ask them to choose another name, and the game is kept out until they do" @click="act('name_not_allowed')">Ask to rename</button>
             <button type="button" title="Their name was flagged by mistake: no longer asked to rename, and not flagged again" @click="act('allow_name')">Allow name</button>
             <button type="button" @click="act('reset_password')">Reset password…</button>
-            <button v-if="p.identity" type="button" title="A developer: every server takes their identity's other launcher and add-on builds (Security › Client builds)" @click="allowBuilds">Allow other builds</button>
+            <button v-if="p.identity && isOwner" type="button" title="A developer: every server takes their identity's other launcher and add-on builds (Security › Client builds)" @click="allowBuilds">Allow other builds</button>
             <button class="danger" type="button" @click="act('delete')">Delete account…</button>
           </div>
         </details>
@@ -235,12 +235,15 @@ import { api } from '../lib/api.js';
 import { ACTION_LABELS, follow, following } from '../lib/actions.js';
 import { ensureOverview } from '../lib/data.js';
 import { confirmBox } from '../lib/dialogs.js';
+import { session } from '../lib/session.js';
 import { features } from '../lib/features.js';
 import { fmt, PALETTE, serverName } from '../lib/fmt.js';
 import { live } from '../lib/live.js';
 import { endText, markClass, stayTitle } from '../lib/stays.js';
 import { openModal, toast } from '../lib/ui.js';
 
+// Allowing a developer's other builds is an owner's (a security setting).
+const isOwner = computed(() => session.info?.role === 'owner');
 const route = useRoute();
 const router = useRouter();
 onMounted(() => ensureOverview().catch(() => {}));

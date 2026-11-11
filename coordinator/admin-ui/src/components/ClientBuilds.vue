@@ -23,11 +23,12 @@
             <td><b>{{ a.names.join(', ') || 'no account yet' }}</b><div class="small muted mono">{{ a.identity.slice(0, 12) }}…</div></td>
             <td class="small">{{ a.note }}</td>
             <td class="small muted">by {{ a.added_by }}, {{ fmt.ago(a.added_at) }}</td>
-            <td class="r"><button class="ghost small" type="button" @click="remove(a)">Remove</button></td>
+            <td class="r"><button v-if="owner" class="ghost small" type="button" @click="remove(a)">Remove</button></td>
           </tr>
         </tbody></table>
         <p v-else class="muted small">Nobody. Add a developer from their player page (Allow other builds), or by identity here.</p>
-        <form class="row" style="margin-top: 8px" @submit.prevent="add">
+        <p v-if="!owner" class="small muted">Only an owner can allow or remove a developer.</p>
+        <form v-if="owner" class="row" style="margin-top: 8px" @submit.prevent="add">
           <input v-model="identity" placeholder="identity (52 characters)" maxlength="52" style="max-width: 360px">
           <input v-model="note" placeholder="note, e.g. developing the mouse fix" maxlength="200" style="max-width: 280px">
           <button class="small" type="submit">Allow</button>
@@ -52,7 +53,7 @@ import { confirmBox } from '../lib/dialogs.js';
 import { fmt } from '../lib/fmt.js';
 import { toast } from '../lib/ui.js';
 
-// Only an owner changes the mode (a security setting); any admin allows a developer's identity.
+// Only an owner changes the mode or allows or removes a developer's identity (security settings).
 defineProps({ owner: { type: Boolean, default: false } });
 
 const data = ref(null), error = ref(''), mode = ref('report'), identity = ref(''), note = ref('');

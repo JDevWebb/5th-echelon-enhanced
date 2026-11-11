@@ -3715,6 +3715,12 @@ async fn only_owners_manage_the_admins_and_the_security_settings() {
         ("POST", "/api/admins".to_string(), Some(json!({ "username": "sneaky", "role": "owner" }))),
         ("PUT", "/api/restrictions".to_string(), Some(json!({ "networks": [], "countries": [] }))),
         ("PUT", "/api/clients".to_string(), Some(json!({ "mode": "off" }))),
+        (
+            "POST",
+            "/api/clients/allowed".to_string(),
+            Some(json!({ "identity": "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz", "note": "x" })),
+        ),
+        ("DELETE", "/api/clients/allowed/abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz".to_string(), None),
         ("POST", format!("/api/admins/{helper_id}/make-owner"), None),
     ];
     for action in ["reset", "disable", "enable", "remove", "make-owner", "make-admin"] {

@@ -1748,7 +1748,7 @@ struct AllowClientRequest {
 }
 
 async fn allow_client(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Json(req): Json<AllowClientRequest>) -> Response {
-    let s = match c.recent(&headers, &client).await {
+    let s = match c.owner_session(&headers, &client).await {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -1776,7 +1776,7 @@ async fn disallow_client(
     headers: HeaderMap,
     axum::extract::Path(identity): axum::extract::Path<String>,
 ) -> Response {
-    let s = match c.recent(&headers, &client).await {
+    let s = match c.owner_session(&headers, &client).await {
         Ok(s) => s,
         Err(r) => return r,
     };
