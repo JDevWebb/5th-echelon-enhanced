@@ -164,7 +164,13 @@ ${rule}
 Fonts: IBM Plex
 ${rule}
 
-${fonts.join('\n')}`;
+${fonts.join('\n')}
+${rule}
+Data: world-atlas 2.0.2 (the admin UI's world map, Natural Earth's land outline)
+${rule}
+
+${norm(fs.readFileSync(path.join(adminUi, 'src/lib/world-atlas-LICENSE.txt'), 'utf8'))}
+`;
 
 fs.writeFileSync(out, text);
 if (problems.length) {
