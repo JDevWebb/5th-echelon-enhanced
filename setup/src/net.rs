@@ -239,7 +239,9 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         assert!(port_open(IpAddr::from([127, 0, 0, 1]), port, Duration::from_secs(1)));
         drop(listener);
-        assert!(!port_open(IpAddr::from([127, 0, 0, 1]), port, Duration::from_millis(300)));
+        // Port 1 for the closed case: a port just freed can be taken again at once by another
+        // test running alongside, and then this one fails for no fault of its own.
+        assert!(!port_open(IpAddr::from([127, 0, 0, 1]), 1, Duration::from_millis(300)));
     }
 }
 
