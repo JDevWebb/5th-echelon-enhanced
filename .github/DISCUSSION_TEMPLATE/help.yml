@@ -1,0 +1,32 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ask anything about setting up, joining, the launcher or the overlay. When an answer works, mark it as the answer so the next person finds it.
+        Something clearly broken (a crash, an error that keeps coming back)? An [issue](https://github.com/JDevWebb/5th-echelon-enhanced/issues/new/choose) is better. Problems with another player: **Report** in the overlay's Match tab.
+  - type: input
+    id: version
+    attributes:
+      label: Launcher version
+      description: Bottom left of the launcher, or Settings › About.
+      placeholder: "0.5.0"
+  - type: dropdown
+    id: system
+    attributes:
+      label: Where you play
+      options:
+        - Windows
+        - Steam Deck
+        - Linux (Proton)
+        - Linux (Wine, Lutris or similar)
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What you're trying to do, what you tried, and what happened. Exact messages help most (a screenshot is fine).
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: |
+        **Logs:** send them with the launcher's report (Settings › Feedback › Send feedback), which hides your user name, PC name and address, and say when you sent it. If you paste a log here, read it first.

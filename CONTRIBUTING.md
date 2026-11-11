@@ -4,6 +4,8 @@ Thanks for helping keep *Splinter Cell: Blacklist* online. Contributions of ever
 
 This page says how to report problems so they can be fixed, how to build and test, and the few rules this project can't bend.
 
+**A question rather than a bug?** Ask in [Discussions](https://github.com/JDevWebb/5th-echelon-enhanced/discussions): [Help](https://github.com/JDevWebb/5th-echelon-enhanced/discussions/categories/help) for playing, [Hosting a server](https://github.com/JDevWebb/5th-echelon-enhanced/discussions/categories/hosting-a-server) for running one, [Ideas](https://github.com/JDevWebb/5th-echelon-enhanced/discussions/categories/ideas) for something new, and [Research](https://github.com/JDevWebb/5th-echelon-enhanced/discussions/categories/research) for what you've worked out about the game (facts and notes only, never game files).
+
 ## Reporting a problem
 
 [Open an issue](https://github.com/JDevWebb/5th-echelon-enhanced/issues/new/choose) and pick the form that fits. The forms ask for what we need; filling them in carefully saves a lot of back and forth.

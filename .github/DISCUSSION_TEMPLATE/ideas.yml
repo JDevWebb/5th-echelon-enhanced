@@ -1,0 +1,17 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Something new, or better. Check the [roadmap](https://github.com/JDevWebb/5th-echelon-enhanced/blob/main/docs/roadmap.md) first: it may be planned already. On the community network you can also suggest from the launcher: **Intel › Roadmap › Suggest a feature or improvement**.
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: What you'd like, and the problem it solves for you or your group.
+    validations:
+      required: true
+  - type: textarea
+    id: how
+    attributes:
+      label: How it might work
+      description: Optional. Where it would show in the launcher or the game, and what it would do.

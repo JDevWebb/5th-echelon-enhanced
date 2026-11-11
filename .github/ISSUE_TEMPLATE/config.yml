@@ -1,5 +1,11 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Ask a question
+    url: https://github.com/JDevWebb/5th-echelon-enhanced/discussions/categories/help
+    about: Setting up, joining, the launcher or the overlay. Answers are kept for the next person.
+  - name: Questions about running a server
+    url: https://github.com/JDevWebb/5th-echelon-enhanced/discussions/categories/hosting-a-server
+    about: The installer, Docker, a reverse proxy, the coordinator and its admin UI.
   - name: Report a security problem
     url: https://github.com/JDevWebb/5th-echelon-enhanced/security/advisories/new
     about: Privately, not in a public issue. See SECURITY.md for what to include and what happens next.

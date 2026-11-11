@@ -1,0 +1,28 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Running your own server or network. The guides: [deploying](https://github.com/JDevWebb/5th-echelon-enhanced/blob/main/docs/deploying.md), [operations](https://github.com/JDevWebb/5th-echelon-enhanced/blob/main/docs/operations.md), [backups](https://github.com/JDevWebb/5th-echelon-enhanced/blob/main/docs/backups.md) and [failover](https://github.com/JDevWebb/5th-echelon-enhanced/blob/main/docs/failover.md).
+        **Never paste a join token, an admin password, setup links or keys** here.
+  - type: dropdown
+    id: how
+    attributes:
+      label: How it's installed
+      options:
+        - The Linux installer (install-server.sh)
+        - Docker
+        - From source
+        - Windows (dedicated_server.exe)
+  - type: input
+    id: version
+    attributes:
+      label: Server version
+      description: "`install-server.sh --status`, or the server's /api/info."
+      placeholder: "0.5.0"
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What you're setting up, what you tried and what happened. Paste the relevant log lines (`journalctl -u 5th-echelon`), with addresses and secrets removed.
+    validations:
+      required: true

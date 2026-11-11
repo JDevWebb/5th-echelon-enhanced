@@ -18,6 +18,7 @@
   <a href="#play-in-five-minutes">Play</a> ·
   <a href="https://github.com/JDevWebb/5th-echelon-enhanced/wiki"><b>Wiki</b></a> ·
   <a href="#run-your-own-server">Run your own</a> ·
+  <a href="https://github.com/JDevWebb/5th-echelon-enhanced/discussions">Discussions</a> ·
   <a href="#features">Features</a> ·
   <a href="#contributing">Contribute</a> ·
   <a href="#community">Community</a> ·
@@ -115,6 +116,7 @@ Every feature, for players and for operators: **[docs/features.md](docs/features
 | **Players** | The **[wiki](https://github.com/JDevWebb/5th-echelon-enhanced/wiki)**: [getting started](https://github.com/JDevWebb/5th-echelon-enhanced/wiki/Getting-Started), [the launcher](https://github.com/JDevWebb/5th-echelon-enhanced/wiki/The-Launcher), [the overlay](https://github.com/JDevWebb/5th-echelon-enhanced/wiki/The-In-Game-Overlay), [friends and invites](https://github.com/JDevWebb/5th-echelon-enhanced/wiki/Friends-and-Invites), [chat](https://github.com/JDevWebb/5th-echelon-enhanced/wiki/Chat), [save games](https://github.com/JDevWebb/5th-echelon-enhanced/wiki/Save-Games), [troubleshooting](https://github.com/JDevWebb/5th-echelon-enhanced/wiki/Troubleshooting) and the [FAQ](https://github.com/JDevWebb/5th-echelon-enhanced/wiki/FAQ) |
 | **Hosting a server** | [Hosting a server](https://github.com/JDevWebb/5th-echelon-enhanced/wiki/Hosting-a-Server) and [Running a network](https://github.com/JDevWebb/5th-echelon-enhanced/wiki/Running-a-Network) in the wiki; [docs/deploying.md](docs/deploying.md) step by step; [docs/hosting.md](docs/hosting.md) for Windows, Linux, Docker and a reverse proxy; [docs/server-settings.md](docs/server-settings.md) |
 | **Running a network** | [docs/operations.md](docs/operations.md) (updates, the admin UI, alerts), [docs/backups.md](docs/backups.md), [docs/failover.md](docs/failover.md), [docs/cutover.md](docs/cutover.md) |
+| **Questions** | [Discussions](https://github.com/JDevWebb/5th-echelon-enhanced/discussions): [Help](https://github.com/JDevWebb/5th-echelon-enhanced/discussions/categories/help) for playing, [Hosting a server](https://github.com/JDevWebb/5th-echelon-enhanced/discussions/categories/hosting-a-server) for running one, [Ideas](https://github.com/JDevWebb/5th-echelon-enhanced/discussions/categories/ideas), [Research](https://github.com/JDevWebb/5th-echelon-enhanced/discussions/categories/research); bugs go in [issues](https://github.com/JDevWebb/5th-echelon-enhanced/issues/new/choose) |
 | **Developers** | [CONTRIBUTING.md](CONTRIBUTING.md), [docs/building.md](docs/building.md) (building, releases and CI, the project's layout, research tools), the [roadmap](docs/roadmap.md) |
 
 ---
