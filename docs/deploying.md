@@ -248,7 +248,7 @@ The admin API is never reachable from the internet; Caddy refuses it. Use an SSH
 
 ## Backups
 
-The databases (accounts, friends and stats; and the coordinator's links, names and admins) can be backed up off the machine: a snapshot to Cloudflare R2 every 2 hours (a week of them), and a daily archive to Backblaze B2 (30 days, and 12 monthly copies). Write `/etc/5th-echelon/backup.env` with the buckets' keys and run the installer again; `/opt/5th-echelon/backup.sh` restores. See **[backups.md](backups.md)**.
+The databases (accounts, friends and stats; and the coordinator's links, names and admins) can be backed up off the machine: a snapshot to Cloudflare R2 every 2 hours (a week of them), and a daily archive to Backblaze B2 (30 days, and 12 monthly copies). Encrypted on the server, each server to buckets of its own. Write `/etc/5th-echelon/backup.env` with its buckets' keys and the network's age public key, and run the installer again; `/opt/5th-echelon/backup.sh` restores. See **[backups.md](backups.md)**.
 
 ## Failover
 

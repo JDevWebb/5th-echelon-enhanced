@@ -34,7 +34,7 @@ matchmaking server's other names, only for the server the coordinator's operator
 
 ## What it needs
 
-- Every server on the same release (0.5.0 or later) and **backups on** on each ([backups.md](backups.md)).
+- Every server on the same release (0.5.0 or later) and **backups on** on each ([backups.md](backups.md)): encrypted, and on each relay (the matchmaking server's standbys) the key that opens them and a read-only key to the matchmaking server's bucket ([backups.md, step 4](backups.md#4-on-the-machines-that-restore-the-private-key-and-the-other-servers-read-only-keys-you)).
 - Every account linked to an identity (`SELECT COUNT(*) FROM users WHERE ubi_id IS NOT NULL AND
   global_id IS NULL` is 0 on each server); an account without one is moved under its name, but
   its launcher can't follow by itself.

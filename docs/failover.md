@@ -10,7 +10,7 @@ A network's servers all depend on its coordinator: friends across servers, the s
   - **pointing at another server:** it makes sure the coordinator *doesn't* run here, and asks for the coordinator through Cloudflare.
 - **Taking over.** When Cloudflare answers for the coordinator with an error from its server (the machine is down, or Caddy or the coordinator on it), the standbys wait their turn: **3 minutes** for the first in line, **6** for the second, and so on, so they don't race. Then the standby:
   1. asks the other servers of the group (their `/api/info`) whether they still reach the coordinator. If one does, the problem is between this server and Cloudflare, and nothing happens;
-  2. restores the coordinator from the latest snapshot of the server it replaces (`snapshots/NAME/coordinator` in R2, with its join token and players' reports; see [backups.md](backups.md)), and starts it. What changed on the coordinator since that snapshot (up to 2 hours: new links, names, servers that joined) is lost;
+  2. restores the coordinator from the latest snapshot of the server it replaces (`snapshots/NAME/coordinator` in that server's R2 bucket, read with the read-only key in `backup-peers.env` and opened with `backup.age`, with its join token and players' reports; see [backups.md](backups.md)), and starts it. What changed on the coordinator since that snapshot (up to 2 hours: new links, names, servers that joined) is lost;
   3. looks at the record once more (another server may have taken over meanwhile), and points it, and the admin UI's, here.
 - **Standing down.** A server that was replaced and comes back sees the record pointing elsewhere and keeps its coordinator stopped. It doesn't take the coordinator back by itself: the data moved on without it. Moving the coordinator back is an admin's choice ([below](#moving-the-coordinator)).
 - **What doesn't trigger it:** no answer from Cloudflare at all (this server's own network), an answer that isn't an error from the coordinator's server (a Cloudflare challenge, say), a server that still reaches the coordinator, and Cloudflare's API not answering. A coordinator that stops for an update is back well within 3 minutes, and the updater pauses the standby on its own machine meanwhile.
@@ -25,7 +25,11 @@ The examples use `play.example.net` for the coordinator, `metrics.example.net` f
 
 **The coordinator's name and the admin UI's must be one level below your domain** (`play.example.net`, not `play.scbl.example.net`). Both are proxied, and Cloudflare's free edge certificate covers only `example.net` and `*.example.net`: a name two levels deep fails with a TLS error before Cloudflare answers, and every launcher and server loses the coordinator. A deeper name needs Cloudflare's Advanced Certificate Manager (paid). If your coordinator already has a deeper name, set up the group under a new one-level name and move servers and players to it, rather than proxying the old one ([Moving a coordinator to a new name](#moving-a-coordinator-to-a-new-name)).
 
-**1. Backups on every server of the group.** The standbys restore the coordinator from its snapshots, so backups must be on on the coordinator's machine, and each standby needs the keys to read it. Set up [backups.md](backups.md) on each server, with the same R2 bucket. Leave `BACKUP_NAME` out: each server's backups are then kept under its name in the group, which is where the others look.
+**1. Backups on every server of the group.** The standbys restore the coordinator from its snapshots, so backups must be on on the coordinator's machine, and each standby needs to read them. Set up [backups.md](backups.md) on each server, each with its own buckets, and on **every** server of the group (each is a standby):
+- **the private key** that opens the backups, `/etc/5th-echelon/backup.age` (root's, mode 600; [backups.md, step 4](backups.md#4-on-the-machines-that-restore-the-private-key-and-the-other-servers-read-only-keys-you)): a standby without it can't open the coordinator's encrypted snapshots, and doesn't take over;
+- **`/etc/5th-echelon/backup-peers.env`**, with a **read-only** key to each other server's R2 bucket: the coordinator may be running on any of them when this one takes over (after an earlier takeover), and it restores from the bucket of the one it replaces.
+
+Check each from its standby before relying on it: `sudo /opt/5th-echelon/backup.sh status` (the key is "here", and the others are listed under "restores other servers from"). Leave `BACKUP_NAME` out: each server's backups are then kept under its name in the group, which is where the others look. (A group set up before 0.5.0, with one shared bucket and no encryption, keeps working; [backups.md](backups.md#upgrading-from-one-shared-bucket) has the way to move it, standbys first.)
 
 **2. In Cloudflare:**
 - **An Origin certificate** (SSL/TLS › Origin Server › Create certificate) for the coordinator's name and the admin UI's: `play.example.net, metrics.example.net`. Save the certificate and its key on each server (e.g. `/root/origin.pem` and `/root/origin.key`, root's only).
@@ -108,10 +112,16 @@ program with `kind matchmaking`). Its differences from the coordinator's:
 - **The relays say whether they still hear from it** (`matchmaking_seen` in their `/api/info`:
   it answers each relay's report), and one that does stops a takeover.
 - **Taking over** stops the relay, moves its state aside (`/var/lib/5th-echelon.own`), restores
-  the matchmaking server's database **and its key files and settings** (backup.sh sends a game
-  server's to R2 with each snapshot), and starts it there: the same server to the coordinator
-  and the relays, with this machine's address. Rooms and matches in progress end; players sign
-  in again by themselves.
+  the matchmaking server's database **and its key files** (backup.sh sends a game server's to
+  R2 with each snapshot), and starts it there: the same server to the coordinator and the
+  relays, with this machine's address. Its settings are the relay's own `service.toml` with
+  only the matchmaking server's identity carried over (its role, `network_relays`, its name and
+  listing in the directory, friends, registration; [backups.md](backups.md#restoring) has the
+  list): nothing else in a backup's settings is trusted. Rooms and matches in progress end;
+  players sign in again by themselves.
+- **Each relay needs** `backup.age` and a read-only entry for the matchmaking server's bucket in
+  `backup-peers.env` ([backups.md](backups.md), step 4), and the matchmaking server needs one for
+  each relay's (it restores from the relay that ran it when it's moved back with `--take-over`).
 - **Standing down** (when its record points elsewhere) puts the relay's own state back and starts
   the relay. The matchmaking server's original machine, coming back, stays stopped: move the
   matchmaking server back with `--take-over` there, after `backup.sh snapshot` where it runs.
