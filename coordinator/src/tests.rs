@@ -18,7 +18,11 @@ impl Drop for Test {
 }
 
 async fn start(name: &str) -> Test {
-    let dir = std::env::temp_dir().join(format!("fe-coord-{name}-{}", std::process::id()));
+    // Each test its own folder, even two with the same name: one's clean-up removing the
+    // other's database failed tests at random ("no such table").
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("fe-coord-{name}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let c = Arc::new(Coordinator::open(&dir.join("c.db").to_string_lossy(), "TOKEN".into()).await.unwrap());

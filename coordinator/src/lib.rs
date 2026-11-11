@@ -665,7 +665,10 @@ impl Coordinator {
             .filename(path)
             .create_if_missing(true)
             .foreign_keys(true)
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            // How long a write waits for another's to finish before "database is locked":
+            // longer than sqlx's 5 s, so a burst of reports on a slow disk queues instead of failing.
+            .busy_timeout(std::time::Duration::from_secs(30));
         let pool = SqlitePool::connect_with(options).await?;
         // A database a newer release migrated still opens: after a rollback, the
         // release before runs on it (migrations only add to the schema).
