@@ -667,6 +667,13 @@ pub fn chat_act(app: tauri::AppHandle, action: String, id: String, identity: Str
         _ => return,
     };
     let Some(cfg) = config(&app) else { return };
+    let block = matches!(action, PlayerAction::Block);
     let result = launcher::task::guarded(|| launcher::flow::player_action(&cfg, action, &id, &identity, &name));
+    // What they wrote before goes too ("neither of you sees the other now"): the server only
+    // leaves it out of what it sends from now on (the gamebox, 2026-11-12).
+    if block && result.is_ok() && !identity.is_empty() {
+        app.state::<Chat>().lock().rooms.blocked(&identity);
+        let _ = app.emit("chat", ());
+    }
     said(&app, result);
 }

@@ -291,6 +291,16 @@ impl Rooms {
         self.unseen_mentions + self.unseen_direct.values().sum::<u32>()
     }
 
+    /// The player blocked `identity`: what they wrote goes from every room now, as the server
+    /// already leaves it out of what it sends from now on.
+    pub fn blocked(&mut self, identity: &str) {
+        self.global.retain(|m| m.from != identity);
+        self.lobby.retain(|m| m.from != identity);
+        self.direct.remove(identity);
+        self.unseen_direct.remove(identity);
+        self.conversations_stale = true;
+    }
+
     /// The player's lobby changed: its messages and who joined or left it go.
     pub fn lobby_changed(&mut self) {
         self.lobby.clear();
@@ -1269,6 +1279,26 @@ mod tests {
             body: format!("m{id}"),
             ..Message::default()
         }
+    }
+
+    #[test]
+    fn blocking_someone_takes_what_they_wrote_away() {
+        let mut rooms = Rooms::default();
+        let from = |id: i64, room: Room, who: &str| Message {
+            from: who.into(),
+            ..message(id, room)
+        };
+        rooms.global = vec![from(1, Room::Global, "B"), from(2, Room::Global, "K")];
+        rooms.lobby = vec![from(3, Room::Lobby, "B")];
+        rooms.direct.insert("B".into(), vec![from(4, Room::Direct, "B")]);
+        rooms.unseen_direct.insert("B".into(), 1);
+        rooms.conversations_stale = false;
+        rooms.blocked("B");
+        assert_eq!(rooms.global.iter().map(|m| m.id).collect::<Vec<_>>(), [2]);
+        assert!(rooms.lobby.is_empty());
+        assert!(!rooms.direct.contains_key("B"));
+        assert_eq!(rooms.unread(), 0);
+        assert!(rooms.conversations_stale);
     }
 
     #[test]
