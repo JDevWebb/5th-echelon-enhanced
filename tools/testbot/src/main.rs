@@ -862,10 +862,20 @@ fn test_pc() -> Vec<server_api::users::HardwareId> {
 
 /// F10, first half: a player with an identity signs in from the test PC (prints the identity,
 /// for the admin's ban the script makes next).
+/// Links `key` to the player, unless the server already linked one at registration (a server
+/// that wants an identity for new accounts: `Bot::register` makes one): the hardware scenarios
+/// need the account, not that identity.
+async fn link_unless_linked(bot: &Bot, key: &identity::Identity, server: IpAddr) -> Result<()> {
+    match bot.link(key, &server_id(server)?, identity::now()).await {
+        Err(status) if status.code() == tonic::Code::AlreadyExists => Ok(()),
+        other => other.map_err(|e| eyre!("linking an identity: {e}")),
+    }
+}
+
 async fn hardware_first(ctx: &mut Ctx) -> Result<()> {
     let key = identity::Identity::generate();
     let bot = ctx.player("HwA").await?;
-    bot.link(&key, &server_id(ctx.server)?, identity::now()).await?;
+    link_unless_linked(&bot, &key, ctx.server).await?;
     testbot::bot::api_sign_in_on_pc(ctx.server, &bot.name, PASSWORD, test_pc())
         .await
         .map_err(|e| eyre!("signing in from the test PC: {e}"))?;
@@ -879,7 +889,7 @@ async fn hardware_first(ctx: &mut Ctx) -> Result<()> {
 async fn hardware_second(ctx: &mut Ctx) -> Result<()> {
     let key = identity::Identity::generate();
     let bot = ctx.player("HwB").await?;
-    bot.link(&key, &server_id(ctx.server)?, identity::now()).await?;
+    link_unless_linked(&bot, &key, ctx.server).await?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
     loop {
         match testbot::bot::api_sign_in_on_pc(ctx.server, &bot.name, PASSWORD, test_pc()).await {
