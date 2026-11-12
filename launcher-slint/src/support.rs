@@ -46,6 +46,14 @@ impl Support {
         st.read_at = Some(Instant::now());
     }
 
+    /// The screen is left: answers that come now aren't read by being polled, so the launcher's
+    /// notice and the game's overlay still tell the player (the screen stayed "open" after a
+    /// first visit, and each minute's poll marked every new answer read: the overlay never said
+    /// so, seen on the gamebox 2026-11-12).
+    pub(crate) fn closed(&self) {
+        self.lock().open = false;
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }

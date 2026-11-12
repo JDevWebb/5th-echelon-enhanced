@@ -198,6 +198,10 @@ impl Ui {
             let section = section.to_string();
             self.with_page(&screen, |p| p.section(&section));
         }
+        if screen != "support" {
+            use crate::tauri::Manager as _;
+            self.app().state::<crate::support::Support>().closed();
+        }
         self.seen().screen = screen.clone();
         let shown = screen.clone();
         self.show(move |w| w.set_screen(s(shown)));
