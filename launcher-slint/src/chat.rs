@@ -482,8 +482,14 @@ pub fn chat(app: tauri::AppHandle, state: tauri::State<Chat>, tab: String, with:
         .iter()
         .map(|conv| RoomEntry {
             with: conv.with.clone(),
+            // The server names a conversation after the other's last message: one only the player
+            // has written in has no name yet, so a friend's comes from the friends list (the tab
+            // read "QO6O-P4IG" for gbox2 on Windows, 2026-11-12), and only a stranger's is the id.
             name: if conv.with_name.is_empty() {
-                identity::short(&conv.with)
+                st.friends
+                    .iter()
+                    .find(|f| f.identity == conv.with && !f.name.is_empty())
+                    .map_or_else(|| identity::short(&conv.with), |f| f.name.clone())
             } else {
                 conv.with_name.clone()
             },
