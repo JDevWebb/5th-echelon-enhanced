@@ -222,7 +222,7 @@ case "${1:-test}" in
     shift
     # Built as the user; run as root in the container, which tc needs (it writes nothing).
     run "$IMAGE" cargo build -q -p dedicated_server -p testbot
-    USER_ARGS= run --cap-add NET_ADMIN -e PROFILES "$IMAGE" scripts/latency-test.sh /target/native/debug "$@"
+    USER_ARGS='' run --cap-add NET_ADMIN -e PROFILES "$IMAGE" scripts/latency-test.sh /target/native/debug "$@"
     ;;
   federation-test)
     run "$IMAGE" cargo build -q -p dedicated_server -p testbot -p coordinator
