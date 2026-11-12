@@ -46,14 +46,14 @@ pub const RELEASES: &[Release] = &[
         thanks: &["Tea_bag", "Cloud", "Ghost_Leader", "curryman", "omar", "Agent1", "EitherBat2025", "Gex", "Ronis", "Sem", "Sokolev", "mpw", "Jester"],
         new: &[
             Item {
-                title: "A new look",
-                text: "A new launcher, the same on Windows, Linux and the Steam Deck, in a dark or a light look (Settings › Display, or the title bar's button): the Play button says whether you're ready and why not (and is the fix when something needs one), and every page is easier to read and to use with a keyboard. The overlay in the game takes the same look.",
-                community: false,
-            },
-            Item {
                 title: "One server for everyone",
                 text: "The community network is now one server everyone signs in to (in Beauharnois, Canada), so every search finds players from every region. Your game plays through the relay nearest you: Falkenstein, Beauharnois, Silicon Valley, Santiago, Singapore or Sydney, picked by the launcher's pings. Your account, name, friends and stats came with you, and the launcher moved you over by itself.",
                 community: true,
+            },
+            Item {
+                title: "A new look",
+                text: "A new launcher, the same on Windows, Linux and the Steam Deck, in a dark or a light look (Settings › Display, or the title bar's button): the Play button says whether you're ready and why not (and is the fix when something needs one), and every page is easier to read and to use with a keyboard. The overlay in the game takes the same look.",
+                community: false,
             },
             Item {
                 title: "The lobby carries on when its host leaves",
