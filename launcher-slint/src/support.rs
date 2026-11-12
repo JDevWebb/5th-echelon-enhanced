@@ -29,6 +29,9 @@ struct State {
     read_at: Option<Instant>,
     /// The screen shows (answers are read there, and looked for every minute).
     open: bool,
+    /// An answer came that the screen hasn't shown yet: the side menu's dot (the notice is
+    /// only a few seconds).
+    answered: bool,
     /// A message started elsewhere (a name's review, from Settings), for the text box.
     draft: Option<String>,
     sending: bool,
@@ -54,6 +57,11 @@ impl Support {
         self.lock().open = false;
     }
 
+    /// An answer waits to be read on the screen (the side menu's dot).
+    pub(crate) fn answered(&self) -> bool {
+        self.lock().answered
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -73,6 +81,7 @@ fn read_now(app: &tauri::AppHandle) {
     match read {
         Ok((thread, read)) => {
             let last = thread.last_answer();
+            st.answered = !read && thread.unread > 0;
             if read {
                 Prefs::set_support_seen(last);
             } else if last > Prefs::support_seen().unwrap_or(0) && thread.unread > 0 {

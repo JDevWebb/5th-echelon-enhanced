@@ -347,7 +347,13 @@ impl Ui {
                 }
                 self.load_glance();
             }
-            "support" | "support-sent" if screen == "support" => self.load_page(),
+            "support" | "support-sent" => {
+                if screen == "support" {
+                    self.load_page();
+                }
+                let answered = self.app().state::<crate::support::Support>().answered();
+                let _ = self.window().upgrade_in_event_loop(move |w| w.set_support_unread(answered));
+            }
             "settings" if screen == "settings" => self.load_page(),
             "feedback" => {
                 let app = self.app();

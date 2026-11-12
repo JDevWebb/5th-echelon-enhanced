@@ -208,6 +208,7 @@ export component SideMenu inherits Rectangle {
     in property <bool> community;
     in property <int> requests;
     in property <bool> unread;
+    in property <bool> support-unread;
     in property <string> release;
     callback go(string);
     callback whats-new();
@@ -241,7 +242,7 @@ export component SideMenu inherits Rectangle {
         if community: HorizontalLayout { alignment: center; MenuItem { compact: root.compact; label: "Chat"; icon: Icons.chat; on: current == "chat"; dot: unread; clicked => { root.go("chat"); } } }
         HorizontalLayout { alignment: center; MenuItem { compact: root.compact; label: "Intel"; icon: Icons.intel; on: current == "intel"; clicked => { root.go("intel"); } } }
         Rectangle { vertical-stretch: 1; min-height: 4px; }
-        if community: HorizontalLayout { alignment: center; MenuItem { compact: root.compact; label: "Support"; icon: Icons.support; on: current == "support"; clicked => { root.go("support"); } } }
+        if community: HorizontalLayout { alignment: center; MenuItem { compact: root.compact; label: "Support"; icon: Icons.support; on: current == "support"; dot: support-unread; clicked => { root.go("support"); } } }
         HorizontalLayout { alignment: center; MenuItem { compact: root.compact; label: "Settings"; icon: Icons.settings; on: current == "settings"; clicked => { root.go("settings"); } } }
         Rectangle {
             height: 22px;

@@ -56,6 +56,8 @@ export component AppWindow inherits Window {
     in property <ActivityView> activity;
     // Chat has messages the player hasn't seen (the side menu's dot).
     in property <bool> chat-unread;
+    // An answer from the admins not read yet: Support's dot.
+    in property <bool> support-unread;
     // A watched match has a seat ("Ranked · Station"), or "".
     in property <string> seat-open;
 
@@ -263,6 +265,7 @@ export component AppWindow inherits Window {
             SideMenu {
                 current: root.screen == "setup" ? "play" : root.screen == "host" ? "servers" : root.screen;
                 unread: root.chat-unread;
+                support-unread: root.support-unread;
                 compact: root.height < 720px;
                 community: root.info.community;
                 requests: root.info.requests;
