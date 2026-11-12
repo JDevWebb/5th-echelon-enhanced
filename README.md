@@ -33,7 +33,7 @@
 <table>
 <tr><td><b>Address</b></td><td><code>scbl.jdevwebb.net</code>: the community network, the launcher's default; there's nothing to type</td></tr>
 <tr><td><b>Matchmaking</b></td><td>One matchmaking server for everyone (Beauharnois, Canada): accounts, friends, invites and every search, so players from every region find each other</td></tr>
-<tr><td><b>Relays</b></td><td>Near the players: Europe (Falkenstein, Germany), North America (Beauharnois, Canada) and Oceania (Sydney, Australia). The launcher pings each and the game uses the nearest; matches still run between the players</td></tr>
+<tr><td><b>Relays</b></td><td>Near the players: Europe (Falkenstein, Germany), North America (Beauharnois, Canada, and Silicon Valley, United States), South America (Santiago, Chile), Asia (Singapore) and Oceania (Sydney, Australia). The launcher pings each and the game uses the nearest; matches still run between the players</td></tr>
 <tr><td><b>Modes</b></td><td>Co-op and Spies vs Mercs: Find Teammate, Quick Match, lobby and private-match invites</td></tr>
 <tr><td><b>Friends</b></td><td>Friends-only lists and invites, joining a friend's game without an invite, blocking, player search, and chat</td></tr>
 <tr><td><b>Internet play</b></td><td>No VPN or port forwarding: the server tells your game its public address, and relays matches when a router can't be reached</td></tr>

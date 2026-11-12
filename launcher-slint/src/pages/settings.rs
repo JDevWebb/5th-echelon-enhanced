@@ -857,7 +857,7 @@ impl SettingsPage {
                 "Support the community servers",
                 "5th Echelon Enhanced is free, and always will be. If you'd like to, you can chip in towards hosting the community servers, about US$40 a month. It's entirely optional: there are no perks, and any amount is appreciated.",
                 "ko-fi.com/jdevwebb",
-                "Servers in Germany, Canada and Australia, and relays in Singapore, Chile and California.",
+                "A matchmaking server in Canada, and relays in Germany, Canada, California, Chile, Singapore and Australia.",
                 true,
             )
             .button(super::b(super::KOFI_ID, "Support on Ko-fi").kind("primary")),

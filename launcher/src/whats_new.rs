@@ -51,6 +51,11 @@ pub const RELEASES: &[Release] = &[
                 community: false,
             },
             Item {
+                title: "One server for everyone",
+                text: "The community network is now one server everyone signs in to (in Beauharnois, Canada), so every search finds players from every region. Your game plays through the relay nearest you: Falkenstein, Beauharnois, Silicon Valley, Santiago, Singapore or Sydney, picked by the launcher's pings. Your account, name, friends and stats came with you, and the launcher moved you over by itself.",
+                community: true,
+            },
+            Item {
                 title: "The lobby carries on when its host leaves",
                 text: "When the host of a public match's lobby leaves, one of the other players takes it over and everyone stays together, instead of each landing back in their own lobby. A party's leader invited into a friend's private match brings along the members who are the host's friends, and the party comes back together after it. Part of every game, on DirectX 9 and 11; thanks to mpw, who wrote it.",
                 community: false,
@@ -59,6 +64,11 @@ pub const RELEASES: &[Release] = &[
                 title: "Matches",
                 text: "A tab of its own: every public match on your server, who's in it (the host, parties, your friends, the sides once a round runs), what it's doing and its settings. Join one, or have the launcher tell you when a seat opens; New match starts one of your own whatever is open. Quick match leaves out matches with someone you've blocked. The overlay's Match tab does the same.",
                 community: false,
+            },
+            Item {
+                title: "Chat, redrawn",
+                text: "The rooms across the top (Global, Lobby, then each friend you're writing to), a sender's lines together, and what you can do to a line as words when you point at it; Lobby says who joined and left, and tags lines typed in the game. The overlay's Chat tab looks the same.",
+                community: true,
             },
             Item {
                 title: "Friends and blocked players",
@@ -145,6 +155,10 @@ pub const RELEASES: &[Release] = &[
             Fix {
                 lead: "Searches skip matches whose round has started",
                 rest: ", as the host's game now tells the server.",
+            },
+            Fix {
+                lead: "Esc that stops Play SvM or Play Coop finding your match",
+                rest: " is the game's again straight after, and never closes the game at its title screen.",
             },
         ],
     },

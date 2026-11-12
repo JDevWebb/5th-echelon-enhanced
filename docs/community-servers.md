@@ -8,7 +8,7 @@ Servers that anyone can join. The launcher sets players up on the community netw
 |---|---|
 | **Address** | `scbl.jdevwebb.net` |
 | **Matchmaking** | One server for everyone: Beauharnois, Canada |
-| **Relays** | Falkenstein, Germany; Beauharnois, Canada; Sydney, Australia (the game uses the nearest) |
+| **Relays** | Falkenstein, Germany; Beauharnois, Canada; Silicon Valley, United States; Santiago, Chile; Singapore; Sydney, Australia (the game uses the nearest) |
 | **Friend lists** | mutual |
 | **Run by** | [JDevWebb](https://github.com/JDevWebb) |
 
