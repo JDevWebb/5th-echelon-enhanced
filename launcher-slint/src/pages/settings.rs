@@ -855,7 +855,7 @@ impl SettingsPage {
         r.out().add(
             support(
                 "Support the community servers",
-                "5th Echelon Enhanced is free, and always will be. If you'd like to, you can chip in towards hosting the community servers, about US$40 a month. It's entirely optional: there are no perks, and any amount is appreciated.",
+                "5th Echelon Enhanced is free, and always will be. If you'd like to, you can chip in towards hosting the community servers, about US$50 a month. It's entirely optional: there are no perks, and any amount is appreciated.",
                 "ko-fi.com/jdevwebb",
                 "A matchmaking server in Canada, and relays in Germany, Canada, California, Chile, Singapore and Australia.",
                 true,

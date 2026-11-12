@@ -70,7 +70,7 @@ Reports go to your server's admins only if you agree, and the game sends the ser
 ### Support the community servers
 
 > [!TIP]
-> **5th Echelon Enhanced is free, and always will be.** If you'd like to, you can chip in towards **hosting the community servers** (the servers and relays, about **US$40 a month**). It's entirely optional: there are no perks, and any amount is appreciated.
+> **5th Echelon Enhanced is free, and always will be.** If you'd like to, you can chip in towards **hosting the community servers** (the servers and relays, about **US$50 a month**). It's entirely optional: there are no perks, and any amount is appreciated.
 >
 > <a href="https://ko-fi.com/jdevwebb"><img src="https://img.shields.io/badge/Ko--fi-Support%20the%20servers-FF5E5B?style=for-the-badge&amp;logo=ko-fi&amp;logoColor=white" alt="Support the servers on Ko-fi"></a>
 
