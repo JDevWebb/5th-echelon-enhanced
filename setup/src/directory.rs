@@ -638,10 +638,7 @@ mod tests {
         // A release has no stand-in: the community's own coordinator only.
         #[cfg(not(feature = "test-community"))]
         assert_eq!(community(), COMMUNITY);
-        assert!(
-            built_in("https://test.scbl.jdevwebb.net").is_empty(),
-            "never the community's servers for another directory"
-        );
+        assert!(built_in("https://test.scbl.jdevwebb.net").is_empty(), "never the community's servers for another directory");
         assert!(!built_in(COMMUNITY_OLD).is_empty());
         // A list kept under the old name is the community's under the new one, and replaced
         // by the new name's, not kept beside it.
