@@ -279,6 +279,17 @@ pub async fn is_coordinator(url: &str) -> bool {
     info["servers"].is_u64() && info["name"].as_str().is_some_and(|n| n.to_ascii_lowercase().contains("coordinator"))
 }
 
+/// A network's address as typed (`https://host`), as its coordinator: the community network as
+/// players know it (`scbl.jdevwebb.net`, its matchmaking server's name, or its coordinator's
+/// old names) is its coordinator's own, which is what answers `/v1/info` and `/v1/servers`.
+pub fn network_url(url: &str) -> String {
+    if setup::directory::same_directory(url, setup::directory::COMMUNITY) {
+        setup::directory::COMMUNITY.to_string()
+    } else {
+        url.to_string()
+    }
+}
+
 /// A network's coordinator, from what the player typed (`play.example.org`, or its
 /// `https://` address): it must answer `/v1/info` as one and list its servers
 /// (`/v1/servers`). Answers its address and how many servers it lists.
@@ -288,6 +299,7 @@ pub async fn check_network(typed: &str) -> Result<(String, usize), String> {
         return Err("A network's address starts with https://, so nobody on the way can change its list.".into());
     }
     let url = if typed.starts_with("https://") { typed.to_string() } else { format!("https://{typed}") };
+    let url = network_url(&url);
     if !setup::directory::valid_coordinator(&url) || url.trim_start_matches("https://").contains('/') {
         return Err(format!("\"{typed}\" isn't a network's address: type its host, like play.example.org."));
     }
@@ -363,9 +375,20 @@ pub async fn server_directory(coordinator: &str) -> Result<Browsed, String> {
             Ping::Ms(ms) => Some((s, Some(ms))),
         })
         .unzip();
-    // Pings to a directory that didn't answer would go nowhere.
+    // Pings to a directory that didn't answer would go nowhere. The servers' own round trips:
+    // its operators' metrics are per server.
     if note.is_none() {
         report_pings(coordinator, &servers, &pings);
+    }
+    // A server that offers relays (a network's matchmaking server) shows the nearest relay's
+    // ping: the game's traffic goes there, not to the server (players in Sydney play through
+    // the Sydney relay, not Canada). The relays it offers, all at once and kept for the start.
+    let picks: Vec<_> = servers.iter().map(|s| tokio::spawn(crate::relays::pick(s.host.clone()))).collect();
+    let mut pings = pings;
+    for (ping, pick) in pings.iter_mut().zip(picks) {
+        if let Some(relay) = pick.await.ok().flatten().filter(|p| p.ms > 0) {
+            *ping = Some(relay.ms);
+        }
     }
     Ok(Browsed {
         servers: servers.into_iter().zip(pings).collect(),
@@ -488,6 +511,21 @@ async fn ping(host: String, nat_port: Option<u16>) -> Ping {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The community network typed by the name players know (its matchmaking server's) or its
+    /// coordinator's old ones is its coordinator: that's what answers as a network.
+    #[test]
+    fn the_community_network_typed_is_its_coordinator() {
+        for typed in [
+            "https://scbl.jdevwebb.net",
+            "https://SCBL.jdevwebb.net/",
+            "https://play.scbl.jdevwebb.net",
+            "https://scbl-coord.jdevwebb.net",
+        ] {
+            assert_eq!(network_url(typed), setup::directory::COMMUNITY, "{typed}");
+        }
+        assert_eq!(network_url("https://play.example.org"), "https://play.example.org", "another network stays as typed");
+    }
 
     /// The launcher salts the hardware hashes for a server as the game does from uplay.toml:
     /// by the id the server gave, else by its host name.

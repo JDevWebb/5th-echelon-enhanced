@@ -599,7 +599,7 @@ pub fn pick_from_network(address: &str, log: &Log) -> Result<Option<String>, Str
     if address.parse::<std::net::IpAddr>().is_ok() || !net::valid_host(address) || !address.contains('.') {
         return Ok(None);
     }
-    let url = format!("https://{address}");
+    let url = crate::network::network_url(&format!("https://{address}"));
     let rt = crate::services::rt();
     // A network known here (the community's, or one listed before) is still one when its
     // directory doesn't answer: its servers come from the last list.

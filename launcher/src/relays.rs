@@ -47,16 +47,27 @@ fn kept() -> std::sync::MutexGuard<'static, Kept> {
 /// The relay nearest the player among those `server` offers, or None to keep the server's
 /// own helper (it offers none, or none answered).
 pub fn pick_for(server: &str) -> Option<Picked> {
-    if let Some((at, picked)) = kept().get(server) {
+    crate::services::rt().block_on(pick(server.to_string()))
+}
+
+/// [`pick_for`], from async code: the server menu shows the picked relay's ping as the
+/// server's, since the game's traffic goes there, not to the matchmaking server.
+pub async fn pick(server: String) -> Option<Picked> {
+    if let Some((at, picked)) = kept().get(&server) {
         if at.elapsed() < KEPT_FOR {
             return picked.clone();
         }
     }
-    let relays = setup::server_info::fetch(server, INFO_TIMEOUT).map(|i| i.relays).unwrap_or_default();
+    let asked = server.clone();
+    let relays = tokio::task::spawn_blocking(move || setup::server_info::fetch(&asked, INFO_TIMEOUT).map(|i| i.relays))
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
     let picked = if relays.is_empty() {
         None
     } else {
-        let pings = crate::services::rt().block_on(ping_all(&relays));
+        let pings = ping_all(&relays).await;
         // Always the nearest: players don't choose a relay (a far one would only make their own
         // connection worse).
         nearest(&relays, &pings).map(|i| Picked {
@@ -73,7 +84,7 @@ pub fn pick_for(server: &str) -> Option<Picked> {
         None if !relays.is_empty() => tracing::warn!("relay: none of the {} relays {server} offers answered; its own helper", relays.len()),
         None => {}
     }
-    kept().insert(server.to_string(), (Instant::now(), picked.clone()));
+    kept().insert(server, (Instant::now(), picked.clone()));
     picked
 }
 
