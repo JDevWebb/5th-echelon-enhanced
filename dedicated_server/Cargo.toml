@@ -39,8 +39,10 @@ sloggers = { workspace = true, features = ["json"] }
 sodiumoxide = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "net", "time", "sync", "io-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "time", "sync", "io-util", "macros"] }
 tokio-stream = { version = "0.1", default-features = false }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 toml = { workspace = true }
 tonic = { workspace = true }
 tonic-async-interceptor = { workspace = true }

@@ -117,6 +117,19 @@ pub fn ticket_for(name: &str, key: Option<&nat_proto::SessionKey>) -> Option<nat
     Some(ticket_on(KEYS.get()?, name, today(), key))
 }
 
+/// A tunnel's first message (0.5.2's T, tunnel.rs): a probe naming the player, with a ticket
+/// for that name and the session key it names, signed with that key, as a probe that registers
+/// must be. The name it proves.
+pub fn tunnel_auth(data: &[u8]) -> Option<String> {
+    let keys = KEYS.get()?;
+    let Message::Probe { nonce, name, ticket, cookie, .. } = Message::decode(data)? else { return None };
+    let (key, signature) = nat_proto::key_of(data)?;
+    (!name.is_empty()
+        && ticket_valid(keys, &name, &ticket, today(), Some(&key))
+        && identity::verify_bytes(&key, &nat_proto::probe_message(nonce, &cookie, &name), &signature))
+    .then_some(name)
+}
+
 /// Days a ticket works: the day it was issued and the next six. The game
 /// gets a new one each time it signs in to the API (at every start), so
 /// only a game left running for a week loses its relay; a ticket someone
@@ -474,6 +487,11 @@ impl Table {
     /// A relay port for a new registration from `src`: a free one, while that address holds
     /// fewer than [`MAX_RELAYED_PER_IP`] (registrations from `src` itself aside: they go).
     fn free_vport_for(&self, src: SocketAddrV4) -> Option<u16> {
+        // A tunnel's player (tunnel.rs): every one is at 127.0.0.1, and the tunnels have their
+        // own limit per real address.
+        if src.ip().is_loopback() && crate::tunnel::real_ip(src.port()).is_some() {
+            return self.free_vport();
+        }
         let held = self.by_ip.get(src.ip()).map_or(0, |ids| {
             ids.iter().filter_map(|id| self.peers.get(id)).filter(|p| p.vport.is_some() && p.real != src).count()
         });

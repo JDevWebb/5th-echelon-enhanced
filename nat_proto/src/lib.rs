@@ -455,6 +455,39 @@ pub fn is_private(ip: Ipv4Addr) -> bool {
     ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() || (a == 100 && (64..128).contains(&b))
 }
 
+/// The TCP tunnel (0.5.2's T): for a player whose network blocks UDP, the hook carries the
+/// game's datagrams in one WebSocket over HTTPS (port 443) to the server, which hands them to the
+/// same UDP services on the machine. Each binary message is one datagram: a byte saying which
+/// service it's for (or from), then the datagram. The first message is [`TUNNEL_AUTH`]: a probe
+/// (with its session key extension) proving the name, as a relayed player's probe does.
+pub mod tunnel {
+    /// The first message: an encoded probe, signed.
+    pub const AUTH: u8 = 0;
+    /// The game's sign-in (Quazal's login port).
+    pub const LOGIN: u8 = 1;
+    /// The game's secure service.
+    pub const SECURE: u8 = 2;
+    /// The NAT helper and relay (Storm's traffic, wrapped as for a relayed player).
+    pub const HELPER: u8 = 3;
+    /// The path the server takes tunnels on (Caddy proxies it to the server).
+    pub const PATH: &str = "/tunnel";
+
+    /// One datagram for (or from) `service`.
+    pub fn frame(service: u8, datagram: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(datagram.len() + 1);
+        out.push(service);
+        out.extend_from_slice(datagram);
+        out
+    }
+
+    /// A message's service and datagram: none for an empty one, an unknown service, or one
+    /// larger than a datagram the relay carries (with its wrapping).
+    pub fn parse(message: &[u8]) -> Option<(u8, &[u8])> {
+        let (&service, datagram) = message.split_first()?;
+        (service <= HELPER && datagram.len() <= super::MAX_PAYLOAD + 64).then_some((service, datagram))
+    }
+}
+
 /// The station URL the game advertises for `addr` (the reply the game's own
 /// NAT echo would have carried).
 pub fn station_url(addr: SocketAddrV4) -> String {
@@ -700,5 +733,16 @@ mod tests {
         let mut old = encoded.clone();
         old[PROBE_REACH..PROBE_REACH + 4].fill(0);
         assert!(matches!(Message::decode(&old), Some(Message::Probe { reach: None, .. })));
+    }
+
+    /// T: a tunnel message is a service byte and the datagram.
+    #[test]
+    fn tunnel_frames_round_trip() {
+        let f = tunnel::frame(tunnel::SECURE, b"datagram");
+        assert_eq!(tunnel::parse(&f), Some((tunnel::SECURE, &b"datagram"[..])));
+        assert_eq!(tunnel::parse(&[]), None);
+        assert_eq!(tunnel::parse(&[9, 1, 2]), None, "no such service");
+        assert!(tunnel::parse(&tunnel::frame(tunnel::HELPER, &vec![0; MAX_PAYLOAD + 64])).is_some());
+        assert!(tunnel::parse(&tunnel::frame(tunnel::HELPER, &vec![0; MAX_PAYLOAD + 65])).is_none(), "too big");
     }
 }

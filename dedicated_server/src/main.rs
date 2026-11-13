@@ -125,6 +125,7 @@ mod storage;
 mod support;
 mod ticket;
 mod tracking;
+mod tunnel;
 mod tracking_ext;
 mod ubi_acc_mgmt;
 mod uplay_win;
@@ -651,6 +652,7 @@ fn main() -> color_eyre::Result<()> {
 
     // Behind a proxy or remapped ports: hand out the ports players use.
     let public_ports = config.public_ports();
+    let tunnel_ports = config.tunnel_services();
     if !config.public.is_default() {
         info!(logger, "Players connect to {:?} on {public_ports:?}", config.public.host);
     }
@@ -787,6 +789,23 @@ fn main() -> color_eyre::Result<()> {
         match nat_helper::start(&logger.new(o!("service" => "nat")), nat, relay_ip, may_relay) {
             Ok(t) => threads.extend(t),
             Err(e) => crit!(logger, "Couldn't start the NAT helper on UDP {}: {e}", nat.listen),
+        }
+        // The tunnel for players whose UDP is blocked (0.5.2's T), when it's set up.
+        if let Some(listen) = nat.tunnel {
+            let (login, secure, helper) = tunnel_ports;
+            let services = tunnel::Services { login, secure, helper };
+            let tunnel_logger = logger.new(o!("service" => "tunnel"));
+            let spawned = std::thread::Builder::new().name("tunnel".into()).spawn(move || {
+                let logger = tunnel_logger;
+                match tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build() {
+                    Ok(rt) => rt.block_on(tunnel::serve(logger, listen, services)),
+                    Err(e) => crit!(logger, "Couldn't start the tunnel: {e}"),
+                }
+            });
+            match spawned {
+                Ok(t) => threads.push(t),
+                Err(e) => crit!(logger, "Couldn't start the tunnel: {e}"),
+            }
         }
     }
     for (name, svc) in config.quazal.into_services()? {

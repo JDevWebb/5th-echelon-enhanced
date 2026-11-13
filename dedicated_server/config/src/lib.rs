@@ -305,6 +305,10 @@ pub struct NatConfig {
     /// Without it, the secure service's address is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_address: Option<std::net::IpAddr>,
+    /// The tunnel for players whose UDP is blocked (0.5.2's T): where it listens, on the machine
+    /// only (Caddy proxies `/tunnel` on 443 to it). None: no tunnel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel: Option<SocketAddr>,
 }
 
 const fn default_true() -> bool {
@@ -333,6 +337,7 @@ impl Default for NatConfig {
             relay_kbps_per_player: default_relay_kbps(),
             relay_pairs: true,
             public_address: None,
+            tunnel: None,
         }
     }
 }
@@ -400,6 +405,10 @@ pub struct PublicPorts {
     /// The API over HTTPS, when there is one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_tls: Option<u16>,
+    /// It takes tunnels for players whose UDP is blocked (0.5.2's T), on 443 at
+    /// `nat_proto::tunnel::PATH`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub tunnel: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -569,6 +578,13 @@ impl Config {
         (login, secure, content)
     }
 
+    /// The ports the sign-in, the secure service and the NAT helper listen on, on this machine:
+    /// where the tunnel (0.5.2's T) hands players' datagrams.
+    pub fn tunnel_services(&self) -> (u16, u16, u16) {
+        let (login, secure, _) = self.listen_ports();
+        (login.unwrap_or(21126), secure.unwrap_or(21127), self.nat.listen.port())
+    }
+
     /// The ports players use: `[public]`, or else the ones the services
     /// listen on.
     pub fn public_ports(&self) -> PublicPorts {
@@ -580,6 +596,7 @@ impl Config {
             content: self.public.content.or(content).unwrap_or(8000),
             nat: self.nat.enabled.then(|| self.public.nat.unwrap_or(self.nat.listen.port())),
             api_tls: self.public.api_tls,
+            tunnel: self.nat.enabled && self.nat.tunnel.is_some(),
         }
     }
 
@@ -732,6 +749,7 @@ mod tests {
                 content: 8000,
                 nat: Some(21128),
                 api_tls: None,
+                tunnel: false,
             }
         );
         cfg.public = PublicConfig {

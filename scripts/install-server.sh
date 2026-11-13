@@ -1991,6 +1991,8 @@ if [ "$no_caddy" -eq 0 ]; then
   printf '\n[public]\nhost = "%s"\napi = 80\ncontent = 80\n' "$domain" >> "$CONFIG"
   [ "$tls_kept" -eq 0 ] || printf 'api_tls = 443\n' >> "$CONFIG"
   [ -z "$aliases_line" ] || printf 'aliases = %s\n' "$aliases_line" >> "$CONFIG"
+  # The tunnel for players whose UDP is blocked (0.5.2), behind Caddy's /tunnel only.
+  toml_put nat tunnel '"127.0.0.1:21130"'
   # Passwords and sign-ins only over HTTPS while the API has it; without
   # it, none could sign in.
   toml_put limits require_tls_for_credentials "$( [ "$tls_kept" -eq 1 ] && echo true || echo false )"
@@ -3179,6 +3181,11 @@ site_routes() {
 	}
 	handle /mp_balancing.ini {
 		reverse_proxy 127.0.0.1:8000
+	}
+	# The tunnel for players whose UDP is blocked (0.5.2): a WebSocket, which Caddy proxies as
+	# it is, adding the player's address (X-Forwarded-For) for the server.
+	handle /tunnel {
+		reverse_proxy 127.0.0.1:21130
 	}
 	# The game's uploads (its ShadowNet snapshot, 0.4.3): a PUT to the one-time address
 	# the server gave it, which only the content server takes.

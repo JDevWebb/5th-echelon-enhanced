@@ -279,6 +279,10 @@ fn relay_only_info(full: Value) -> Value {
     }
     if let Some(nat) = full["ports"]["nat"].as_u64() {
         info["ports"] = json!({ "nat": nat });
+        // A relay's tunnel too (0.5.2's T): its relayed players may come that way.
+        if full["ports"]["tunnel"] == true {
+            info["ports"]["tunnel"] = json!(true);
+        }
     }
     info
 }
@@ -506,6 +510,7 @@ mod tests {
                 content: 80,
                 nat: Some(31128),
                 api_tls: None,
+                tunnel: false,
             },
             Some("blacklist.example.com".into()),
         );
