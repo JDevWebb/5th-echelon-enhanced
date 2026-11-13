@@ -379,6 +379,12 @@ pub fn status() -> Option<String> {
 }
 
 /// The router's port mapping for the Storm port, from `portmap`.
+/// The port the helper saw this PC's Storm socket come from, once it has answered: the
+/// router-side port the router gives it (portmap.rs asks to forward that one, 0.5.2's J7).
+pub(crate) fn observed_port() -> Option<u16> {
+    state().reply.as_ref().map(|r| r.observed.port())
+}
+
 pub(crate) fn set_mapping(mapping: Option<SocketAddrV4>) {
     let mut st = state();
     if st.mapping != mapping {

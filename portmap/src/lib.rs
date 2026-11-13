@@ -43,7 +43,7 @@ impl Mapping {
                 let _ = gateway.remove_port(PortMappingProtocol::UDP, port);
             }
             Handle::Pmp { gateway, local, port } => {
-                let _ = pmp_map(gateway, local, port, 0);
+                let _ = pmp_map(gateway, local, port, 0, 0);
             }
         }
     }
@@ -53,11 +53,27 @@ impl Mapping {
 /// address this PC reaches the router from) for `lease` seconds. On failure,
 /// says why for each way tried.
 pub fn map(port: u16, pinned: Option<Ipv4Addr>, lease: u32, description: &str) -> Result<Mapping, String> {
-    let upnp_err = match upnp(port, pinned, lease, description) {
+    map_as(port, port, pinned, lease, description)
+}
+
+/// As [`map`], asking for `external` on the router's side (the port it already gives this PC's
+/// `port`; see [`port_to_ask`]).
+pub fn map_as(port: u16, external: u16, pinned: Option<Ipv4Addr>, lease: u32, description: &str) -> Result<Mapping, String> {
+    let upnp_err = match upnp(port, external, pinned, lease, description) {
         Ok(m) => return Ok(m),
         Err(e) => e,
     };
-    pmp(port, pinned, lease).map_err(|pmp_err| format!("UPnP: {upnp_err}; NAT-PMP: {pmp_err}"))
+    pmp(port, external, pinned, lease).map_err(|pmp_err| format!("UPnP: {upnp_err}; NAT-PMP: {pmp_err}"))
+}
+
+/// The router-side port to ask for, for this PC's `local` port: the one the server saw this PC's
+/// packets come from, when it saw them (`observed`). Most routers keep the port, so it's
+/// `local`; one that gave another port did so because another device on the network holds
+/// `local` there (two PCs playing behind one router, 0.5.2's J7). Asking for `local` then makes a
+/// forward that collides with that device's traffic, and the server's answers go to the wrong
+/// PC; asking for the port the router already gave this PC doesn't.
+pub fn port_to_ask(local: u16, observed: Option<u16>) -> u16 {
+    observed.filter(|p| *p != 0).unwrap_or(local)
 }
 
 /// This PC's address on the network towards `to` (no packet is sent).
@@ -100,7 +116,7 @@ fn find_router(router: Ipv4Addr, local: Ipv4Addr) -> Result<igd_next::Gateway, S
     }
 }
 
-fn upnp(port: u16, pinned: Option<Ipv4Addr>, lease: u32, description: &str) -> Result<Mapping, String> {
+fn upnp(port: u16, external_port: u16, pinned: Option<Ipv4Addr>, lease: u32, description: &str) -> Result<Mapping, String> {
     let router = default_gateway().ok_or("no default gateway")?;
     let local = pinned.or_else(|| local_ip_towards(router)).ok_or("no local address towards the router")?;
     let gateway = find_router(router, local)?;
@@ -110,8 +126,8 @@ fn upnp(port: u16, pinned: Option<Ipv4Addr>, lease: u32, description: &str) -> R
     };
     usable_external(external)?;
     let internal = SocketAddr::V4(SocketAddrV4::new(local, port));
-    let mapped = match gateway.add_port(PortMappingProtocol::UDP, port, internal, lease, description) {
-        Ok(()) => port,
+    let mapped = match gateway.add_port(PortMappingProtocol::UDP, external_port, internal, lease, description) {
+        Ok(()) => external_port,
         Err(_) => {
             // This PC's own mapping from an earlier game (one that didn't get to remove it)
             // holds the port for up to its lease; many routers then refuse any other mapping
@@ -122,8 +138,8 @@ fn upnp(port: u16, pinned: Option<Ipv4Addr>, lease: u32, description: &str) -> R
             for external in &stale {
                 let _ = gateway.remove_port(PortMappingProtocol::UDP, *external);
             }
-            match gateway.add_port(PortMappingProtocol::UDP, port, internal, lease, description) {
-                Ok(()) => port,
+            match gateway.add_port(PortMappingProtocol::UDP, external_port, internal, lease, description) {
+                Ok(()) => external_port,
                 // Taken, e.g. by another PC on this network playing too.
                 Err(_) => gateway.add_any_port(PortMappingProtocol::UDP, internal, lease, description).map_err(|e| e.to_string())?,
             }
@@ -226,22 +242,22 @@ fn pmp_request(gateway: Ipv4Addr, local: Ipv4Addr, request: &[u8], reply_len: us
     Err("no answer".into())
 }
 
-fn pmp_map(gateway: Ipv4Addr, local: Ipv4Addr, port: u16, lifetime: u32) -> Result<u16, String> {
+fn pmp_map(gateway: Ipv4Addr, local: Ipv4Addr, port: u16, external: u16, lifetime: u32) -> Result<u16, String> {
     let mut req = vec![0u8, 1, 0, 0];
     req.extend_from_slice(&port.to_be_bytes());
-    req.extend_from_slice(&port.to_be_bytes());
+    req.extend_from_slice(&external.to_be_bytes());
     req.extend_from_slice(&lifetime.to_be_bytes());
     let reply = pmp_request(gateway, local, &req, 16)?;
     Ok(u16::from_be_bytes([reply[10], reply[11]]))
 }
 
-fn pmp(port: u16, pinned: Option<Ipv4Addr>, lease: u32) -> Result<Mapping, String> {
+fn pmp(port: u16, external_port: u16, pinned: Option<Ipv4Addr>, lease: u32) -> Result<Mapping, String> {
     let gateway = default_gateway().ok_or("no default gateway")?;
     let local = pinned.or_else(|| local_ip_towards(gateway)).ok_or("no local address towards the router")?;
     let reply = pmp_request(gateway, local, &[0, 0], 12)?;
     let external = Ipv4Addr::new(reply[8], reply[9], reply[10], reply[11]);
     usable_external(external)?;
-    let mapped = pmp_map(gateway, local, port, lease)?;
+    let mapped = pmp_map(gateway, local, port, external_port, lease)?;
     Ok(Mapping {
         public: SocketAddrV4::new(external, mapped),
         how: "NAT-PMP",
@@ -252,6 +268,14 @@ fn pmp(port: u16, pinned: Option<Ipv4Addr>, lease: u32) -> Result<Mapping, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn asks_for_the_port_the_router_already_gives_this_pc() {
+        assert_eq!(port_to_ask(13000, None), 13000, "not seen yet");
+        assert_eq!(port_to_ask(13000, Some(13000)), 13000, "kept");
+        assert_eq!(port_to_ask(13000, Some(41234)), 41234, "another PC holds 13000 at the router");
+        assert_eq!(port_to_ask(13000, Some(0)), 13000);
+    }
 
     #[test]
     fn reads_the_default_route() {

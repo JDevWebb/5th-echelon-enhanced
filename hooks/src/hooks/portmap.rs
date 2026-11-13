@@ -3,6 +3,15 @@
 //! other players reach this PC directly, even through a NAT that hole
 //! punching can't get through. The mapping is renewed while the game runs and
 //! removed when it exits (and it expires by itself after an hour otherwise).
+//!
+//! It waits for the NAT helper's first answer and asks for the router-side port the helper
+//! saw: another PC behind the same router may already hold 13000 there, and a forward of 13000
+//! made first would have this PC's traffic leave on that same port, colliding with the other
+//! PC's: the helper's answers then go to the other PC (0.5.2's J7, found on the cutover night).
+//! Without the forward first, the router gives this PC's packets a port of their own, and that's
+//! the one asked for. Until the forward is made the helper relays this PC (it said no mapping),
+//! which works, and it moves to direct with the next probe. With no helper answering (a LAN
+//! server), the forward is made with 13000 after [`WAIT_FOR_HELPER`], as before.
 
 use std::net::Ipv4Addr;
 use std::sync::atomic::AtomicBool;
@@ -18,17 +27,35 @@ const LEASE: u32 = 3600;
 const RENEW: Duration = Duration::from_secs(25 * 60);
 const RETRY: Duration = Duration::from_secs(5 * 60);
 const DESCRIPTION: &str = "Splinter Cell Blacklist (5th Echelon)";
+/// How long the first mapping waits for the helper to say which port the router gives us
+/// (the game starts Storm's socket, and so its probes, only once it goes online).
+const WAIT_FOR_HELPER: Duration = Duration::from_secs(180);
 
 static STOP: AtomicBool = AtomicBool::new(false);
 static MAPPED: Mutex<Option<portmap::Mapping>> = Mutex::new(None);
 
 pub fn start(pinned: Option<Ipv4Addr>) {
     let _ = std::thread::Builder::new().name("fe-portmap".into()).spawn(move || {
+        let started = Instant::now();
         let mut next = Instant::now();
         let mut logged_failure = false;
+        // The router-side port asked for: chosen once, then kept for the renewals.
+        let mut external: Option<u16> = None;
         while !STOP.load(Ordering::Relaxed) {
+            if external.is_none() {
+                let seen = super::nat::observed_port();
+                if seen.is_none() && started.elapsed() < WAIT_FOR_HELPER {
+                    std::thread::sleep(Duration::from_millis(500));
+                    continue;
+                }
+                let port = portmap::port_to_ask(PORT, seen);
+                if port != PORT {
+                    info!("NAT: the router gives this PC's {PORT} as {port} (another device here holds {PORT}): asking to forward {port}");
+                }
+                external = Some(port);
+            }
             if Instant::now() >= next {
-                match portmap::map(PORT, pinned, LEASE, DESCRIPTION) {
+                match portmap::map_as(PORT, external.unwrap_or(PORT), pinned, LEASE, DESCRIPTION) {
                     Ok(mapping) => {
                         let first = MAPPED.lock().map(|m| m.is_none()).unwrap_or(true);
                         if first {
