@@ -2162,7 +2162,16 @@ impl MyRenderLoop {
                         let _c = ui.push_style_color(StyleColor::Text, pal().fg);
                         ui.text_wrapped(&m.body);
                     });
-                    let bottom = ui.item_rect_max()[1].max(if together { 0.0 } else { screen_top + tile });
+                    // A line of the same sender's ends where its text does; a first line, not above
+                    // its tile. (The `together` bound was 0.0, the top of the screen: scrolled, a
+                    // line above it has a negative y, and was moved down to the screen's top with
+                    // everything after it, so the log grew by the scroll every frame and, kept at
+                    // its bottom, chased it: the newest messages out of reach, the wheel no help.)
+                    let bottom = if together {
+                        ui.item_rect_max()[1]
+                    } else {
+                        ui.item_rect_max()[1].max(screen_top + tile)
+                    };
                     if let Some(edge) = edge {
                         let dl = ui.get_window_draw_list();
                         dl.add_rect([screen_x - self.s(8.0), screen_top - self.s(2.0)], [screen_x - self.s(6.0), bottom + self.s(2.0)], edge)
