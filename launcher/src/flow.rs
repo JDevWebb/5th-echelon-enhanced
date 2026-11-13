@@ -1190,6 +1190,27 @@ fn sentence(text: String) -> String {
 mod tests {
     use super::explorer_path;
 
+    /// A player still set up on an old community name that doesn't answer (eu1 after the
+    /// cutover) moves to the network's one server; elsewhere, or a listed name, stays.
+    #[test]
+    fn an_old_community_name_that_doesnt_answer_moves_to_the_one_server() {
+        let listing = |host: &str, also: &[&str]| {
+            let mut l: setup::directory::Listing = serde_json::from_str(&format!(r#"{{"id":"x","name":"x","host":"{host}"}}"#)).unwrap();
+            l.also = also.iter().map(|s| s.to_string()).collect();
+            (l, None)
+        };
+        let community = setup::directory::COMMUNITY;
+        let one = [listing("scbl.jdevwebb.net", &["ca1.scbl.jdevwebb.net", "na1.scbl.jdevwebb.net"])];
+        assert_eq!(super::community_move("eu1.scbl.jdevwebb.net", community, &one).as_deref(), Some("scbl.jdevwebb.net"));
+        assert_eq!(super::community_move("EU1.scbl.jdevwebb.net ", "https://scbl.jdevwebb.net", &one).as_deref(), Some("scbl.jdevwebb.net"), "the network's old name");
+        assert_eq!(super::community_move("play.scbl.jdevwebb.net", community, &one).as_deref(), Some("scbl.jdevwebb.net"));
+        assert_eq!(super::community_move("na1.scbl.jdevwebb.net", community, &one), None, "listed: listed_elsewhere's");
+        assert_eq!(super::community_move("eu1.example.net", community, &one), None, "not the community's");
+        assert_eq!(super::community_move("eu1.scbl.jdevwebb.net", "https://coord.example.net", &one), None, "another network");
+        let two = [listing("scbl.jdevwebb.net", &[]), listing("other.scbl.jdevwebb.net", &[])];
+        assert_eq!(super::community_move("eu1.scbl.jdevwebb.net", community, &two), None, "more than one to choose from");
+    }
+
     /// A player set up on the matchmaking server's machine name moves to its record, the host
     /// it's listed by; one set up on the record, or on a server the directory doesn't name
     /// otherwise, stays.
@@ -1307,12 +1328,17 @@ pub fn moved_server(from: &str) -> Option<String> {
     // machine's own name, e.g. na1's): it's listed by its record, which follows it in a
     // failover, so the player moves to that. The coordinator lists other names only for the
     // matchmaking server its operator named.
-    if let Ok(listed) = crate::services::rt().block_on(crate::network::server_directory(&directory)) {
+    let listed_now = crate::services::rt().block_on(crate::network::server_directory(&directory)).ok();
+    if let Some(listed) = &listed_now {
         if let Some(to) = listed_elsewhere(&listed.servers, &from) {
             return Some(to);
         }
     }
-    let info = setup::server_info::fetch(&from, std::time::Duration::from_secs(4))?;
+    let Some(info) = setup::server_info::fetch(&from, std::time::Duration::from_secs(4)) else {
+        // An old name of the community network's that doesn't answer (eu1 after 13 Nov, its
+        // name gone from its machine): its players play on the network's one server now.
+        return listed_now.and_then(|l| community_move(&from, &directory, &l.servers));
+    };
     let to = info
         .moved_to
         .map(|t| t.trim().to_ascii_lowercase())
@@ -1328,6 +1354,28 @@ pub fn moved_server(from: &str) -> Option<String> {
         .iter()
         .any(|(l, _)| l.host.eq_ignore_ascii_case(&to) || l.also.iter().any(|n| n.eq_ignore_ascii_case(&to)))
         .then_some(to)
+}
+
+/// The community network's own servers' names end so; the network has one server to play on
+/// since 13 Nov 2026 (global matchmaking), its others are relays.
+const COMMUNITY_SUFFIX: &str = ".scbl.jdevwebb.net";
+
+/// Where a player set up on `from` goes when `from` doesn't answer: on the community network
+/// (`directory`), from one of its old names that the directory doesn't list as a place to play,
+/// to the one server it lists. None anywhere else, or with more or fewer than one listed.
+fn community_move(from: &str, directory: &str, servers: &[(setup::directory::Listing, Option<u32>)]) -> Option<String> {
+    let from = from.trim().to_ascii_lowercase();
+    if !setup::directory::same_directory(directory, setup::directory::COMMUNITY) || !(from.ends_with(COMMUNITY_SUFFIX) || from == "play.scbl.jdevwebb.net") {
+        return None;
+    }
+    let listed = |l: &setup::directory::Listing| l.host.eq_ignore_ascii_case(&from) || l.also.iter().any(|n| n.eq_ignore_ascii_case(&from));
+    if servers.iter().any(|(l, _)| listed(l)) {
+        return None;
+    }
+    match servers {
+        [(only, _)] => Some(only.host.trim().to_ascii_lowercase()).filter(|h| setup::directory::listable_host(h) && *h != from),
+        _ => None,
+    }
 }
 
 /// The host a server set up as `from` is listed by, when `from` is another of its names.

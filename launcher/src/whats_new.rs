@@ -73,6 +73,10 @@ pub const RELEASES: &[Release] = &[
         ],
         fixed: &[
             Fix {
+                lead: "Still set up on eu1",
+                rest: " (or another of the community's old servers): the launcher moves you to the network's server at start instead of saying it can't connect.",
+            },
+            Fix {
                 lead: "Two PCs behind one router",
                 rest: " can both play on the same relay: the second one's port forwarding no longer collides with the first's traffic.",
             },
