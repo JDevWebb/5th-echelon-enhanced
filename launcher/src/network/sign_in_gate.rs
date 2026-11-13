@@ -80,14 +80,17 @@ struct Held {
     closed: Option<Instant>,
 }
 
-/// The last "closed for maintenance" refusal, and when: the notice under Play says it.
-static KEPT_OUT: Mutex<Option<(Instant, String)>> = Mutex::new(None);
+/// The last "closed for maintenance" refusal by each server, and when: the notice under Play
+/// says it.
+fn kept_out_by() -> std::sync::MutexGuard<'static, HashMap<String, (Instant, String)>> {
+    static KEPT_OUT: std::sync::LazyLock<Mutex<HashMap<String, (Instant, String)>>> = std::sync::LazyLock::new(Mutex::default);
+    KEPT_OUT.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// Why the player's sign-in was refused for maintenance in the last two minutes, if it was
-/// (a tester signs in, and then this is cleared).
+/// (a tester signs in, and then that server's is cleared).
 pub fn kept_out() -> Option<String> {
-    let k = KEPT_OUT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    k.as_ref().filter(|(at, _)| at.elapsed() < Duration::from_secs(120)).map(|(_, why)| why.clone())
+    kept_out_by().values().filter(|(at, _)| at.elapsed() < Duration::from_secs(120)).max_by_key(|(at, _)| *at).map(|(_, why)| why.clone())
 }
 
 /// Holds by server, and by server, account and password (hashed).
@@ -158,7 +161,7 @@ fn record_at(server: &str, account: &str, secret: &str, failure: Option<&Failure
             if let Some(h) = all.get_mut(server) {
                 (h.connection, h.busy, h.closed) = ((0, None), None, None);
             }
-            *KEPT_OUT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            kept_out_by().remove(server);
         }
         Some(Failure::Connection) => {
             let h = all.entry(server.to_string()).or_default();
@@ -170,7 +173,7 @@ fn record_at(server: &str, account: &str, secret: &str, failure: Option<&Failure
         Some(Failure::Busy) => all.entry(server.to_string()).or_default().busy = Some(now + BUSY_WAIT),
         Some(Failure::Closed(why)) => {
             all.entry(server.to_string()).or_default().closed = Some(now + CLOSED_WAIT);
-            *KEPT_OUT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((now, why.clone()));
+            kept_out_by().insert(server.to_string(), (now, why.clone()));
         }
         Some(Failure::Banned(why)) => all.entry(key).or_default().banned = Some((now + BANNED_WAIT, why.clone())),
         Some(Failure::Wrong) => {

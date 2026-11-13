@@ -194,6 +194,13 @@ pub fn on_link(data: &[u8], src: std::net::SocketAddrV4, socket: &std::net::UdpS
         // Only from the matchmaking server: a player of ours whose joins kept failing (J2).
         crate::link::Body::Relay { name } if link.matchmaking => crate::nat_helper::force_relay(&name, "failed_joins"),
         crate::link::Body::Relay { .. } => {}
+        // Another member's reach check for its player (J1), sent from here: rate-limited, so a
+        // member can't use it to send traffic anywhere at will.
+        crate::link::Body::Reach { to, nonce } => {
+            if reach_allowed(to) {
+                crate::nat_helper::send_reach_for_another(socket, to, nonce);
+            }
+        }
         // A relay's event about its player, kept here with the player's sessions; only the
         // relay's own kinds, so a relay can't write anything else into them.
         // Only about a player that relay reports (its events follow its reports), and only
@@ -269,6 +276,35 @@ pub fn relay_remote(name: &str) -> bool {
         let message = crate::link::seal(&link.key, own, identity::now(), &body);
         let _ = socket.send_to(&message, std::net::SocketAddrV4::new(link.ip, link.port));
     }
+    true
+}
+
+/// Asks another member of the network to send a reach check to `to` (J1): false when there's
+/// none to ask (a lone server).
+pub fn reach_via_another(to: std::net::SocketAddrV4, nonce: u32) -> bool {
+    let Some(own) = OWN_ID.get() else { return false };
+    let Some(socket) = MM_SOCKET.get().or_else(|| LINK_SOCKET.get()) else { return false };
+    let all = links();
+    let Some(link) = all.iter().find(|l| l.id != *own) else { return false };
+    let message = crate::link::seal(&link.key, own, identity::now(), &crate::link::Body::Reach { to, nonce });
+    socket.send_to(&message, std::net::SocketAddrV4::new(link.ip, link.port)).is_ok()
+}
+
+/// Reach checks sent for other members: one a second to any address at most, and a few
+/// hundred a minute in all.
+fn reach_allowed(to: std::net::SocketAddrV4) -> bool {
+    static SENT: std::sync::LazyLock<Mutex<(std::time::Instant, u32, std::collections::HashMap<std::net::SocketAddrV4, std::time::Instant>)>> =
+        std::sync::LazyLock::new(|| Mutex::new((std::time::Instant::now(), 0, std::collections::HashMap::new())));
+    let now = std::time::Instant::now();
+    let mut s = SENT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if now.duration_since(s.0) >= std::time::Duration::from_secs(60) {
+        *s = (now, 0, std::collections::HashMap::new());
+    }
+    if s.1 >= 300 || s.2.get(&to).is_some_and(|at| now.duration_since(*at) < std::time::Duration::from_secs(1)) {
+        return false;
+    }
+    s.1 += 1;
+    s.2.insert(to, now);
     true
 }
 

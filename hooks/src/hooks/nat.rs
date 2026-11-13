@@ -135,6 +135,9 @@ struct State {
     echo_requests: u32,
     /// The fall back to the game's own echo was said (once per registration).
     echo_fallback_said: bool,
+    /// The last reach check that got through to the Storm socket (J1): its nonce goes back to
+    /// the helper in each probe, proof the port mapping lets others in.
+    reach_seen: Option<u32>,
     /// The ticket for our name, from signing in (zeros: none yet).
     ticket: nat_proto::Ticket,
     /// The last cookie the server gave us, echoed in the next probe.
@@ -189,6 +192,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     told_game: None,
     echo_requests: 0,
     echo_fallback_said: false,
+    reach_seen: None,
     ticket: [0; 16],
     cookie: [0; 16],
     tag: [0; 8],
@@ -686,6 +690,17 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
             }
             return if small { hand_over(data, buf, len) } else { n };
         }
+        // A reach check (J1), sent from another relay or the helper's second port to see whether
+        // the port mapping lets others in: never to the game, never answered to its sender; its
+        // nonce goes back to our own helper in the next probe (only the helper's own nonce counts).
+        if let Some(Message::Reach { nonce }) = Message::decode(data) {
+            let mut st = state();
+            if st.reach_seen != Some(nonce) {
+                st.reach_seen = Some(nonce);
+                st.last_probe = None;
+            }
+            continue;
+        }
         let (server, second) = {
             let st = state();
             (st.server, st.second)
@@ -907,6 +922,7 @@ fn round_trip(server: SocketAddrV4) -> Option<u16> {
             ticket: [0; 16],
             cookie: [0; 16],
             rtt_ms: None,
+            reach: None,
         }
         .encode();
         let started = Instant::now();
@@ -1029,6 +1045,7 @@ fn worker(host: String, port: u16) {
                         ticket: st.ticket,
                         cookie: st.cookie,
                         rtt_ms: st.rtt_ms,
+                        reach: st.reach_seen,
                     }
                     .encode();
                     // With a ticket: signed with the session key it names.

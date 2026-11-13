@@ -28,6 +28,7 @@ async fn probe(socket: &UdpSocket, to: SocketAddr, second: bool) -> Result<Socke
         ticket: [0; 16],
         cookie: [0; 16],
         rtt_ms: None,
+        reach: None,
     }
     .encode();
     let mut buf = [0u8; 256];

@@ -3044,6 +3044,7 @@ async fn nat_probe_scenario(ctx: &mut Ctx) -> Result<()> {
             ticket: [0; 16],
             cookie: [0; 16],
             rtt_ms: None,
+            reach: None,
         }
         .encode()
     };

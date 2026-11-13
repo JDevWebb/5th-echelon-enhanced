@@ -313,6 +313,7 @@ pub async fn nat_register_with_key(
             ticket,
             cookie,
             rtt_ms,
+            reach: None,
         }
         .encode();
         if let Some(k) = key {

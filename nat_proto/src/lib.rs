@@ -56,6 +56,8 @@ const HEADER: usize = MAGIC.len() + 2;
 const ADDR: usize = 6;
 /// Where a probe's `rtt_ms` is: in the padding, after the longest name.
 const PROBE_RTT: usize = HEADER + 1 + 4 + ADDR + 16 + 16 + 1 + MAX_NAME;
+/// Where a probe's `reach` is: in the padding, after `rtt_ms` (0.5.2's J1).
+const PROBE_REACH: usize = PROBE_RTT + 2;
 
 /// Proves a probe's name: the server's MAC of it, handed to the player when
 /// they sign in.
@@ -162,6 +164,9 @@ pub enum Message {
         /// the padding, so a server from before it reads none, and a hook from before it
         /// sends none.
         rtt_ms: Option<u16>,
+        /// The nonce of the last [`Message::Reach`] that got through to this socket (0.5.2's
+        /// J1): proof that its port mapping lets other addresses in. In the padding too.
+        reach: Option<u32>,
     },
     /// Server → hook.
     ProbeReply {
@@ -199,6 +204,10 @@ pub enum Message {
     TicketPresent { nonce: u32, name: String, day: u32, signature: [u8; 64] },
     /// Relay → hook: the ticket for the name a [`Message::TicketPresent`] proved.
     TicketGrant { nonce: u32, ticket: Ticket },
+    /// A relay → a player's mapped address, from an address the player's game hasn't sent to
+    /// (another relay, or the helper's second port): whether the port mapping lets anything in
+    /// (0.5.2's J1). The hook doesn't answer it; its next probe carries the nonce.
+    Reach { nonce: u32 },
 }
 
 const OP_PROBE: u8 = 1;
@@ -208,6 +217,7 @@ const OP_DATA_FROM: u8 = 4;
 const OP_BYE: u8 = 5;
 const OP_TICKET_PRESENT: u8 = 6;
 const OP_TICKET_GRANT: u8 = 7;
+const OP_REACH: u8 = 8;
 
 /// Whether `data` looks like one of these messages (and not a game packet).
 pub fn is_nat_message(data: &[u8]) -> bool {
@@ -237,6 +247,7 @@ impl Message {
                 ticket,
                 cookie,
                 rtt_ms,
+                reach,
             } => {
                 out.push(OP_PROBE);
                 out.push(*flags);
@@ -249,6 +260,7 @@ impl Message {
                 out.extend_from_slice(name.as_bytes());
                 out.resize(PROBE_SIZE, 0);
                 out[PROBE_RTT..PROBE_RTT + 2].copy_from_slice(&rtt_ms.unwrap_or(0).to_be_bytes());
+                out[PROBE_REACH..PROBE_REACH + 4].copy_from_slice(&reach.unwrap_or(0).to_be_bytes());
             }
             Message::ProbeReply {
                 nonce,
@@ -291,6 +303,10 @@ impl Message {
                 out.extend_from_slice(&nonce.to_be_bytes());
                 out.extend_from_slice(ticket);
             }
+            Message::Reach { nonce } => {
+                out.push(OP_REACH);
+                out.extend_from_slice(&nonce.to_be_bytes());
+            }
         }
         out
     }
@@ -314,6 +330,7 @@ impl Message {
                 let len = usize::from(body[43]).min(MAX_NAME);
                 let name = body.get(fixed..fixed + len)?;
                 let rtt_ms = Some(u16::from_be_bytes([data[PROBE_RTT], data[PROBE_RTT + 1]])).filter(|ms| *ms > 0);
+                let reach = Some(u32::from_be_bytes(data[PROBE_REACH..PROBE_REACH + 4].try_into().ok()?)).filter(|n| *n != 0);
                 Some(Message::Probe {
                     flags,
                     nonce,
@@ -322,6 +339,7 @@ impl Message {
                     ticket,
                     cookie,
                     rtt_ms,
+                    reach,
                 })
             }
             OP_PROBE_REPLY => {
@@ -365,6 +383,9 @@ impl Message {
             OP_TICKET_GRANT => Some(Message::TicketGrant {
                 nonce: u32::from_be_bytes(body.get(0..4)?.try_into().ok()?),
                 ticket: body.get(4..20)?.try_into().ok()?,
+            }),
+            OP_REACH => Some(Message::Reach {
+                nonce: u32::from_be_bytes(body.get(0..4)?.try_into().ok()?),
             }),
             _ => None,
         }
@@ -477,6 +498,7 @@ mod tests {
             ticket: [1; 16],
             cookie: [2; 16],
             rtt_ms: Some(40),
+            reach: None,
         };
         let mut data = probe.encode();
         assert_eq!(key_of(&data), None, "none yet");
@@ -527,6 +549,7 @@ mod tests {
                 ticket: [1; 16],
                 cookie: [2; 16],
                 rtt_ms: Some(187),
+                reach: None,
             },
             Message::Probe {
                 flags: 0,
@@ -536,6 +559,7 @@ mod tests {
                 ticket: [0; 16],
                 cookie: [0; 16],
                 rtt_ms: None,
+                reach: None,
             },
             reply(7),
             Message::DataTo {
@@ -565,6 +589,7 @@ mod tests {
             ticket: [0; 16],
             cookie: [0; 16],
             rtt_ms: Some(u16::MAX),
+            reach: None,
         }
         .encode();
         assert_eq!(probe.len(), PROBE_SIZE);
@@ -585,6 +610,7 @@ mod tests {
             ticket: [0; 16],
             cookie: [0; 16],
             rtt_ms,
+            reach: None,
         };
         let long = "n".repeat(MAX_NAME);
         assert_eq!(Message::decode(&probe(&long, Some(42)).encode()), Some(probe(&long, Some(42))));
@@ -650,5 +676,29 @@ mod tests {
         for ip in ["203.0.113.7", "100.128.0.1", "8.8.8.8", "26.1.2.3"] {
             assert!(!is_private(ip.parse().unwrap()), "{ip}");
         }
+    }
+
+    /// J1: the reach check, and a probe carrying its nonce in the padding (a probe from before
+    /// it reads none).
+    #[test]
+    fn reach_checks_round_trip() {
+        let reach = Message::Reach { nonce: 0xdead_beef };
+        assert_eq!(Message::decode(&reach.encode()), Some(reach));
+        let probe = Message::Probe {
+            flags: probe_flags::HAS_MAPPING,
+            nonce: 7,
+            mapping: Some("203.0.113.7:13000".parse().unwrap()),
+            name: "Kiwi".into(),
+            ticket: [1; 16],
+            cookie: [2; 16],
+            rtt_ms: Some(40),
+            reach: Some(99),
+        };
+        let encoded = probe.encode();
+        assert_eq!(encoded.len(), PROBE_SIZE);
+        assert_eq!(Message::decode(&encoded), Some(probe));
+        let mut old = encoded.clone();
+        old[PROBE_REACH..PROBE_REACH + 4].fill(0);
+        assert!(matches!(Message::decode(&old), Some(Message::Probe { reach: None, .. })));
     }
 }

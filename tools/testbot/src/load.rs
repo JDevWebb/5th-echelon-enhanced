@@ -294,6 +294,7 @@ pub async fn run(server: IpAddr, o: Options) -> Result<()> {
                                 ticket,
                                 cookie,
                                 rtt_ms: None,
+                                reach: None,
                             };
                             let _ = socket.send_to(&signed(again.encode(), nonce, &cookie, &name), nat).await;
                         }
@@ -351,6 +352,7 @@ pub async fn run(server: IpAddr, o: Options) -> Result<()> {
                             ticket,
                             cookie: reg.cookie,
                             rtt_ms: None,
+                            reach: None,
                         };
                         let _ = socket.send_to(&signed(msg.encode(), seq | 1, &reg.cookie, &name), nat).await;
                     }

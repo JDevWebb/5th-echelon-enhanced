@@ -13,6 +13,8 @@
 //!   asking (the game QoS-pings a search's hosts within 2 s, E3).
 //! - [`Body::Relay`]: the matchmaking server moved a player to the relay (their joins kept
 //!   failing, 0.5.2's J2): their relay relays them from their next probe.
+//! - [`Body::Reach`]: send a reach check to a player's mapped address for another member (J1),
+//!   at most one a second to any address from each member (relays.rs).
 //!
 //! `MAGIC` and the version differ from the games' protocol (nat_proto), so neither side takes
 //! the other's messages.
@@ -37,6 +39,7 @@ const OP_EVENT: u8 = 4;
 const OP_FORWARD: u8 = 5;
 const OP_INTRODUCE: u8 = 6;
 const OP_RELAY: u8 = 7;
+const OP_REACH: u8 = 8;
 
 /// A player registered with a relay.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +92,13 @@ pub enum Body {
     Relay {
         name: String,
     },
+    /// Another member: send a reach check (nat_proto's `Reach` with `nonce`) to `to`, a mapped
+    /// address one of its players gave (0.5.2's J1), so it comes from an address the player's
+    /// PC hasn't sent to.
+    Reach {
+        to: SocketAddrV4,
+        nonce: u32,
+    },
 }
 
 /// The longest event detail carried (JSON).
@@ -132,6 +142,7 @@ pub fn seal(key: &[u8; 32], from: &str, time: i64, body: &Body) -> Vec<u8> {
         Body::Forward { .. } => OP_FORWARD,
         Body::Introduce { .. } => OP_INTRODUCE,
         Body::Relay { .. } => OP_RELAY,
+        Body::Reach { .. } => OP_REACH,
     });
     out.extend_from_slice(&time.to_be_bytes());
     put_text(&mut out, from);
@@ -179,6 +190,10 @@ pub fn seal(key: &[u8; 32], from: &str, time: i64, body: &Body) -> Vec<u8> {
             put_text(&mut out, b);
         }
         Body::Relay { name } => put_text(&mut out, name),
+        Body::Reach { to, nonce } => {
+            put_addr(&mut out, *to);
+            out.extend_from_slice(&nonce.to_be_bytes());
+        }
     }
     let m = mac(key, &out);
     out.extend_from_slice(&m);
@@ -294,6 +309,10 @@ pub fn open(data: &[u8], key: &[u8; 32], now: i64) -> Option<(String, Body)> {
         }
         OP_INTRODUCE => Body::Introduce { a: r.text()?, b: r.text()? },
         OP_RELAY => Body::Relay { name: r.text()? },
+        OP_REACH => Body::Reach {
+            to: r.addr()?,
+            nonce: u32::from_be_bytes(r.take(4)?.try_into().ok()?),
+        },
         _ => return None,
     };
     Some((from, body))
@@ -345,6 +364,10 @@ mod tests {
                 b: "Tank".into(),
             },
             Body::Relay { name: "Kiwi".into() },
+            Body::Reach {
+                to: "203.0.113.9:13000".parse().unwrap(),
+                nonce: 77,
+            },
         ] {
             assert_eq!(open(&seal(&key, "mm", 5, &body), &key, 5), Some(("mm".to_string(), body)));
         }

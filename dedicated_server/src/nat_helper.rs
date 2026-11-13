@@ -40,6 +40,12 @@ const EXPIRY: Duration = Duration::from_secs(90);
 /// A registration heard from within this (a keepalive is every 20 s) is a live game: another
 /// name probing from its address and port is another PC, not this one restarted (J7).
 const LIVE_AT_ADDRESS: Duration = Duration::from_secs(25);
+/// A reach check not back in this long fails: the player is relayed (J1).
+const REACH_WAIT: Duration = Duration::from_secs(8);
+/// A check not back is sent again after this (and so at most this often per player).
+const REACH_RESEND: Duration = Duration::from_secs(60);
+/// A proven mapping is checked again after this (a router that drops its forward mid-evening).
+const REACH_RECHECK: Duration = Duration::from_secs(30 * 60);
 /// Other ports a player's relayed data may come from (see [`Peer::aliases`]); the oldest goes.
 const MAX_ALIASES: usize = 4;
 /// Packets for a player go back to where their data last came from, for this long after.
@@ -232,6 +238,11 @@ struct Peer {
     since: Instant,
     /// The rhythm of what they send through the relay: gaps and bursts (F6).
     cadence: Cadence,
+    /// The reach check of its port mapping (J1): the nonce sent and when, the mapping it was
+    /// sent to, and when its nonce came back (proven reachable).
+    reach: Option<(u32, Instant)>,
+    reach_to: Option<SocketAddrV4>,
+    reach_ok: Option<Instant>,
 }
 
 /// A silence in a player's relayed traffic this long, after steady sending, is a gap (F6).
@@ -364,6 +375,8 @@ pub struct Table {
     /// and when that was last swept.
     echoes: HashMap<Ipv4Addr, Vec<EchoSource>>,
     echoes_swept: Instant,
+    /// Reach checks to send (J1): to a player's mapped address, with the nonce.
+    reach_out: Vec<(SocketAddrV4, u32)>,
     /// Players of other relays who may reach ours (global matchmaking, G1 item 8): by their
     /// name's key and our player, when last used; the ones the matchmaking server refused, and
     /// those being asked about.
@@ -424,6 +437,7 @@ impl Table {
             outbound: HashMap::new(),
             outbound_per_player: HashMap::new(),
             echoes_swept: Instant::now(),
+            reach_out: Vec::new(),
         }
     }
 
@@ -518,6 +532,22 @@ impl Table {
         self.register(src, flags, nonce, mapping, name, now).expect("registered")
     }
 
+    /// A probe carried `nonce`, the reach check that got through to `name`'s socket (J1): their
+    /// mapping lets others in, if it's the one sent.
+    pub fn note_reach(&mut self, name: &str, nonce: Option<u32>, now: Instant) {
+        let Some(nonce) = nonce else { return };
+        if let Some(p) = self.by_name.get(&identity::name_key(name)).and_then(|id| self.peers.get_mut(id)) {
+            if p.reach.is_some_and(|(n, _)| n == nonce) && p.reach_ok.is_none() {
+                p.reach_ok = Some(now);
+            }
+        }
+    }
+
+    /// The reach checks to send now (J1).
+    pub fn take_reach_out(&mut self) -> Vec<(SocketAddrV4, u32)> {
+        std::mem::take(&mut self.reach_out)
+    }
+
     /// Registers (or refreshes) the player behind `src` and answers its probe. `None`, and
     /// nothing changed, for a player who wants or needs the relay when there's no relay port
     /// for them (all taken, or their address holds its share): registered direct instead,
@@ -530,8 +560,17 @@ impl Table {
         // relayed packets routed) at someone else's address.
         let mapping = mapping.filter(|m| m.ip() == src.ip());
         let key = if name.is_empty() { format!("@{src}") } else { identity::name_key(name) };
-        // Moved to the relay by the matchmaking server (their joins kept failing, J2).
-        let forced = forced().get(&key).copied();
+        // Moved to the relay by the matchmaking server (their joins kept failing, J2), or here: a
+        // mapping whose reach check didn't come back (J1).
+        let forced = forced().get(&key).copied().or_else(|| {
+            let o = self.by_name.get(&key).and_then(|id| self.peers.get(id))?;
+            let failed = !o.relayed
+                && o.reach_ok.is_none()
+                && o.reach_to.is_some()
+                && o.reach_to == mapping
+                && o.reach.is_some_and(|(_, sent)| now.saturating_duration_since(sent) > REACH_WAIT);
+            failed.then_some("unreachable_mapping")
+        });
         let known = self.by_name.get(&key).and_then(|id| self.peers.get(id));
         if (known.is_some_and(|o| o.relayed) || forced.is_some() || self.wants_relay(src, flags, mapping))
             && known.and_then(|o| o.vport).or_else(|| self.free_vport_for(src)).is_none()
@@ -627,7 +666,30 @@ impl Table {
             data_from: old.as_ref().and_then(|(_, o)| o.data_from).filter(|(a, _)| a.ip() == src.ip()),
             since: old.as_ref().filter(|(_, o)| o.real == src).map_or(now, |(_, o)| o.since),
             cadence: old.as_ref().map(|(_, o)| o.cadence.clone()).unwrap_or_default(),
+            reach: None,
+            reach_to: None,
+            reach_ok: None,
         };
+        let mut peer = peer;
+        // A direct player with a mapping: check from another address that it lets others in
+        // (J1); a new mapping is checked again, a proven one every RECHECK.
+        if !relayed && self.cfg.relay == RelayMode::Auto {
+            if let Some(m) = mapping.filter(|m| !nat_proto::is_private(*m.ip())) {
+                let carried = old.as_ref().filter(|(_, o)| o.reach_to == Some(m)).map(|(_, o)| (o.reach, o.reach_ok));
+                let (reach, ok) = carried.unwrap_or((None, None));
+                let proven = ok.is_some_and(|at| now.saturating_duration_since(at) < REACH_RECHECK);
+                let pending = reach.is_some_and(|(_, sent)| now.saturating_duration_since(sent) < REACH_RESEND);
+                peer.reach_to = Some(m);
+                (peer.reach, peer.reach_ok) = (reach, ok.filter(|_| proven));
+                if !proven && !pending {
+                    let nonce = rand::random::<u32>() | 1;
+                    peer.reach = Some((nonce, now));
+                    if self.reach_out.len() < 1000 {
+                        self.reach_out.push((m, nonce));
+                    }
+                }
+            }
+        }
         let tag = peer.tag;
         for a in &peer.aliases {
             self.by_alias.insert(*a, id);
@@ -1238,6 +1300,29 @@ fn remote_path(guest: &str, host: &str) -> Option<(Path, Vec<Option<String>>)> {
 
 static TABLE: OnceLock<Arc<Mutex<Table>>> = OnceLock::new();
 
+/// The helper's second port: reach checks go from it when no other relay can send them (J1).
+static SECOND_SOCKET: OnceLock<UdpSocket> = OnceLock::new();
+
+/// Sends the reach check `nonce` to `to` (a player's mapped address, J1): from another relay of
+/// the network when there is one (a stateful firewall lets in anything from an address the PC
+/// already talks to, so this server's own second port proves less), else from the second port.
+fn send_reach(logger: &Logger, to: SocketAddrV4, nonce: u32) {
+    if crate::relays::reach_via_another(to, nonce) {
+        return;
+    }
+    if let Some(socket) = SECOND_SOCKET.get() {
+        if let Err(e) = socket.send_to(&Message::Reach { nonce }.encode(), to) {
+            debug!(logger, "NAT helper: reach check to {to} failed: {e}");
+        }
+    }
+}
+
+/// Sends a reach check another relay asked for (its player's mapped address), from this
+/// helper's port (J1).
+pub fn send_reach_for_another(socket: &UdpSocket, to: SocketAddrV4, nonce: u32) {
+    let _ = socket.send_to(&Message::Reach { nonce }.encode(), to);
+}
+
 /// Pairs `a` and `b` for the relay ([`Table::introduce`]): the server had one's game probe
 /// the other's, which it does before a join reaches it.
 pub fn introduce(a: &str, b: &str) {
@@ -1465,6 +1550,9 @@ pub fn start(logger: &Logger, cfg: NatConfig, relay_ip: Ipv4Addr, may_relay: May
     second.set_port(cfg.listen.port().wrapping_add(1));
     match UdpSocket::bind(second) {
         Ok(detect) => {
+            if let Ok(copy) = detect.try_clone() {
+                let _ = SECOND_SOCKET.set(copy);
+            }
             let logger = logger.clone();
             threads.push(std::thread::Builder::new().name("nat-detect".into()).spawn(move || detect_loop(&logger, &detect))?);
         }
@@ -2099,6 +2187,7 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
             ticket,
             cookie,
             rtt_ms,
+            reach,
         }) = Message::decode(data)
         {
             if flags & probe_flags::SECOND_PORT != 0 {
@@ -2129,7 +2218,7 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
                     continue;
                 }
             }
-            let (reply, count, relayed, new, why) = {
+            let (reply, count, relayed, new, why, checks) = {
                 let Ok(mut t) = table.lock() else { continue };
                 if !t.admits(src, &name) {
                     debug!(logger, "NAT helper: table full (or too many from {}); {name} not registered", src.ip());
@@ -2137,6 +2226,7 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
                 }
                 let new = t.advertised_for(&name, IpAddr::V4(*src.ip())).is_none();
                 let was_relayed = t.by_name.get(&identity::name_key(&name)).and_then(|id| t.peers.get(id)).map(|p| p.relayed);
+                t.note_reach(&name, reach, now);
                 let Some(mut reply) = t.register(src, flags, nonce, mapping, &name, now) else {
                     // Not direct instead: their address would go to everyone they play with.
                     if crate::clients::worth_saying(&format!("nat-full/{}", src.ip())) {
@@ -2154,8 +2244,12 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
                 // A direct player moved to the relay (J2) is said again, with why.
                 let moved = matches!(&reply, Message::ProbeReply { flags: rf, .. } if was_relayed.is_some_and(|w| w != (rf & reply_flags::RELAYED != 0)));
                 let why = t.by_name.get(&identity::name_key(&name)).and_then(|id| t.peers.get(id)).map_or("", |p| p.why);
-                (reply, t.len(), t.relayed(), new || moved, why)
+                let checks = t.take_reach_out();
+                (reply, t.len(), t.relayed(), new || moved, why, checks)
             };
+            for (to, check) in checks {
+                send_reach(logger, to, check);
+            }
             if let Message::ProbeReply { flags: rf, .. } = &reply {
                 if rf & reply_flags::PORT_TAKEN != 0 {
                     if crate::clients::worth_saying(&format!("port-taken/{src}")) {
@@ -2467,6 +2561,29 @@ mod tests {
         let later = now + Duration::from_secs(60);
         let reply = t.probe(at, probe_flags::HAS_MAPPING, 3, Some(at), "HomeTwo", later);
         assert!(matches!(reply, Message::ProbeReply { flags, .. } if flags & reply_flags::PORT_TAKEN == 0), "the first went quiet: a restart");
+    }
+
+    /// J1: a direct player's mapping is checked from another address; one whose check comes back
+    /// stays direct, one whose doesn't is relayed from the probe after the wait.
+    #[test]
+    fn a_mapping_that_lets_nothing_in_is_relayed() {
+        let now = Instant::now();
+        let mut t = table(RelayMode::Auto);
+        let (good, bad) = (a("198.51.100.30:13000"), a("198.51.100.31:13000"));
+        assert!(!advertise(&t.probe(good, probe_flags::HAS_MAPPING, 1, Some(good), "Reachable", now)).1);
+        assert!(!advertise(&t.probe(bad, probe_flags::HAS_MAPPING, 1, Some(bad), "Unreachable", now)).1, "direct until the check fails");
+        let checks = t.take_reach_out();
+        assert_eq!(checks.iter().map(|(to, _)| *to).collect::<Vec<_>>(), vec![good, bad], "one each, to the mapped address");
+        assert!(t.take_reach_out().is_empty());
+        // The good one's game got the check and sends its nonce back.
+        t.note_reach("Reachable", Some(checks[0].1), now + Duration::from_secs(1));
+        t.note_reach("Unreachable", Some(12345), now + Duration::from_secs(1));
+        let later = now + REACH_WAIT + Duration::from_secs(1);
+        assert!(!advertise(&t.probe(good, probe_flags::HAS_MAPPING, 2, Some(good), "Reachable", later)).1, "proven: direct");
+        assert!(advertise(&t.probe(bad, probe_flags::HAS_MAPPING, 2, Some(bad), "Unreachable", later)).1, "nothing came back: relayed");
+        let why = |t: &Table, name: &str| t.by_name.get(&identity::name_key(name)).and_then(|id| t.peers.get(id)).map(|p| p.why);
+        assert_eq!(why(&t, "Unreachable"), Some("unreachable_mapping"));
+        assert!(t.take_reach_out().is_empty(), "no new check while one is out or proven");
     }
 
     #[test]
