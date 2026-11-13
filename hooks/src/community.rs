@@ -114,6 +114,9 @@ pub struct Maintenance {
     /// server).
     #[serde(default)]
     pub update: bool,
+    /// Only testers may play while it's under way (0.5.2): the others are signed out at its start.
+    #[serde(default)]
+    pub closed: bool,
 }
 
 /// How long before a window the overlay warns.
@@ -143,7 +146,15 @@ pub fn maintenance_warning(windows: &[Maintenance], now: i64) -> Option<(String,
     let minutes = ((w.start - now + 59) / 60).max(1);
     let when = if minutes == 1 { String::from("1 min") } else { format!("{minutes} min") };
     let note = if w.note.is_empty() { String::new() } else { format!(": {}", w.note) };
-    Some(if w.update {
+    Some(if w.closed {
+        (
+            format!("Closing for maintenance in {when}"),
+            format!(
+                "Only testers can play for {}{note}: you'll be signed out when it starts. Finish your match before then.",
+                length(w.end - w.start)
+            ),
+        )
+    } else if w.update {
         // The note an update window gets when booked without one says no more.
         let note = if w.note == "Server update" { "" } else { note.as_str() };
         (
@@ -1136,6 +1147,7 @@ mod tests {
             note: String::from("Moving to a faster machine"),
             network: false,
             update: false,
+            closed: false,
         };
         let network = Maintenance {
             start: 20_000,
@@ -1143,6 +1155,7 @@ mod tests {
             note: String::new(),
             network: true,
             update: false,
+            closed: false,
         };
         let windows = [network.clone(), server];
         assert_eq!(maintenance_warning(&windows, 10_000 - 601), None, "not yet");
@@ -1155,6 +1168,11 @@ mod tests {
         );
         assert_eq!(maintenance_warning(&windows, 10_000 - 20).map(|w| w.0), Some("Server maintenance in 1 min".into()));
         assert_eq!(maintenance_warning(&windows, 10_000), None, "started: the server says the rest");
+        // A closed one (0.5.2) says the player will be signed out, network or not.
+        let closed = [Maintenance { closed: true, ..network.clone() }];
+        let (heading, text) = maintenance_warning(&closed, network.start - 300).unwrap();
+        assert_eq!(heading, "Closing for maintenance in 5 min");
+        assert!(text.starts_with("Only testers can play for ") && text.contains("signed out"), "{text}");
         assert_eq!(
             maintenance_warning(&windows, 20_000 - 300),
             Some((
