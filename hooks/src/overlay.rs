@@ -2018,7 +2018,12 @@ impl MyRenderLoop {
             .always_use_window_padding(true)
             .flags(imgui::WindowFlags::NO_SCROLL_WITH_MOUSE)
             .build(|| {
-                let wheel = if ui.is_window_hovered() { ui.io().mouse_wheel } else { 0.0 };
+                // The pointer inside the log's own rectangle: is_window_hovered says no while
+                // another item is active, and the line to write below keeps the typing focus,
+                // so it never did (the player, 2026-11-13: the wheel still didn't reach it).
+                let (pos, size, mouse) = (ui.window_pos(), ui.window_size(), ui.io().mouse_pos);
+                let over = mouse[0] >= pos[0] && mouse[0] < pos[0] + size[0] && mouse[1] >= pos[1] && mouse[1] < pos[1] + size[1];
+                let wheel = if over { ui.io().mouse_wheel } else { 0.0 };
                 if wheel != 0.0 {
                     // Three lines a notch, as imgui steps.
                     let step = ui.text_line_height_with_spacing() * 3.0;
