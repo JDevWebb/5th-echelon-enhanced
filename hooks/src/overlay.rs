@@ -569,6 +569,9 @@ struct MyRenderLoop {
     chat_text: String,
     /// Keep the typing focus after sending.
     chat_refocus: bool,
+    /// The height the chat's line to write took last frame (the field and any note under it),
+    /// so the log above leaves exactly that room.
+    chat_input_h: f32,
     /// The controller's buttons last frame (`pad::poll`).
     pad_held: u16,
     /// The controller's buttons pressed this frame, for `render` (B, LB, RB).
@@ -1930,8 +1933,12 @@ impl MyRenderLoop {
             self.edge_note(ui, pal().warn, "The network can't be reached right now: you can read, not send.");
         }
         ui.dummy([0.0, self.s(4.0)]);
-        let input_h = ui.text_line_height() * 2.0 + self.s(34.0);
-        let log_h = (ui.content_region_avail()[1] - input_h).max(self.s(120.0));
+        // The room under the log: what the line to write took last frame (a note under it, such
+        // as the wait before posting again, makes it taller), at least a field's height. Guessed,
+        // the log ran past the panel's bottom and its newest messages were cut off under it.
+        let spacing = ui.clone_style().item_spacing[1];
+        let input_h = self.chat_input_h.max(ui.frame_height() + spacing);
+        let log_h = (ui.content_region_avail()[1] - input_h - spacing).max(self.s(120.0));
         match self.chat_room {
             Room::Global => {
                 self.chat_log(ui, "global", &v.global, &[], &v, log_h);
@@ -2003,153 +2010,167 @@ impl MyRenderLoop {
         /// A sender's lines this close together show under one tile and name.
         const TOGETHER: i64 = 5 * 60;
         let _boxed = self.boxed(ui);
-        ui.child_window(format!("##fe-chat-log-{id}")).size([0.0, h]).always_use_window_padding(true).build(|| {
-            let at_bottom = ui.scroll_y() >= ui.scroll_max_y() - self.s(4.0);
-            if list.is_empty() && events.is_empty() {
-                ui.text_colored(pal().muted, "No messages yet.");
-            }
-            let clock = hooks_config::clock::Clock::local();
-            let gutter = self.with_font(ui, |f| f.caps, || ui.calc_text_size("00:00 pm"))[0];
-            let tile = self.s(30.0);
-            let gap = self.s(10.0);
-            let text_x = gutter + gap + tile + gap;
-            let right = ui.content_region_avail()[0];
-            // Messages and joins in time order (a join after the messages of its second).
-            let (mut i, mut j) = (0, 0);
-            let mut last: Option<&chat::Msg> = None;
-            while i < list.len() || j < events.len() {
-                let x0 = ui.cursor_pos()[0];
-                if j < events.len() && (i == list.len() || events[j].at < list[i].at) {
-                    let e = &events[j];
-                    j += 1;
-                    let who = if e.mine { "You".to_string() } else { e.name.clone() };
-                    let line = format!("> {who} {} the lobby", if e.joined { "joined" } else { "left" }).to_uppercase();
-                    ui.dummy([0.0, self.s(2.0)]);
-                    let y = ui.cursor_pos()[1];
-                    self.with_font(
-                        ui,
-                        |f| f.caps,
-                        || {
-                            ui.text_colored(pal().label, clock.clock_time(e.at));
-                            ui.set_cursor_pos([x0 + text_x, y]);
-                            let _w = ui.push_text_wrap_pos_with_pos(x0 + right);
-                            let _c = ui.push_style_color(StyleColor::Text, pal().label);
-                            ui.text_wrapped(&line);
-                        },
-                    );
-                    last = None;
-                    continue;
+        // The log takes the wheel itself: inside the pane, imgui scrolled the pane (as on Friends),
+        // never the log (the player, 2026-11-13: the wheel didn't reach it). Its own scrolling is
+        // off (NO_SCROLL_WITH_MOUSE), so the wheel isn't applied twice where imgui does give it.
+        ui.child_window(format!("##fe-chat-log-{id}"))
+            .size([0.0, h])
+            .always_use_window_padding(true)
+            .flags(imgui::WindowFlags::NO_SCROLL_WITH_MOUSE)
+            .build(|| {
+                let wheel = if ui.is_window_hovered() { ui.io().mouse_wheel } else { 0.0 };
+                if wheel != 0.0 {
+                    // Three lines a notch, as imgui steps.
+                    let step = ui.text_line_height_with_spacing() * 3.0;
+                    ui.set_scroll_y((ui.scroll_y() - wheel * step).clamp(0.0, ui.scroll_max_y()));
                 }
-                let m = &list[i];
-                i += 1;
-                let friend = !m.mine && v.friends.iter().any(|(identity, ..)| *identity == m.from);
-                let together = last.is_some_and(|l| l.from == m.from && m.at - l.at <= TOGETHER);
-                last = Some(m);
-                if !together {
-                    ui.dummy([0.0, self.s(4.0)]);
+                // Kept at the newest while it's there, not while it's being scrolled up from there.
+                let at_bottom = wheel <= 0.0 && ui.scroll_y() >= ui.scroll_max_y() - self.s(4.0);
+                if list.is_empty() && events.is_empty() {
+                    ui.text_colored(pal().muted, "No messages yet.");
                 }
-                let top = ui.cursor_pos()[1];
-                let screen_top = ui.cursor_screen_pos()[1];
-                let screen_x = ui.cursor_screen_pos()[0];
-                // The edge down the line: the player's own (amber), or naming the player.
-                let edge = if m.mine {
-                    Some(pal().me)
-                } else if m.mentions_me {
-                    Some(pal().accent)
-                } else {
-                    None
-                };
-                if !together {
-                    // When, as the PC's clock shows it (the launcher's chat does the same).
-                    self.with_font(
-                        ui,
-                        |f| f.caps,
-                        || {
-                            ui.set_cursor_pos([x0, top + self.s(3.0)]);
-                            ui.text_colored(if m.mentions_me { pal().accent } else { pal().label }, clock.clock_time(m.at));
-                        },
-                    );
-                    let dl = ui.get_window_draw_list();
-                    let at = [screen_x + gutter + gap, screen_top];
-                    dl.add_rect(at, [at[0] + tile, at[1] + tile], pal().surface).filled(true).build();
-                    let tone = if m.mine {
+                let clock = hooks_config::clock::Clock::local();
+                let gutter = self.with_font(ui, |f| f.caps, || ui.calc_text_size("00:00 pm"))[0];
+                let tile = self.s(30.0);
+                let gap = self.s(10.0);
+                let text_x = gutter + gap + tile + gap;
+                let right = ui.content_region_avail()[0];
+                // Messages and joins in time order (a join after the messages of its second).
+                let (mut i, mut j) = (0, 0);
+                let mut last: Option<&chat::Msg> = None;
+                while i < list.len() || j < events.len() {
+                    let x0 = ui.cursor_pos()[0];
+                    if j < events.len() && (i == list.len() || events[j].at < list[i].at) {
+                        let e = &events[j];
+                        j += 1;
+                        let who = if e.mine { "You".to_string() } else { e.name.clone() };
+                        let line = format!("> {who} {} the lobby", if e.joined { "joined" } else { "left" }).to_uppercase();
+                        ui.dummy([0.0, self.s(2.0)]);
+                        let y = ui.cursor_pos()[1];
+                        self.with_font(
+                            ui,
+                            |f| f.caps,
+                            || {
+                                ui.text_colored(pal().label, clock.clock_time(e.at));
+                                ui.set_cursor_pos([x0 + text_x, y]);
+                                let _w = ui.push_text_wrap_pos_with_pos(x0 + right);
+                                let _c = ui.push_style_color(StyleColor::Text, pal().label);
+                                ui.text_wrapped(&line);
+                            },
+                        );
+                        last = None;
+                        continue;
+                    }
+                    let m = &list[i];
+                    i += 1;
+                    let friend = !m.mine && v.friends.iter().any(|(identity, ..)| *identity == m.from);
+                    let together = last.is_some_and(|l| l.from == m.from && m.at - l.at <= TOGETHER);
+                    last = Some(m);
+                    if !together {
+                        ui.dummy([0.0, self.s(4.0)]);
+                    }
+                    let top = ui.cursor_pos()[1];
+                    let screen_top = ui.cursor_screen_pos()[1];
+                    let screen_x = ui.cursor_screen_pos()[0];
+                    // The edge down the line: the player's own (amber), or naming the player.
+                    let edge = if m.mine {
                         Some(pal().me)
-                    } else if friend {
+                    } else if m.mentions_me {
                         Some(pal().accent)
                     } else {
                         None
                     };
-                    if let Some(tone) = tone {
-                        dl.add_rect(at, [at[0] + self.s(3.0), at[1] + tile], tone).filled(true).build();
-                    }
-                    let initial: String = m.from_name.chars().find(|c| c.is_alphanumeric()).map_or_else(|| "?".into(), |c| c.to_uppercase().collect());
-                    self.with_font(
-                        ui,
-                        |f| f.title,
-                        || {
-                            let size = ui.calc_text_size(&initial);
-                            let color = if m.mine { pal().me } else { pal().fg };
-                            dl.add_text([at[0] + (tile - size[0]) / 2.0, at[1] + (tile - size[1]) / 2.0], color, &initial);
-                        },
-                    );
-                }
-                ui.set_cursor_pos([x0 + text_x, top]);
-                ui.group(|| {
-                    let _w = ui.push_text_wrap_pos_with_pos(x0 + right);
                     if !together {
-                        let name_color = if m.mine { pal().me } else { pal().fg };
-                        self.with_font(ui, |f| f.strong, || ui.text_colored(name_color, if m.mine { "You" } else { &m.from_name }));
-                        let popup = format!("##fe-chat-menu-{}", m.id);
-                        if ui.is_item_hovered() && !m.server_name.is_empty() {
-                            ui.tooltip_text(format!("On {}", m.server_name));
+                        // When, as the PC's clock shows it (the launcher's chat does the same).
+                        self.with_font(
+                            ui,
+                            |f| f.caps,
+                            || {
+                                ui.set_cursor_pos([x0, top + self.s(3.0)]);
+                                ui.text_colored(if m.mentions_me { pal().accent } else { pal().label }, clock.clock_time(m.at));
+                            },
+                        );
+                        let dl = ui.get_window_draw_list();
+                        let at = [screen_x + gutter + gap, screen_top];
+                        dl.add_rect(at, [at[0] + tile, at[1] + tile], pal().surface).filled(true).build();
+                        let tone = if m.mine {
+                            Some(pal().me)
+                        } else if friend {
+                            Some(pal().accent)
+                        } else {
+                            None
+                        };
+                        if let Some(tone) = tone {
+                            dl.add_rect(at, [at[0] + self.s(3.0), at[1] + tile], tone).filled(true).build();
                         }
-                        if ui.is_item_clicked_with_button(imgui::MouseButton::Right) {
-                            ui.open_popup(&popup);
-                        }
-                        if friend {
-                            ui.same_line();
-                            self.tag(ui, "FRIEND", pal().accent, false);
-                        }
-                        if m.from_game {
-                            ui.same_line();
-                            self.tag(ui, "IN GAME", pal().label, true);
-                        }
-                        ui.popup(&popup, || {
-                            if m.mine {
-                                if ui.menu_item("Delete") {
-                                    chat::delete(m.id);
-                                }
-                                return;
-                            }
-                            // By their identity: a name alone may be another account's on this server.
-                            if ui.menu_item("Add friend") {
-                                community::change_by_identity(community::FriendChange::Request, m.from.clone(), m.from_name.clone());
-                            }
-                            if ui.menu_item(format!("Block {}", m.from_name)) {
-                                community::change_by_identity(community::FriendChange::Block, m.from.clone(), m.from_name.clone());
-                            }
-                            if ui.menu_item("Report to the admins") {
-                                chat::report(m.id, m.from_name.clone());
-                            }
-                        });
+                        let initial: String = m.from_name.chars().find(|c| c.is_alphanumeric()).map_or_else(|| "?".into(), |c| c.to_uppercase().collect());
+                        self.with_font(
+                            ui,
+                            |f| f.title,
+                            || {
+                                let size = ui.calc_text_size(&initial);
+                                let color = if m.mine { pal().me } else { pal().fg };
+                                dl.add_text([at[0] + (tile - size[0]) / 2.0, at[1] + (tile - size[1]) / 2.0], color, &initial);
+                            },
+                        );
                     }
-                    let _c = ui.push_style_color(StyleColor::Text, pal().fg);
-                    ui.text_wrapped(&m.body);
-                });
-                let bottom = ui.item_rect_max()[1].max(if together { 0.0 } else { screen_top + tile });
-                if let Some(edge) = edge {
-                    let dl = ui.get_window_draw_list();
-                    dl.add_rect([screen_x - self.s(8.0), screen_top - self.s(2.0)], [screen_x - self.s(6.0), bottom + self.s(2.0)], edge)
-                        .filled(true)
-                        .build();
+                    ui.set_cursor_pos([x0 + text_x, top]);
+                    ui.group(|| {
+                        let _w = ui.push_text_wrap_pos_with_pos(x0 + right);
+                        if !together {
+                            let name_color = if m.mine { pal().me } else { pal().fg };
+                            self.with_font(ui, |f| f.strong, || ui.text_colored(name_color, if m.mine { "You" } else { &m.from_name }));
+                            let popup = format!("##fe-chat-menu-{}", m.id);
+                            if ui.is_item_hovered() && !m.server_name.is_empty() {
+                                ui.tooltip_text(format!("On {}", m.server_name));
+                            }
+                            if ui.is_item_clicked_with_button(imgui::MouseButton::Right) {
+                                ui.open_popup(&popup);
+                            }
+                            if friend {
+                                ui.same_line();
+                                self.tag(ui, "FRIEND", pal().accent, false);
+                            }
+                            if m.from_game {
+                                ui.same_line();
+                                self.tag(ui, "IN GAME", pal().label, true);
+                            }
+                            ui.popup(&popup, || {
+                                if m.mine {
+                                    if ui.menu_item("Delete") {
+                                        chat::delete(m.id);
+                                    }
+                                    return;
+                                }
+                                // By their identity: a name alone may be another account's on this server.
+                                if ui.menu_item("Add friend") {
+                                    community::change_by_identity(community::FriendChange::Request, m.from.clone(), m.from_name.clone());
+                                }
+                                if ui.menu_item(format!("Block {}", m.from_name)) {
+                                    community::change_by_identity(community::FriendChange::Block, m.from.clone(), m.from_name.clone());
+                                }
+                                if ui.menu_item("Report to the admins") {
+                                    chat::report(m.id, m.from_name.clone());
+                                }
+                            });
+                        }
+                        let _c = ui.push_style_color(StyleColor::Text, pal().fg);
+                        ui.text_wrapped(&m.body);
+                    });
+                    let bottom = ui.item_rect_max()[1].max(if together { 0.0 } else { screen_top + tile });
+                    if let Some(edge) = edge {
+                        let dl = ui.get_window_draw_list();
+                        dl.add_rect([screen_x - self.s(8.0), screen_top - self.s(2.0)], [screen_x - self.s(6.0), bottom + self.s(2.0)], edge)
+                            .filled(true)
+                            .build();
+                    }
+                    ui.set_cursor_screen_pos([screen_x, bottom + self.s(2.0)]);
+                    ui.dummy([0.0, 0.0]);
                 }
-                ui.set_cursor_screen_pos([screen_x, bottom + self.s(2.0)]);
-                ui.dummy([0.0, 0.0]);
-            }
-            if at_bottom {
-                ui.set_scroll_here_y_with_ratio(1.0);
-            }
-        });
+                if at_bottom {
+                    ui.set_scroll_here_y_with_ratio(1.0);
+                }
+            });
     }
 
     /// A small tag in Plex Mono caps (FRIEND, IN GAME), inline; `boxed`: with an edge round it.
@@ -2259,6 +2280,7 @@ impl MyRenderLoop {
 
     /// The text box and Send, with why the last message wasn't sent.
     fn chat_input(&mut self, ui: &Ui, room: server_api::chat::Room, to: &str, tx: &str, allowed: bool, note: Option<String>, v: &chat::View) {
+        let top = ui.cursor_pos()[1];
         let mut text = std::mem::take(&mut self.chat_text);
         let send_label = "Send##fe-chat-send";
         // "TX // LOBBY" before the field, in a block of its own (the launcher's line to write).
@@ -2313,6 +2335,7 @@ impl MyRenderLoop {
         if let Some(why) = v.refused.as_ref().or(note.as_ref()) {
             self.edge_note(ui, pal().warn, why);
         }
+        self.chat_input_h = ui.cursor_pos()[1] - top;
     }
 
     fn pane_players(&mut self, ui: &Ui) {
@@ -2969,6 +2992,7 @@ fn init_hudhook<T: hudhook::Hooks + 'static>(invites: crossbeam_channel::Receive
             chat_with: None,
             chat_text: String::new(),
             chat_refocus: false,
+            chat_input_h: 0.0,
             pad_held: 0,
             pad_pressed: 0,
             popup_was_open: false,
