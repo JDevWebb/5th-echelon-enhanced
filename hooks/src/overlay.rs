@@ -1342,7 +1342,11 @@ impl MyRenderLoop {
         let (dot, status) = if self.connection_error.is_some() {
             (pal().bad, String::from("Not connected"))
         } else {
-            let ms = self.data.response_time.map(|d| format!("{} ms", d.as_millis()));
+            // The relay's round trip, where the game's traffic goes; the server's own (the
+            // matchmaking server's, on the community network) until the relay has answered.
+            let ms = crate::hooks::nat::relay_ms()
+                .map(|ms| format!("{ms} ms"))
+                .or_else(|| self.data.response_time.map(|d| format!("{} ms", d.as_millis())));
             let parts: Vec<String> = [Some(String::from("Connected")), ms, crate::api::username()].into_iter().flatten().collect();
             (pal().ok, parts.join("  ·  "))
         };
@@ -2649,6 +2653,7 @@ impl MyRenderLoop {
             None => String::from("Not reported"),
         };
         let response = self.data.response_time.map_or_else(|| String::from("No answer"), |d| format!("{} ms", d.as_millis()));
+        let relay = crate::hooks::nat::relay_ms().map_or_else(|| String::from("Not measured yet"), |ms| format!("{ms} ms"));
         let reach = crate::hooks::nat::status().unwrap_or_else(|| String::from("Not started yet"));
         self.card(ui, "Connection", || {
             // Whether it answers, as the header's dot says it.
@@ -2657,9 +2662,11 @@ impl MyRenderLoop {
             } else {
                 (pal().ok, "Connected")
             };
-            self.row(ui, Some(dot), &host, &format!("{state}  ·  {response}"), 0.0, || {});
+            self.row(ui, Some(dot), &host, state, 0.0, || {});
             ui.dummy([0.0, self.s(2.0)]);
             self.fact(ui, "Server", &server);
+            self.fact(ui, "Ping to the server", &response);
+            self.fact(ui, "Ping to your relay", &relay);
             self.fact(ui, "Other players reach you", &reach);
         });
         let identity = if self.data.my_identity.is_empty() {

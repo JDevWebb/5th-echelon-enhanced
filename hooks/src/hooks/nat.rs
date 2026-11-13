@@ -322,6 +322,13 @@ fn state() -> std::sync::MutexGuard<'static, State> {
     STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// The round trip to the relay (the NAT helper the game uses), last measured: the ping that
+/// matters for play, since game traffic goes there (on a network with a matchmaking server,
+/// the nearest relay, not the server players sign in to).
+pub fn relay_ms() -> Option<u16> {
+    state().rtt_ms
+}
+
 /// One line for the overlay: how other players reach this PC.
 pub fn status() -> Option<String> {
     let st = state();
