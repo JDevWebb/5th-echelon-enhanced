@@ -192,6 +192,9 @@ fn same(a: &[u8], b: &[u8]) -> bool {
 #[derive(Debug, Clone)]
 struct Peer {
     name: String,
+    /// Why it's relayed or direct (J5): `asked`, `symmetric`, `no_mapping`, `double_nat`,
+    /// `failed_joins`, or `direct` (a public mapping), for the `nat` event and support.
+    why: &'static str,
     /// The Storm socket's public address, as this helper sees it.
     real: SocketAddrV4,
     /// What the player's game advertises to the others.
@@ -517,13 +520,19 @@ impl Table {
     /// for them (all taken, or their address holds its share): registered direct instead,
     /// their own address went to everyone they play with.
     pub fn register(&mut self, src: SocketAddrV4, flags: u8, nonce: u32, mapping: Option<SocketAddrV4>, name: &str, now: Instant) -> Option<Message> {
+        // What the client said, for the reason only (a private one is a router behind another).
+        let claimed = mapping;
         // The router port mapping the client reports is only its word: a mapping on another
         // address than the one this probe came from would have this player advertised (and
         // relayed packets routed) at someone else's address.
         let mapping = mapping.filter(|m| m.ip() == src.ip());
         let key = if name.is_empty() { format!("@{src}") } else { identity::name_key(name) };
+        // Moved to the relay by the matchmaking server (their joins kept failing, J2).
+        let forced = forced().get(&key).copied();
         let known = self.by_name.get(&key).and_then(|id| self.peers.get(id));
-        if (known.is_some_and(|o| o.relayed) || self.wants_relay(src, flags, mapping)) && known.and_then(|o| o.vport).or_else(|| self.free_vport_for(src)).is_none() {
+        if (known.is_some_and(|o| o.relayed) || forced.is_some() || self.wants_relay(src, flags, mapping))
+            && known.and_then(|o| o.vport).or_else(|| self.free_vport_for(src)).is_none()
+        {
             return None;
         }
         let old = self.by_name.get(&key).copied().and_then(|id| self.take(id).map(|p| (id, p)));
@@ -537,7 +546,7 @@ impl Table {
         // relay port), and a direct one keeps its address unless its NAT
         // gave it a new one. A direct player can still move to the relay
         // (the hook asks before it tells the game anything).
-        let relayed = old.as_ref().is_some_and(|(_, o)| o.relayed) || self.wants_relay(src, flags, mapping);
+        let relayed = old.as_ref().is_some_and(|(_, o)| o.relayed) || forced.is_some() || self.wants_relay(src, flags, mapping);
         let vport = if relayed {
             old.as_ref().and_then(|(_, o)| o.vport).or_else(|| self.free_vport_for(src))
         } else {
@@ -561,8 +570,19 @@ impl Table {
             _ => src,
         };
         let advertise = if vport.is_none() && taken(self, &advertise) { src } else { advertise };
+        let why = match (relayed, forced) {
+            (true, Some(why)) => why,
+            // Relayed before: the reason it was.
+            (true, None) if old.as_ref().is_some_and(|(_, o)| o.relayed) => old.as_ref().map_or("asked", |(_, o)| o.why),
+            (true, None) if flags & probe_flags::WANT_RELAY != 0 => "asked",
+            (true, None) if flags & probe_flags::SYMMETRIC != 0 => "symmetric",
+            (true, None) if claimed.is_some_and(|m| nat_proto::is_private(*m.ip())) => "double_nat",
+            (true, None) => "no_mapping",
+            (false, _) => "direct",
+        };
         let peer = Peer {
             name: key.clone(),
+            why,
             real: src,
             advertise,
             relayed,
@@ -1562,6 +1582,28 @@ fn awaiting() -> std::sync::MutexGuard<'static, HashMap<String, Instant>> {
 
 /// Games that went online and didn't register with the helper in time (`nat_missing`), by name,
 /// until they register or sign out: those the relay can't carry ([`registration`]).
+/// Players the matchmaking server moved to the relay for the rest of their session (their
+/// joins kept failing as a direct player, J2), by name, with the reason: from their next probe.
+fn forced() -> std::sync::MutexGuard<'static, std::collections::HashMap<String, &'static str>> {
+    static FORCED: OnceLock<Mutex<std::collections::HashMap<String, &'static str>>> = OnceLock::new();
+    FORCED.get_or_init(Mutex::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Relays `name` from their next probe until they sign out (J2: `failed_joins`). A relayed player
+/// stays relayed; a direct one's next probe gets the relay, as asking for it does.
+pub fn force_relay(name: &str, why: &'static str) {
+    let mut all = forced();
+    if all.len() < 100_000 {
+        all.insert(identity::name_key(name), why);
+    }
+}
+
+/// Why `name` is relayed or direct here (J5), if they're registered with this helper.
+pub fn why_of(name: &str) -> Option<&'static str> {
+    let t = TABLE.get()?.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    t.by_name.get(&identity::name_key(name)).and_then(|id| t.peers.get(id)).map(|p| p.why)
+}
+
 fn missed() -> std::sync::MutexGuard<'static, std::collections::HashSet<String>> {
     static MISSED: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
     MISSED.get_or_init(Mutex::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1622,6 +1664,7 @@ pub fn game_went_online(name: &str) {
 /// `name`'s game signed out (or its connection timed out): nothing to wait for.
 pub fn game_signed_out(name: &str) {
     awaiting().remove(&identity::name_key(name));
+    forced().remove(&identity::name_key(name));
     missed().remove(&identity::name_key(name));
     signed_in().remove(&identity::name_key(name));
     ids().remove(&identity::name_key(name));
@@ -2066,13 +2109,14 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
                     continue;
                 }
             }
-            let (reply, count, relayed, new) = {
+            let (reply, count, relayed, new, why) = {
                 let Ok(mut t) = table.lock() else { continue };
                 if !t.admits(src, &name) {
                     debug!(logger, "NAT helper: table full (or too many from {}); {name} not registered", src.ip());
                     continue;
                 }
                 let new = t.advertised_for(&name, IpAddr::V4(*src.ip())).is_none();
+                let was_relayed = t.by_name.get(&identity::name_key(&name)).and_then(|id| t.peers.get(id)).map(|p| p.relayed);
                 let Some(mut reply) = t.register(src, flags, nonce, mapping, &name, now) else {
                     // Not direct instead: their address would go to everyone they play with.
                     if crate::clients::worth_saying(&format!("nat-full/{}", src.ip())) {
@@ -2087,7 +2131,10 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
                 if let Message::ProbeReply { cookie: c, .. } = &mut reply {
                     *c = cookie_for(keys, src, &name, bucket);
                 }
-                (reply, t.len(), t.relayed(), new)
+                // A direct player moved to the relay (J2) is said again, with why.
+                let moved = matches!(&reply, Message::ProbeReply { flags: rf, .. } if was_relayed.is_some_and(|w| w != (rf & reply_flags::RELAYED != 0)));
+                let why = t.by_name.get(&identity::name_key(&name)).and_then(|id| t.peers.get(id)).map_or("", |p| p.why);
+                (reply, t.len(), t.relayed(), new || moved, why)
             };
             if new {
                 if let Message::ProbeReply { advertise, flags: rf, .. } = &reply {
@@ -2095,7 +2142,7 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
                     crate::session_events::note(
                         crate::session_events::Who::Name(name.clone()),
                         "nat",
-                        serde_json::json!({ "relayed": rf & reply_flags::RELAYED != 0 }),
+                        serde_json::json!({ "relayed": rf & reply_flags::RELAYED != 0, "why": why }),
                     );
                     info!(
                         logger,
@@ -2348,6 +2395,30 @@ mod tests {
         assert!(watch.tick(&flows((610, 400), (0, 0)), 10.0).is_empty());
         assert!(watch.tick(&flows((20, 400), (0, 0)), 10.0).is_empty(), "sending dipped");
         assert!(watch.tick(&flows((500, 400), (0, 0)), 10.0).is_empty(), "and came back");
+    }
+
+    /// Each registration keeps why it's relayed or direct (J5), and a direct player the
+    /// matchmaking server moves (J2) is relayed from their next probe, with the reason.
+    #[test]
+    fn why_a_player_is_relayed_and_a_forced_move() {
+        let now = Instant::now();
+        let mut t = table(RelayMode::Auto);
+        let why = |t: &Table, name: &str| t.by_name.get(&identity::name_key(name)).and_then(|id| t.peers.get(id)).map(|p| p.why);
+        t.probe(a("198.51.100.7:1"), probe_flags::SYMMETRIC, 1, None, "WhySym", now);
+        t.probe(a("198.51.100.8:1"), probe_flags::WANT_RELAY, 1, None, "WhyAsked", now);
+        t.probe(a("198.51.100.9:1"), 0, 1, None, "WhyCone", now);
+        t.probe(a("198.51.100.11:1"), probe_flags::HAS_MAPPING, 1, Some(a("192.168.1.2:13000")), "WhyDouble", now);
+        t.probe(a("198.51.100.10:13000"), probe_flags::HAS_MAPPING, 1, Some(a("198.51.100.10:13000")), "WhyMapped", now);
+        assert_eq!(
+            ["WhySym", "WhyAsked", "WhyCone", "WhyDouble", "WhyMapped"].map(|n| why(&t, n)),
+            [Some("symmetric"), Some("asked"), Some("no_mapping"), Some("double_nat"), Some("direct")]
+        );
+        force_relay("WhyMapped", "failed_joins");
+        let reply = t.probe(a("198.51.100.10:13000"), probe_flags::HAS_MAPPING, 2, Some(a("198.51.100.10:13000")), "WhyMapped", now);
+        assert!(advertise(&reply).1, "relayed from the next probe");
+        assert_eq!(why(&t, "WhyMapped"), Some("failed_joins"));
+        game_signed_out("WhyMapped");
+        assert!(!forced().contains_key(&identity::name_key("WhyMapped")), "for the session only");
     }
 
     #[test]

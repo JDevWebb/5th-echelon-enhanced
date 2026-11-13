@@ -945,8 +945,18 @@ fn describe(e: &Event) -> String {
             e.detail["relay"].as_str().unwrap_or("?")
         ),
         "nat" => {
+            // Why (0.5.2's J5), from servers that say.
+            let why = match e.str("why") {
+                "asked" => " (they chose Always through the server)",
+                "symmetric" => " (their router gives each destination its own port)",
+                "no_mapping" => " (no port forwarded by their router)",
+                "double_nat" => " (their router is behind another router or the provider's NAT)",
+                "failed_joins" => " (moved: their joins kept failing as direct)",
+                "unreachable_mapping" => " (their forwarded port didn't let anything in)",
+                _ => "",
+            };
             if e.detail["relayed"].as_bool().unwrap_or(false) {
-                "Online play relayed by the server".into()
+                format!("Online play relayed by the server{why}")
             } else {
                 "Online play direct".into()
             }

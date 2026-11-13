@@ -60,7 +60,9 @@
 //! - `invite`: `to`, `room` (none: unbound, the receiver finds nothing to join).
 //! - `invite_delivered`: `from`, `room`, `requested` (a join request's, `join-request`).
 //! - `stats`: the game wrote stats (it does at the end of a mission or match).
-//! - `nat`: `relayed` (the player's game traffic goes through the server's relay).
+//! - `nat`: `relayed` (the player's game traffic goes through the server's relay), `why`
+//!   (0.5.2's J5: `direct`, `asked`, `symmetric`, `no_mapping`, `double_nat`, `failed_joins`);
+//!   said again when a direct player is moved to the relay.
 //! - `nat_missing`: `after_secs`: the game went online (opened or joined a room) and hadn't
 //!   registered with the NAT helper that long after; nobody can reach it.
 //! - `nat_lost`: `probe_secs`: the game's registration lapsed (no probe that long) while it
@@ -208,6 +210,8 @@ pub fn joined(user: u32, room: u32, via: &'static str) {
         }
         q.joins.insert((user, room), now);
     }
+    // A join that worked, for moving players whose joins keep failing (join_fallback.rs).
+    crate::join_fallback::joins().worked(user, room, Instant::now());
     note(Who::Id(user), "join", json!({ "room": room, "via": via }));
 }
 

@@ -2809,6 +2809,15 @@ pub(crate) fn note_failed_join(storage: &Storage, logger: &Logger, user_id: u32,
         crate::reports::tell(user_id, title, text, noted.filter(|_| problem.explained()));
     }
     crate::session_events::note(crate::session_events::Who::Id(user_id), "join_failed", join.detail(code));
+    // Direct players whose joins keep failing go through the relay from now on (J2).
+    if join.counts() && !join.own {
+        let moves = crate::join_fallback::joins().failed(user_id, join.room, std::time::Instant::now(), |room| {
+            storage.room_of_failed_join(room).ok().flatten().map(|(creator, _, _)| creator)
+        });
+        for user in moves {
+            move_to_relay(storage, logger, user);
+        }
+    }
     warn!(
         logger,
         "Join failed: {user_id} did not get into session {} (type {}) - category {}, code {code:#010x}: {}{}{}",
@@ -2825,6 +2834,19 @@ pub(crate) fn note_failed_join(storage: &Storage, logger: &Logger, user_id: u32,
         },
         join.reported_room.map(|r| format!(" (the game said session {r})")).unwrap_or_default()
     );
+}
+
+/// Moves `user` to the relay (J2), if they're a direct player: their relay relays them from
+/// their next probe (here, or told over the link), and their overlay says why.
+fn move_to_relay(storage: &Storage, logger: &Logger, user: u32) {
+    let Ok(Some(name)) = storage.find_username_by_user_id(user) else { return };
+    if crate::nat_helper::registration(&name) != Some(Some(false)) {
+        return;
+    }
+    crate::nat_helper::force_relay(&name, "failed_joins");
+    let remote = crate::relays::relay_remote(&name);
+    info!(logger, "{name}'s joins kept failing as a direct player: relayed from now on{}", if remote { " (their relay told)" } else { "" });
+    crate::reports::tell(user, crate::join_fallback::MOVED_TITLE.into(), crate::join_fallback::MOVED_TEXT.into(), None);
 }
 
 fn failed_join(storage: &Storage, user: u32, reported: u32, code: u32) -> FailedJoin {

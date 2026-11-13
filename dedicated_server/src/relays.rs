@@ -191,6 +191,9 @@ pub fn on_link(data: &[u8], src: std::net::SocketAddrV4, socket: &std::net::UdpS
         // Only from the matchmaking server: it put two players together.
         crate::link::Body::Introduce { a, b } if link.matchmaking => crate::nat_helper::introduced(&a, &b),
         crate::link::Body::Introduce { .. } => {}
+        // Only from the matchmaking server: a player of ours whose joins kept failing (J2).
+        crate::link::Body::Relay { name } if link.matchmaking => crate::nat_helper::force_relay(&name, "failed_joins"),
+        crate::link::Body::Relay { .. } => {}
         // A relay's event about its player, kept here with the player's sessions; only the
         // relay's own kinds, so a relay can't write anything else into them.
         // Only about a player that relay reports (its events follow its reports), and only
@@ -251,6 +254,22 @@ pub fn introduce_remote(a: &str, b: &str) {
         let message = crate::link::seal(&link.key, own, identity::now(), &body);
         let _ = socket.send_to(&message, std::net::SocketAddrV4::new(link.ip, link.port));
     }
+}
+
+/// On the network's matchmaking server: `name` is to be relayed from now on (J2); the relay
+/// they're registered at is told ([`crate::link::Body::Relay`]). False when they're at none.
+pub fn relay_remote(name: &str) -> bool {
+    if !NETWORK_RELAYS.load(Ordering::Relaxed) {
+        return false;
+    }
+    let (Some(socket), Some(own)) = (MM_SOCKET.get(), OWN_ID.get()) else { return false };
+    let Some((relay, ..)) = remote_relay_of(name) else { return false };
+    let body = crate::link::Body::Relay { name: name.into() };
+    for link in links().iter().filter(|l| l.id == relay) {
+        let message = crate::link::seal(&link.key, own, identity::now(), &body);
+        let _ = socket.send_to(&message, std::net::SocketAddrV4::new(link.ip, link.port));
+    }
+    true
 }
 
 /// A game packet another relay forwarded: from its player `from_name`, whose game is seen at
@@ -487,7 +506,7 @@ pub fn remote_relay_of(name: &str) -> Option<(String, bool, Option<u16>)> {
 
 /// The session events a relay sends the matchmaking server, and the fields each keeps.
 const RELAY_EVENTS: [(&str, &[&str]); 5] = [
-    ("nat", &["relayed"]),
+    ("nat", &["relayed", "why"]),
     ("relay_drop", &["direction", "before", "after", "player_quiet"]),
     ("relay_gaps", &["gaps", "bursts", "longest_ms"]),
     ("nat_missing", &["after_secs"]),

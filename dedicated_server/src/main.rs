@@ -83,6 +83,7 @@ mod full_logs;
 mod game_session;
 mod game_session_ex;
 mod hardware;
+mod join_fallback;
 mod join_targets;
 mod keys;
 mod ladder;
@@ -137,6 +138,7 @@ fn end_play(logger: &slog::Logger, storage: &Storage, user_id: u32) {
     if let Ok(Some(name)) = storage.find_username_by_user_id(user_id) {
         nat_helper::game_signed_out(&name);
     }
+    join_fallback::joins().signed_out(user_id);
     if let Err(e) = storage.end_play(user_id) {
         error!(logger, "ending the play session of {user_id} failed: {e}");
     }

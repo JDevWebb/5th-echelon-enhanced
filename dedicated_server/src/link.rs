@@ -11,6 +11,8 @@
 //! - [`Body::Introduce`]: the matchmaking server put two players together (a search's results,
 //!   a probe, a join), told to their relays as it does, so their first packets aren't held up
 //!   asking (the game QoS-pings a search's hosts within 2 s, E3).
+//! - [`Body::Relay`]: the matchmaking server moved a player to the relay (their joins kept
+//!   failing, 0.5.2's J2): their relay relays them from their next probe.
 //!
 //! `MAGIC` and the version differ from the games' protocol (nat_proto), so neither side takes
 //! the other's messages.
@@ -34,6 +36,7 @@ const OP_ANSWER: u8 = 3;
 const OP_EVENT: u8 = 4;
 const OP_FORWARD: u8 = 5;
 const OP_INTRODUCE: u8 = 6;
+const OP_RELAY: u8 = 7;
 
 /// A player registered with a relay.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +84,11 @@ pub enum Body {
         a: String,
         b: String,
     },
+    /// From the matchmaking server: relay `name` from their next probe, for the rest of their
+    /// session (their joins kept failing as a direct player).
+    Relay {
+        name: String,
+    },
 }
 
 /// The longest event detail carried (JSON).
@@ -123,6 +131,7 @@ pub fn seal(key: &[u8; 32], from: &str, time: i64, body: &Body) -> Vec<u8> {
         Body::Event { .. } => OP_EVENT,
         Body::Forward { .. } => OP_FORWARD,
         Body::Introduce { .. } => OP_INTRODUCE,
+        Body::Relay { .. } => OP_RELAY,
     });
     out.extend_from_slice(&time.to_be_bytes());
     put_text(&mut out, from);
@@ -169,6 +178,7 @@ pub fn seal(key: &[u8; 32], from: &str, time: i64, body: &Body) -> Vec<u8> {
             put_text(&mut out, a);
             put_text(&mut out, b);
         }
+        Body::Relay { name } => put_text(&mut out, name),
     }
     let m = mac(key, &out);
     out.extend_from_slice(&m);
@@ -283,6 +293,7 @@ pub fn open(data: &[u8], key: &[u8; 32], now: i64) -> Option<(String, Body)> {
             }
         }
         OP_INTRODUCE => Body::Introduce { a: r.text()?, b: r.text()? },
+        OP_RELAY => Body::Relay { name: r.text()? },
         _ => return None,
     };
     Some((from, body))
@@ -333,6 +344,7 @@ mod tests {
                 a: "Kiwi".into(),
                 b: "Tank".into(),
             },
+            Body::Relay { name: "Kiwi".into() },
         ] {
             assert_eq!(open(&seal(&key, "mm", 5, &body), &key, 5), Some(("mm".to_string(), body)));
         }
