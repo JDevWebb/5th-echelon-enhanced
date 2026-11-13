@@ -47,7 +47,7 @@ pub const RELEASES: &[Release] = &[
         new: &[
             Item {
                 title: "Joins that keep failing go through the server",
-                text: "If your router says it forwards the game's port but nothing gets in, the server now notices within seconds and sends your matches through its relay. If your joins keep failing with different hosts, your games move to the relay for the session, and the overlay says so.",
+                text: "If your router says it forwards the game's port but nothing gets in, the server now notices within seconds and sends your matches through its relay. If your joins keep failing with different hosts, your games move to the relay for the session, and the overlay says so. If Windows Firewall keeps the game out, the connection test (Settings › Network) says so, and Allow the game lets it in.",
                 community: false,
             },
             Item {

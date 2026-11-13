@@ -561,6 +561,22 @@ fn work(app: &tauri::AppHandle, title: &'static str, f: impl FnOnce() -> Result<
     });
 }
 
+/// "Allow the game" (0.5.2's J3): the game let in through Windows Firewall, with one UAC prompt.
+/// Then the test's firewall line as it reads now.
+pub fn allow_game(app: &tauri::AppHandle) -> (&'static str, String) {
+    let done = game_dir(app).and_then(|dir| launcher::settings::allow_game_through_firewall(&dir));
+    let (status, note) = launcher::settings::firewall_now();
+    let tone = match status {
+        Status::Ok => "ok",
+        Status::Warn => "warn",
+        Status::Fail => "fail",
+    };
+    match done {
+        Ok(()) => (tone, note.unwrap_or_else(|| "the game is allowed in".into())),
+        Err(e) => ("warn", e),
+    }
+}
+
 fn game_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     app.state::<Launcher>()
         .lock()

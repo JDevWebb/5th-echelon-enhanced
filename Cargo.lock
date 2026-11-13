@@ -3366,6 +3366,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "api",
+ "base64",
  "brotli",
  "bytes",
  "dedicated_server_config",

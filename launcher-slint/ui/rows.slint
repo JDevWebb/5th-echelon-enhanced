@@ -340,6 +340,11 @@ export component RowItem inherits Rectangle {
                 Text { text: item.label; color: Theme.fg; wrap: word-wrap; }
                 if item.sub != "": Text { text: item.sub; font-size: 12.5px; color: Theme.muted; wrap: word-wrap; }
             }
+            // What fixes it, when the launcher can (the Windows Firewall's "Allow the game").
+            for b in item.buttons: VerticalLayout {
+                alignment: start;
+                Btn { text: b.label; kind: b.kind; small: true; enabled: b.enabled; clicked => { root.pressed(b.id); } }
+            }
         }
         if item.kind == "message": HorizontalLayout {
             spacing: 10px;

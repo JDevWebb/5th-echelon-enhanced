@@ -248,6 +248,14 @@ impl Screen for SettingsPage {
             _ if id.starts_with("copy:") => {
                 app.window(WindowCall::Copy(id[5..].to_string()));
             }
+            "allow-game" => {
+                let (tone, note) = crate::settings::allow_game(app);
+                if let Some(Ok(list)) = &mut self.tests {
+                    if let Some(row) = list.iter_mut().find(|(name, ..)| name == launcher::settings::FIREWALL_TEST) {
+                        *row = (row.0.clone(), tone.to_string(), note);
+                    }
+                }
+            }
             "test" => {
                 self.testing = true;
                 self.tests = Some(crate::settings::connection_test(app.clone()).map(|list| {
@@ -514,7 +522,10 @@ impl SettingsPage {
                         "warn" => "warn",
                         _ => "fail",
                     };
-                    r.add(result(name.clone(), tone, note_text.clone()));
+                    // The launcher can fix this one, with the player's yes (one UAC prompt).
+                    let fixable = cfg!(target_os = "windows") && name == launcher::settings::FIREWALL_TEST && tone == "warn";
+                    let row = result(name.clone(), tone, note_text.clone());
+                    r.add(if fixable { row.button(super::b("allow-game", "Allow the game").kind("fix")) } else { row });
                 }
             }
             None => {}

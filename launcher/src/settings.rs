@@ -90,6 +90,8 @@ pub struct Settings {
     pub section: Section,
     tests: Slot<TestResults>,
     test_results: TestResults,
+    /// "Allow the game" running (one UAC prompt), then the firewall line read again.
+    allowing: Slot<Result<(setup::diagnose::Status, Option<String>), String>>,
     working: Slot<Result<String, String>>,
     /// What the work running is, for the activity bar, and its activity there.
     working_title: &'static str,
@@ -1192,6 +1194,15 @@ fn connection_test(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui
             settings.tests.start(ctx, move || run_tests(&profile, nat_port, nat_mode));
         }
     });
+    if let Some(done) = settings.allowing.poll() {
+        if let Some(row) = settings.test_results.iter_mut().find(|(n, ..)| *n == FIREWALL_TEST) {
+            *row = match done {
+                Ok((status, note)) => (FIREWALL_TEST, status, Some(note.unwrap_or_else(|| String::from("the game is allowed in")))),
+                Err(e) => (FIREWALL_TEST, setup::diagnose::Status::Warn, Some(e)),
+            };
+        }
+    }
+    let mut allow = false;
     for (name, status, note) in &settings.test_results {
         ui.horizontal_wrapped(|ui| {
             theme::status_marker(ui, *status);
@@ -1199,7 +1210,19 @@ fn connection_test(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui
             if let Some(note) = note {
                 ui.label(theme::muted(note.as_str()).small());
             }
+            // The launcher can fix this one, with the player's yes (one UAC prompt).
+            if cfg!(target_os = "windows") && *name == FIREWALL_TEST && *status == setup::diagnose::Status::Warn {
+                if settings.allowing.running() {
+                    ui.spinner();
+                } else if ui.button("Allow the game").clicked() {
+                    allow = true;
+                }
+            }
         });
+    }
+    if allow {
+        let dir = game.dir.clone();
+        settings.allowing.start(ctx, move || allow_game_through_firewall(&dir).map(|()| firewall_now()));
     }
     if settings.test_results.iter().any(|(_, s, _)| *s != setup::diagnose::Status::Ok) && setup::game::game_running() {
         ui.label(theme::muted("The game is running and holds the ports some tests need; close it and test again."));
@@ -1346,7 +1369,7 @@ pub fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>, n
     }
     add("Game's match port (UDP 13000)", storm_port_free());
     if cfg!(target_os = "windows") && !hooks_config::running_under_wine() {
-        add("Windows Firewall", firewall_says(game_firewall_rules().as_deref()));
+        add(FIREWALL_TEST, firewall_says(game_firewall_rules().as_deref()));
     }
     results
 }
@@ -1374,6 +1397,76 @@ fn game_firewall_rules() -> Option<String> {
     None
 }
 
+/// The connection test's Windows Firewall line, read again now (after "Allow the game").
+pub fn firewall_now() -> (setup::diagnose::Status, Option<String>) {
+    firewall_says(game_firewall_rules().as_deref())
+}
+
+/// The connection test's name for the Windows Firewall line, which "Allow the game" fixes.
+pub const FIREWALL_TEST: &str = "Windows Firewall";
+
+/// "Allow the game" (0.5.2's J3, the user's choice of 14 Nov): with one UAC prompt, inbound
+/// Windows Firewall rules allowing the game's executables in `game_dir` (both, where there),
+/// named "5th Echelon Enhanced: <exe>", and the inbound rules blocking them turned off (not
+/// deleted: Windows Security still lists them; a block beats an allow, so they must go). A rule's
+/// program can be written with variables (%ProgramFiles%): matched expanded. Ok when it was done; the player saying No to the
+/// prompt is an error.
+#[cfg(target_os = "windows")]
+pub fn allow_game_through_firewall(game_dir: &std::path::Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt as _;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let script = allow_script(game_dir).ok_or("The game's programs weren't found in its folder.")?;
+    // The script goes to the elevated PowerShell encoded (UTF-16LE, base64): no quoting to get
+    // wrong between the two shells. -PassThru gives its exit code.
+    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, script.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>());
+    let outer = format!(
+        "try {{ $p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{encoded}'; exit $p.ExitCode }} catch {{ exit 1223 }}"
+    );
+    let status = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &outer])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .map_err(|e| format!("PowerShell didn't start: {e}"))?;
+    match status.code() {
+        Some(0) => Ok(()),
+        // ERROR_CANCELLED: the UAC prompt was answered No.
+        Some(1223) => Err("Windows asked for permission and it wasn't given: nothing was changed.".into()),
+        code => Err(format!("Windows Firewall didn't take the rules (code {}).", code.unwrap_or(-1))),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn allow_game_through_firewall(_game_dir: &std::path::Path) -> Result<(), String> {
+    Err("Only on Windows.".into())
+}
+
+/// The elevated script for [`allow_game_through_firewall`]: for each of the game's executables
+/// found, its blocking inbound rules turned off and our allow rule made again. None when neither
+/// is there.
+pub fn allow_script(game_dir: &std::path::Path) -> Option<String> {
+    let exes: Vec<String> = setup::game::GameVersion::ALL
+        .iter()
+        .map(|v| v.full_path(game_dir))
+        .filter(|p| p.is_file())
+        .map(|p| p.display().to_string())
+        .collect();
+    if exes.is_empty() {
+        return None;
+    }
+    // PowerShell single-quoted strings: a quote is written twice.
+    let list = exes.iter().map(|e| format!("'{}'", e.replace('\'', "''"))).collect::<Vec<_>>().join(",");
+    Some(format!(
+        "$ErrorActionPreference = 'Stop'\n\
+         foreach ($exe in @({list})) {{\n\
+           $name = '5th Echelon Enhanced: ' + (Split-Path $exe -Leaf)\n\
+           Get-NetFirewallApplicationFilter | Where-Object {{ [Environment]::ExpandEnvironmentVariables($_.Program) -eq $exe }} | ForEach-Object {{ Get-NetFirewallRule -AssociatedNetFirewallApplicationFilter $_ }} | \
+             Where-Object {{ \"$($_.Direction)\" -eq 'Inbound' -and \"$($_.Action)\" -eq 'Block' -and \"$($_.Enabled)\" -eq 'True' }} | Disable-NetFirewallRule\n\
+           Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue | Remove-NetFirewallRule\n\
+           New-NetFirewallRule -DisplayName $name -Direction Inbound -Program $exe -Action Allow -Profile Any | Out-Null\n\
+         }}\n"
+    ))
+}
+
 /// What the game's inbound firewall rules say (0.5.2's J3): a rule blocking it (what Windows
 /// writes when its "Allow access" prompt is dismissed), or no rule letting it in, keeps other
 /// players out even with the router's port open.
@@ -1394,7 +1487,7 @@ pub fn firewall_says(rules: Option<&str>) -> (setup::diagnose::Status, Option<St
         return (
             Status::Warn,
             Some(format!(
-                "a rule blocks {} coming in (Windows writes one when its \"Allow access\" prompt is dismissed): other players can't reach you. Allow it in Windows Security › Firewall › Allow an app through firewall",
+                "a rule blocks {} coming in (Windows writes one when its \"Allow access\" prompt is dismissed): other players can't reach you. Allow the game here, or in Windows Security › Firewall › Allow an app through firewall",
                 exe(block)
             )),
         );
@@ -1402,7 +1495,7 @@ pub fn firewall_says(rules: Option<&str>) -> (setup::diagnose::Status, Option<St
     if !enabled.iter().any(|r| r["a"] == "Allow") {
         return (
             Status::Warn,
-            Some("no rule lets the game in: if Windows asks when the game starts, choose Allow access, or allow it in Windows Security › Firewall › Allow an app through firewall".into()),
+            Some("no rule lets the game in: if Windows asks when the game starts, choose Allow access, or Allow the game here".into()),
         );
     }
     (Status::Ok, None)
@@ -1591,6 +1684,22 @@ mod vpn_tests {
         assert!(firewall_says(Some(single_off)).1.unwrap().starts_with("no rule lets the game in"), "a lone rule, switched off");
         assert!(firewall_says(Some("")).1.unwrap().starts_with("no rule"), "none at all");
         assert_eq!(firewall_says(None).0, Status::Warn);
+    }
+
+    /// J3's "Allow the game": the elevated script names each executable there, quotes escaped.
+    #[test]
+    fn the_allow_script_covers_the_games_programs() {
+        let dir = std::env::temp_dir().join(format!("fe-allow-test-{}-o'brien", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(super::allow_script(&dir).is_none(), "no game there");
+        std::fs::write(dir.join("Blacklist_DX11_game.exe"), b"").unwrap();
+        let script = super::allow_script(&dir).unwrap();
+        assert!(script.contains("o''brien"), "a quote in the path is doubled: {script}");
+        assert!(script.contains("Blacklist_DX11_game.exe'") && !script.contains("Blacklist_game.exe'"), "only what's there: {script}");
+        assert!(script.contains("New-NetFirewallRule") && script.contains("Disable-NetFirewallRule") && !script.contains("Remove-NetFirewallRule -Action"));
+        std::fs::write(dir.join("Blacklist_game.exe"), b"").unwrap();
+        assert!(super::allow_script(&dir).unwrap().contains("Blacklist_game.exe'"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     use super::vpn_adapters;
