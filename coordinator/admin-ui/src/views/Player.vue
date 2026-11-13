@@ -17,6 +17,7 @@
             <span v-if="support" class="pill" :class="support.status === 'open' ? 'warn' : 'info'">Support {{ support.status === 'waiting' ? 'waiting on them' : support.status }}</span>
             <span v-if="flags.length || reports.length" class="pill warn">Fair play: {{ fairPill }}</span>
             <span v-if="d.others.length" class="pill">{{ d.others.length + 1 }} accounts</span>
+            <span v-if="d.tester" class="pill info">Tester</span>
             <span v-if="!d.network_ban && !p.banned && !d.mutes.length && !flags.length && !reports.length" class="pill">No bans, mutes or flags</span>
           </div>
           <div class="small faint">
@@ -135,6 +136,13 @@
               </li>
             </ul>
             <div v-else class="empty">None in force. Mute from a reported message on Chat and names.</div>
+          </section>
+          <section class="panel">
+            <header><h2>During maintenance</h2><span class="small muted">windows booked as testers only</span></header>
+            <div class="row">
+              <span class="grow small">{{ d.tester ? 'A tester: they can sign in and play while a window keeps everyone else out.' : 'Kept out like everyone else while a window is testers only.' }}</span>
+              <button class="ghost small" type="button" :disabled="testerBusy" @click="setTester(!d.tester)">{{ d.tester ? 'No longer a tester' : 'Make a tester' }}</button>
+            </div>
           </section>
           <section class="panel">
             <header><h2>Admin actions</h2></header>
@@ -406,6 +414,17 @@ async function unmute(mu) {
     toast(`Lifted ${p.value.name}'s mute.`);
     load();
   } catch (e) { toast(e.message, true); }
+}
+
+// Testers may play while a maintenance window keeps everyone else out (0.5.2).
+const testerBusy = ref(false);
+async function setTester(on) {
+  testerBusy.value = true;
+  try {
+    await api('POST', `/players/${encodeURIComponent(server.value)}/${id.value}/tester`, { on });
+    toast(on ? `${p.value.name} can play during maintenance.` : `${p.value.name} is no longer a tester.`);
+    load();
+  } catch (e) { toast(e.message, true); } finally { testerBusy.value = false; }
 }
 
 /// A developer: their identity's other builds are taken on every server (clients.rs).

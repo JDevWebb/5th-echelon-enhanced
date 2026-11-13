@@ -40,6 +40,12 @@
         </label>
       </div>
 
+      <span id="mt-closed" class="label">Who can play</span>
+      <div class="stack" style="gap: 6px" role="group" aria-labelledby="mt-closed">
+        <label class="check"><input id="mt-closed-box" v-model="closed" type="checkbox"> Only testers, while it's under way</label>
+        <span class="small muted">{{ closed ? 'Sign-ins, chat, friends and matches are refused to everyone else, and they are signed out when it starts. Support still works. Make testers on a player\'s page (Moderation tab).' : 'A notice only: players can keep playing through it.' }}</span>
+      </div>
+
       <label class="label" for="mt-note">For players</label>
       <div class="stack" style="gap: 6px">
         <input id="mt-note" v-model="note" type="text" maxlength="100" :placeholder="kind === 'update' ? 'Server update' : 'Moving to a faster machine'" class="note">
@@ -79,7 +85,7 @@
         <tbody>
           <tr v-for="w in windows" :key="w.id">
             <td>{{ w.server_name }}<span class="sub">{{ w.server ? short(w.server) : 'coordinator' }}</span></td>
-            <td><span class="pill" :class="w.kind === 'update' ? 'info' : ''">{{ w.kind === 'update' ? 'Update' : 'Maintenance' }}</span></td>
+            <td><span class="pill" :class="w.kind === 'update' ? 'info' : ''">{{ w.kind === 'update' ? 'Update' : 'Maintenance' }}</span><span class="sub">{{ w.closed ? 'testers only' : 'notice only' }}</span></td>
             <td>{{ localText(w.start, w.end) }}<span class="sub">{{ utcRange(w.start, w.end) }}</span></td>
             <td class="mono">{{ lengthShort(w.end - w.start) }}</td>
             <td><span v-if="w.note">{{ w.note }}</span><span v-else class="faint">nothing</span></td>
@@ -126,6 +132,8 @@ const other = ref(false);
 const otherMinutes = ref(90);
 const note = ref('');
 const kind = ref('update');
+// Only testers may play while it's under way (0.5.2); off: a notice only, as before.
+const closed = ref(true);
 const busy = ref(false);
 const confirming = ref(null);
 
@@ -185,6 +193,7 @@ const preview = computed(() => {
   const lines = [];
   const first = props.servers.find(sv => picked.value.includes(sv.id));
   if (first) lines.push(`${city(first)} goes down at ${at} for ${forHow}${why}.`);
+  if (closed.value) lines.push('Only testers can sign in until it ends; Support still works.');
   if (network.value) lines.push(`Friends on other servers, the server list and new names pause from ${at} for ${forHow}. Your games carry on.`);
   return lines;
 });
@@ -194,13 +203,14 @@ async function book() {
   busy.value = true;
   try {
     const r = await api('POST', '/maintenance', {
-      servers: picked.value, network: network.value, start: start.value, end: start.value + length.value * 60, note: note.value.trim(), kind: kind.value,
+      servers: picked.value, network: network.value, start: start.value, end: start.value + length.value * 60, note: note.value.trim(), kind: kind.value, closed: closed.value,
     });
     const n = r.windows?.length || 0;
     toast(n === 1 ? 'Maintenance booked.' : `Maintenance booked: ${n} windows.`);
     picked.value = [];
     network.value = false;
     note.value = '';
+    closed.value = true;
     emit('changed');
   } catch (e) {
     toast(e.status === 404 ? 'This coordinator doesn\'t take bookings yet.' : e.message, true);
