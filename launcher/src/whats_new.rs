@@ -41,10 +41,17 @@ pub struct Release {
 
 /// Newest first. A release with nothing a player would notice has no entry.
 pub const RELEASES: &[Release] = &[
+    // 0.5.0 and its hotfix in one: most players go straight from 0.4.7 to 0.5.1 (0.5.0 was out
+    // one night), so they see all of 0.5.0 here, with 0.5.1's fix first.
     Release {
-        version: "0.5.0",
+        version: "0.5.1",
         thanks: &["Tea_bag", "Cloud", "Ghost_Leader", "curryman", "omar", "Agent1", "EitherBat2025", "Gex", "Ronis", "Sem", "Sokolev", "mpw", "Jester"],
         new: &[
+            Item {
+                title: "The ping you see is your relay's",
+                text: "The server menu and the overlay's header show the round trip to the relay near you that the game plays through, not to the matchmaking server everyone signs in to. The overlay's Server page shows both.",
+                community: true,
+            },
             Item {
                 title: "One server for everyone",
                 text: "The community network is now one server everyone signs in to (in Beauharnois, Canada), so every search finds players from every region. Your game plays through the relay nearest you: Falkenstein, Beauharnois, Silicon Valley, Santiago, Singapore or Sydney, picked by the launcher's pings. Your account, name, friends and stats came with you, and the launcher moved you over by itself.",
@@ -112,6 +119,14 @@ pub const RELEASES: &[Release] = &[
             },
         ],
         fixed: &[
+            Fix {
+                lead: "Chat in the overlay scrolls with the mouse wheel",
+                rest: ", and its newest message is no longer cut off at the bottom.",
+            },
+            Fix {
+                lead: "Typing scbl.jdevwebb.net finds the community network",
+                rest: " on the Servers page and in Setup, instead of saying it isn't a network of servers.",
+            },
             Fix {
                 lead: "Play waits until the game is ready",
                 rest: ", with a spinner, instead of starting it while the launcher is still checking.",
