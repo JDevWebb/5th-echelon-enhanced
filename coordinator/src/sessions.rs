@@ -1020,6 +1020,7 @@ fn describe(e: &Event) -> String {
                 Some("self") => "own code",
                 Some("heartbeat") => "heartbeat",
                 Some("rules") => "rules",
+                Some("weapon") => "weapons",
                 _ => "fair play",
             },
             e.detail["detail"].as_str().unwrap_or("?"),

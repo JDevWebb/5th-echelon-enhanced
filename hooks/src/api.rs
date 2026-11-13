@@ -376,6 +376,8 @@ pub fn match_state(under_way: bool, state: &str, settings: &std::collections::BT
                     .map(|(name, side)| server_api::misc::TeamPlayer { name, side: side.into() })
                     .collect(),
                 peer: crate::pawns::own_peer(),
+                // The weapon archetypes' hashes (W1), when they're due.
+                weapons: crate::weapons::for_match_state(under_way),
             }))
             .await?
             .into_inner();

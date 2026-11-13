@@ -1097,6 +1097,7 @@ impl Bot {
                         })
                         .collect(),
                     peer: 0,
+                    weapons: Default::default(),
                 }),
             )
             .await?;
@@ -1321,6 +1322,7 @@ impl Bot {
                 settings: Default::default(),
                 team: Vec::new(),
                 peer: 0,
+                weapons: Default::default(),
             }))
             .await?;
         Ok(())

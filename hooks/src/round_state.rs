@@ -426,8 +426,8 @@ impl Places {
     }
 }
 
-/// Every object in the engine's object hash (a test build's diagnostics: slow, a whole scan).
-#[cfg(feature = "test-commands")]
+/// Every object in the engine's object hash: a whole scan, so not often (a test build's
+/// diagnostics, and the weapon archetypes once a minute in a match, weapons.rs).
 pub(crate) fn each_object(mut f: impl FnMut(usize)) {
     let Some(tables) = tables() else { return };
     for b in 0..0x10000usize {

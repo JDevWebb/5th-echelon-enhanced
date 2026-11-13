@@ -40,6 +40,7 @@ mod code_cave;
 mod code_check;
 mod fair_play_beat;
 mod tunnel;
+mod weapons;
 mod community;
 mod crash;
 mod crash_report;

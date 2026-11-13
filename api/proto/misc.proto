@@ -171,6 +171,10 @@ message MatchStateRequest {
     // known yet. The server answers with every number it has for the room (`peers`), so each
     // game can name the others' characters (theirs carry no name in its memory).
     uint32 peer = 5;
+    // Each loaded weapon archetype's stats as this game has them, hashed (0.5.2's W1), by the
+    // archetype's name: sent when they change and every few minutes in a match. The server
+    // compares a guest's with its host's: a weapon that differs was edited in one game.
+    map<string, uint32> weapons = 6;
 }
 
 message TeamPlayer {

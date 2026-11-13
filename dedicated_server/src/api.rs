@@ -1937,6 +1937,18 @@ impl Misc for MyMisc {
                 }),
             );
         }
+        // The weapon archetypes' hashes (W1): a host's kept, a guest's compared with its host's.
+        if !r.weapons.is_empty() {
+            if !rooms.is_empty() {
+                crate::weapon_check::weapons().host_said(user_id, &r.weapons);
+            } else if let Ok(Some(host)) = self.storage.match_host_of_async(user_id).await {
+                let noted = crate::weapon_check::weapons().guest_said(user_id, host, &r.weapons);
+                if let Some(detail) = noted {
+                    warn!(self.logger, "Fair play: {user_id}'s game has other weapon stats than its host {host}'s: {}", detail["detail"]);
+                    crate::session_events::note(crate::session_events::Who::Id(user_id), "fair_play", detail);
+                }
+            }
+        }
         // A guest's: their game's rules against their host's (R4, consensus).
         if rooms.is_empty() && !r.settings.is_empty() {
             if let Ok(Some(host)) = self.storage.match_host_of_async(user_id).await {

@@ -131,6 +131,7 @@ mod ubi_acc_mgmt;
 mod uplay_win;
 mod uploads;
 mod user_storage;
+mod weapon_check;
 
 use crate::config::Config;
 use crate::config::DebugConfig;

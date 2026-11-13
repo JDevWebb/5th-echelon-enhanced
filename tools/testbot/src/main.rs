@@ -4355,6 +4355,8 @@ async fn run() -> Result<()> {
                     login: testbot::bot::AUTH_PORT,
                     nat: Some(nat_proto::DEFAULT_PORT),
                     api_tls: None,
+                    secure: None,
+                    tunnel: false,
                 },
                 None => return Err(eyre!("{name}'s /api/info has no ports")),
             };
