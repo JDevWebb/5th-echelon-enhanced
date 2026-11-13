@@ -38,6 +38,16 @@ pub const BYTES_PER_SEC: f64 = 256.0 * 1024.0;
 const PING_EVERY: Duration = Duration::from_secs(20);
 /// The first message must come within this.
 const AUTH_WITHIN: Duration = Duration::from_secs(10);
+/// A closed tunnel's socket is kept this long for the name's next tunnel: a carrier dropping the
+/// WebSocket for a moment leaves the game's connection and relay registration as they were
+/// (the services know the player by that socket's port).
+const RESUME_WITHIN: Duration = Duration::from_secs(30);
+
+/// Closed tunnels' sockets, by name, kept for [`RESUME_WITHIN`].
+fn parked() -> std::sync::MutexGuard<'static, HashMap<String, (Instant, std::sync::Arc<tokio::net::UdpSocket>)>> {
+    static PARKED: std::sync::LazyLock<Mutex<HashMap<String, (Instant, std::sync::Arc<tokio::net::UdpSocket>)>>> = std::sync::LazyLock::new(Mutex::default);
+    PARKED.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// Where each tunnel's datagrams go on this machine.
 #[derive(Debug, Clone, Copy)]
@@ -183,7 +193,17 @@ async fn handle(logger: &Logger, stream: tokio::net::TcpStream, peer: SocketAddr
         Some((tunnel::AUTH, probe)) => crate::nat_helper::tunnel_auth(probe).ok_or("the proof didn't hold")?,
         _ => return Err("no proof".into()),
     };
-    let socket = tokio::net::UdpSocket::bind(("127.0.0.1", 0)).await.map_err(|e| e.to_string())?;
+    // The name's socket from a tunnel that closed a moment ago, else a new one.
+    let resumed = {
+        let mut p = parked();
+        p.retain(|_, (at, _)| at.elapsed() < RESUME_WITHIN);
+        p.remove(&identity::name_key(&name)).map(|(_, s)| s)
+    };
+    let was_resumed = resumed.is_some();
+    let socket = match resumed {
+        Some(s) => s,
+        None => std::sync::Arc::new(tokio::net::UdpSocket::bind(("127.0.0.1", 0)).await.map_err(|e| e.to_string())?),
+    };
     let port = socket.local_addr().map_err(|e| e.to_string())?.port();
     let id = {
         let mut o = open();
@@ -199,7 +219,7 @@ async fn handle(logger: &Logger, stream: tokio::net::TcpStream, peer: SocketAddr
         o.by_port.insert(port, ip);
         id
     };
-    info!(logger, "Tunnel: {name} from {ip} (their UDP is blocked); on 127.0.0.1:{port}");
+    info!(logger, "Tunnel: {name} from {ip} (their UDP is blocked); on 127.0.0.1:{port}{}", if was_resumed { ", resumed" } else { "" });
     crate::session_events::note(crate::session_events::Who::Name(name.clone()), "tunnel", serde_json::json!({ "open": true }));
     let mut rate = Rate::new();
     let mut ping = tokio::time::interval(PING_EVERY);
@@ -240,9 +260,17 @@ async fn handle(logger: &Logger, stream: tokio::net::TcpStream, peer: SocketAddr
     };
     {
         let mut o = open();
+        let replaced = !o.by_id.contains_key(&id);
         o.by_port.remove(&port);
         if o.by_id.remove(&id).is_some() && o.by_name.get(&identity::name_key(&name)) == Some(&id) {
             o.by_name.remove(&identity::name_key(&name));
+        }
+        // Kept a while for the name's next tunnel, unless a newer one already took over.
+        if !replaced {
+            let mut p = parked();
+            if p.len() < MAX_TUNNELS * 4 {
+                p.insert(identity::name_key(&name), (Instant::now(), std::sync::Arc::clone(&socket)));
+            }
         }
     }
     info!(logger, "Tunnel: {name}'s closed");
@@ -364,10 +392,36 @@ mod tests {
             }
         };
         assert_eq!(tunnel::parse(&answer), Some((tunnel::LOGIN, &b"re:hello"[..])));
-        assert!(open().by_port.values().any(|ip| *ip == "203.0.113.77".parse::<IpAddr>().unwrap()), "kept by its loopback port, with the real address");
+        let real: IpAddr = "203.0.113.77".parse().unwrap();
+        let port_of = || open().by_port.iter().find(|(_, ip)| **ip == real).map(|(p, _)| *p);
+        let first_port = port_of().expect("kept by its loopback port, with the real address");
         ws.close(None).await.unwrap();
         let ended = tokio::time::timeout(Duration::from_secs(5), done_rx).await.unwrap().unwrap();
         assert!(ended.is_ok(), "{ended:?}");
-        assert!(!open().by_port.values().any(|ip| *ip == "203.0.113.77".parse::<IpAddr>().unwrap()), "gone when it closed");
+        assert_eq!(port_of(), None, "gone when it closed");
+
+        // Back within 30 s (a carrier dropped it): the same socket, so the same port.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let at = listener.local_addr().unwrap();
+        let logger = slog::Logger::root(slog::Discard, slog::o!());
+        tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await.unwrap();
+            let _ = handle(&logger, stream, peer, services).await;
+        });
+        let mut request = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(format!("ws://{at}/tunnel")).unwrap();
+        request.headers_mut().insert("x-forwarded-for", "203.0.113.77".parse().unwrap());
+        let (mut ws, _) = tokio_tungstenite::client_async(request, tokio::net::TcpStream::connect(at).await.unwrap()).await.unwrap();
+        ws.send(Ws::Binary(tunnel::frame(tunnel::AUTH, &probe).into())).await.unwrap();
+        ws.send(Ws::Binary(tunnel::frame(tunnel::LOGIN, b"again").into())).await.unwrap();
+        let answer = loop {
+            match tokio::time::timeout(Duration::from_secs(5), ws.next()).await.unwrap() {
+                Some(Ok(Ws::Binary(data))) => break data,
+                Some(Ok(_)) => {}
+                other => panic!("no answer: {other:?}"),
+            }
+        };
+        assert_eq!(tunnel::parse(&answer), Some((tunnel::LOGIN, &b"re:again"[..])));
+        assert_eq!(port_of(), Some(first_port), "resumed on the same port");
+        ws.close(None).await.unwrap();
     }
 }
