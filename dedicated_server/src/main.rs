@@ -76,6 +76,7 @@ mod clients;
 mod community_api;
 mod config;
 mod escorts;
+mod fair_play_beats;
 mod far_rooms;
 mod federation;
 mod friends_policy;
@@ -139,6 +140,7 @@ fn end_play(logger: &slog::Logger, storage: &Storage, user_id: u32) {
         nat_helper::game_signed_out(&name);
     }
     join_fallback::joins().signed_out(user_id);
+    fair_play_beats::beats().signed_out(user_id);
     if let Err(e) = storage.end_play(user_id) {
         error!(logger, "ending the play session of {user_id} failed: {e}");
     }

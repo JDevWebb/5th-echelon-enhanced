@@ -344,7 +344,7 @@ const reports = computed(() => d.value?.fair_play || []);
 const reportTimes = computed(() => reports.value.reduce((n, r) => n + (r.times || 1), 0));
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 const fairPill = computed(() => [flags.value.length && plural(flags.value.length, 'flag'), reports.value.length && plural(reportTimes.value, 'report')].filter(Boolean).join(', '));
-const CHECKS = { code: 'Game code', speed: 'Clock speed', rules: 'Match rules', weapon: 'Weapons', pawn: 'Character', names: 'Names' };
+const CHECKS = { code: 'Game code', speed: 'Clock speed', self: "The add-on's own code", heartbeat: 'Checks stopped', rules: 'Match rules', weapon: 'Weapons', pawn: 'Character', names: 'Names' };
 const checkName = c => CHECKS[c] || c || 'Fair play';
 const CLIP = 140;
 const expanded = reactive(new Set());

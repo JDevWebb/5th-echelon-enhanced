@@ -1011,6 +1011,8 @@ fn describe(e: &Event) -> String {
             match e.detail["check"].as_str() {
                 Some("speed") => "speed",
                 Some("code") => "game code",
+                Some("self") => "own code",
+                Some("heartbeat") => "heartbeat",
                 _ => "fair play",
             },
             e.detail["detail"].as_str().unwrap_or("?"),

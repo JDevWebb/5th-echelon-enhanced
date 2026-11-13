@@ -1922,6 +1922,21 @@ impl Misc for MyMisc {
                 serde_json::json!({ "state": state, "under_way": r.under_way, "rooms": rooms }),
             );
         }
+        // The add-on's fair-play heartbeat stopped while its match is under way (0.5.2's H).
+        let silent = crate::fair_play_beats::beats().match_said(user_id, r.under_way, std::time::Instant::now());
+        if let Some(silent) = silent {
+            warn!(self.logger, "Fair play: {user_id}'s add-on stopped its heartbeat in a match ({} s)", silent.as_secs());
+            crate::session_events::note(
+                crate::session_events::Who::Id(user_id),
+                "fair_play",
+                serde_json::json!({
+                    "check": "heartbeat",
+                    "detail": format!("the add-on's checks stopped reporting during a match under way ({} min so far): switched off, or their thread stopped", silent.as_secs() / 60),
+                    "value": silent.as_secs(),
+                    "wine": false,
+                }),
+            );
+        }
         // The round's settings (F4): noted as a round starts, and any change while it runs.
         if !rooms.is_empty() {
             if let Some(detail) = crate::round_settings::said(user_id, r.under_way, &r.settings) {
@@ -2131,8 +2146,15 @@ impl Misc for MyMisc {
     async fn fair_play_check(&self, request: Request<misc::FairPlayCheckRequest>) -> Result<Response<misc::FairPlayCheckResponse>, Status> {
         let user_id = caller(&request)?;
         let r = request.into_inner();
-        if !matches!(r.check.as_str(), "speed" | "code") {
+        if !matches!(r.check.as_str(), "speed" | "code" | "self" | "heartbeat") {
             return Err(Status::invalid_argument("Not a check"));
+        }
+        // The add-on's heartbeat in a match (0.5.2's H): kept, not an event of its own.
+        if r.check == "heartbeat" {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // finite and not negative
+            let count = if r.value.is_finite() && r.value >= 0.0 { r.value as u64 } else { 0 };
+            crate::fair_play_beats::beats().beat(user_id, count, std::time::Instant::now());
+            return Ok(Response::new(misc::FairPlayCheckResponse {}));
         }
         // Once a minute a check at most; more say nothing new.
         static LAST: std::sync::LazyLock<std::sync::Mutex<HashMap<(u32, String), std::time::Instant>>> = std::sync::LazyLock::new(Default::default);

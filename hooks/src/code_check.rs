@@ -46,7 +46,7 @@ extern "system" {
 
 /// The loaded image at `base`: (`.text`'s address, its size in memory, its offset and size in
 /// the file), the image's size, and its preferred base.
-unsafe fn text_of(base: usize) -> Option<((usize, usize, usize, usize), usize, usize)> {
+pub(crate) unsafe fn text_of(base: usize) -> Option<((usize, usize, usize, usize), usize, usize)> {
     let read = |at: usize| (at as *const u32).read_unaligned() as usize;
     let nt = base + read(base + 0x3C);
     let sections = (nt as *const u16).add(3).read_unaligned() as usize;
@@ -65,7 +65,7 @@ unsafe fn text_of(base: usize) -> Option<((usize, usize, usize, usize), usize, u
 }
 
 /// The module holding `address`: its range and file name.
-fn module_at(address: usize) -> Option<(usize, usize, String)> {
+pub(crate) fn module_at(address: usize) -> Option<(usize, usize, String)> {
     let mut module = 0usize;
     // FROM_ADDRESS | UNCHANGED_REFCOUNT.
     if unsafe { GetModuleHandleExW(0x4 | 0x2, address, &mut module) } == 0 || module == 0 {

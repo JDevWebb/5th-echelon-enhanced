@@ -38,6 +38,7 @@ mod chat;
 mod chat_relay;
 mod code_cave;
 mod code_check;
+mod fair_play_beat;
 mod community;
 mod crash;
 mod crash_report;
@@ -441,6 +442,8 @@ fn init(hmodule: Option<HMODULE>) {
         speed_check::start();
         // Whether the game's code is as it shipped, but for our own changes (F8, report only).
         code_check::start();
+        // The checks' heartbeat in a match, and the add-on's check of its own code (H).
+        fair_play_beat::start();
         // The characters, sampled for witness reports (F9) and match recordings (replays),
         // each on for every player unless turned off.
         let mut watchers: Vec<Box<dyn pawns::Watcher>> = Vec::new();
