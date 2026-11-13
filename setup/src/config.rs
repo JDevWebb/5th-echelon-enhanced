@@ -381,6 +381,8 @@ mod tests {
             login: 31126,
             nat: Some(31128),
             api_tls: None,
+            secure: None,
+            tunnel: false,
         });
         assert_eq!(p.api_server_url().as_str(), "http://blacklist.example.com/");
         assert_eq!((p.api_port(), p.login_port(), p.nat_port), (80, 31126, Some(31128)));
@@ -393,6 +395,8 @@ mod tests {
             login: 21126,
             nat: Some(21128),
             api_tls: None,
+            secure: None,
+            tunnel: false,
         });
         assert_eq!((p.api_server_url.clone(), p.login_port, p.nat_port), (None, None, None));
         assert_eq!(p.api_server_url().as_str(), "http://blacklist.example.com:50051/");
@@ -404,6 +408,8 @@ mod tests {
             login: 21126,
             nat: None,
             api_tls: Some(443),
+            secure: None,
+            tunnel: false,
         });
         assert_eq!(p.api_server_url().as_str(), "https://blacklist.example.com/");
         assert!(!p.unencrypted());

@@ -46,9 +46,19 @@ pub fn start(game: &mut Game, notices: &mut Notices, mode: PlayMode, name_not_al
             // The relay nearest the player, when the server is a network's matchmaking server
             // offering its relays (relays.rs); else its own helper.
             let relay = crate::relays::pick_for(&profile.server);
+            // UDP blocked (or the player chose it): through the server's tunnel over HTTPS, to
+            // the server's own helper (0.5.2's T). Checked at every start.
+            let tunnel = crate::tunnel::for_start(&profile.server);
+            if tunnel.is_some() {
+                notices.info(crate::tunnel::NOTICE);
+            }
             game.update(notices, |c| {
                 c.apply_profile(&profile);
-                if let Some(relay) = &relay {
+                c.hook_config.networking.tunnel = tunnel.clone();
+                if let Some(t) = &tunnel {
+                    c.hook_config.networking.nat_host = None;
+                    c.hook_config.networking.nat_port = Some(t.helper).filter(|p| *p != nat_proto::DEFAULT_PORT);
+                } else if let Some(relay) = &relay {
                     c.hook_config.networking.nat_host = Some(relay.host.clone());
                     c.hook_config.networking.nat_port = Some(relay.port).filter(|p| *p != nat_proto::DEFAULT_PORT);
                     c.hook_config.networking.relays = relay.ranges.clone();

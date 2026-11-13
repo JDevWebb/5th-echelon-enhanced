@@ -151,6 +151,7 @@ impl Screen for SettingsPage {
                         .collect();
                 }
             }
+            "tunnel_always" => launcher::prefs::Prefs::set_tunnel_always(on),
             // The system's own setting (autostart.rs), not the launcher's.
             "start_with_system" => self.autostart_failed = launcher::autostart::set(on).err(),
             _ if id.starts_with("hook:") => self.set(app, "hook", json!([&id[5..], on])),
@@ -533,6 +534,12 @@ impl SettingsPage {
                 .enabled(!locked)
                 .sub("Stops the game from quietly playing over the wrong network when your VPN is off.")
         });
+        r.card("Through HTTPS");
+        r.add(note("Where the game's traffic (UDP) is blocked, as on some mobile data, the game goes through the server over HTTPS instead: the launcher checks at every start. Slower than usual, so only when needed."));
+        r.add(
+            switch("tunnel_always", "Always go through HTTPS", launcher::prefs::Prefs::tunnel_always())
+                .sub("For a connection that lets some of the game's traffic through but loses most of it, which the check at start can miss."),
+        );
     }
 
     fn servers(&mut self, _app: &AppHandle, v: &Value, r: &mut Rows) {

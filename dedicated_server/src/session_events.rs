@@ -62,7 +62,8 @@
 //! - `stats`: the game wrote stats (it does at the end of a mission or match).
 //! - `fair_play`: `check` (`code`, `speed`; 0.5.2: `self`, the add-on's own code changed, and
 //!   `heartbeat`, its checks stopped reporting in a match), `detail`, `value`, `wine`.
-//! - `nat`: `relayed (the player's game traffic goes through the server's relay), `why`
+//! - `tunnel`: `open` (0.5.2's T: the player's game came through the HTTPS tunnel, or it closed).
+//! - `nat`: `relayed` (the player's game traffic goes through the server's relay), `why`
 //!   (0.5.2's J5: `direct`, `asked`, `symmetric`, `no_mapping`, `double_nat`, `failed_joins`);
 //!   said again when a direct player is moved to the relay.
 //! - `nat_missing`: `after_secs`: the game went online (opened or joined a room) and hadn't

@@ -38,6 +38,7 @@ mod shots;
 pub mod start;
 pub mod support;
 pub mod task;
+pub mod tunnel;
 #[cfg(feature = "gui")]
 mod theme;
 pub mod update_notice;

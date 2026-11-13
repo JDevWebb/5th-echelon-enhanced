@@ -185,6 +185,10 @@ pub struct Prefs {
     /// Play asks Steam to start a Steam copy on Windows (for Steam Input), not the launcher.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     start_through_steam: bool,
+    /// The game's traffic always goes through the server's tunnel over HTTPS (0.5.2's T), for a
+    /// connection that lets some UDP through but loses most of it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    tunnel_always: bool,
     /// What the Play button starts: its split button's last choice.
     #[serde(default, skip_serializing_if = "PlayMode::is_default")]
     play_mode: PlayMode,
@@ -479,6 +483,17 @@ impl Prefs {
 
     pub fn start_through_steam() -> bool {
         Self::load().start_through_steam
+    }
+
+    /// Settings › Network › Always go through HTTPS (0.5.2's T): the tunnel at every start.
+    pub fn tunnel_always() -> bool {
+        Self::load().tunnel_always
+    }
+
+    pub fn set_tunnel_always(on: bool) {
+        let mut prefs = Self::load();
+        prefs.tunnel_always = on;
+        prefs.save();
     }
 
     pub fn play_mode() -> PlayMode {

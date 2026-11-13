@@ -32,6 +32,12 @@ pub struct Ports {
     /// installer's Caddy): used instead of `api`, so nothing travels readable.
     #[serde(default)]
     pub api_tls: Option<u16>,
+    /// The game's secure service (none from servers that don't say: the login port's next).
+    #[serde(default)]
+    pub secure: Option<u16>,
+    /// It takes tunnels for players whose UDP is blocked (0.5.2's T), on 443.
+    #[serde(default)]
+    pub tunnel: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -200,7 +206,9 @@ mod tests {
                 api: 80,
                 login: 31126,
                 nat: Some(31128),
-                api_tls: None
+                api_tls: None,
+                secure: Some(31127),
+                tunnel: false
             })
         );
 

@@ -355,6 +355,8 @@ pub fn built_in(coordinator: &str) -> Vec<Listing> {
         login: 21126,
         nat: Some(21128),
         api_tls: Some(443),
+        secure: None,
+        tunnel: false,
     };
     // One server since 0.5.0 (global matchmaking): every player signs in to the matchmaking
     // server, by its record, and plays through the relay nearest them.
