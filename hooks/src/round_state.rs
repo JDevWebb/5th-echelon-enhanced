@@ -612,6 +612,11 @@ fn test_setting(found: &Found, object: usize, adversarial: bool) {
         test_changes(object);
         return;
     }
+    if text.trim() == "firing" {
+        let _ = std::fs::remove_file(&file);
+        crate::weapons::test_firing_words();
+        return;
+    }
     if text.trim() == "bools" {
         let _ = std::fs::remove_file(&file);
         test_bools(object);

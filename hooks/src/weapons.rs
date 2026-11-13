@@ -45,6 +45,13 @@ const STATS: [&str; 18] = [
 /// the word at 236). `m_bInfiniteBulletPenetration` and `m_bIsFullyAccurate` have no name in
 /// this build's name table, so they aren't found this way.
 const SWITCHES: [&str; 3] = ["m_bUnlimitedAmmo", "m_bNoReloadNecessary", "m_bDisableSpread"];
+
+/// Two more in the same word, whose names this build lacks: placed by declaration order
+/// (Blacklist.umd's package order: the word at 236 holds WeaponFiringComponent's bools 10-41,
+/// bit = index - 10; on the gamebox, 14 Nov, the bits set at rest were exactly the flags that
+/// should be on). Taken only when m_bDisableSpread's bit is where that order puts it.
+const PLACED_SWITCHES: [(&str, u32); 2] = [("m_bInfiniteBulletPenetration", 1 << 3), ("m_bIsFullyAccurate", 1 << 21)];
+const DISABLE_SPREAD_BIT: u32 = 1 << 20;
 /// The most archetypes hashed.
 const MOST: usize = 400;
 /// How often they're read again in a match.
@@ -95,6 +102,10 @@ fn found() -> Option<&'static Found> {
                         Some((*name, read::<u16>(prop + 0x3a)?, mask))
                     })
                     .collect();
+                let mut switches = switches;
+                if let Some((_, offset, _)) = switches.iter().find(|(n, _, m)| *n == "m_bDisableSpread" && *m == DISABLE_SPREAD_BIT).copied() {
+                    switches.extend(PLACED_SWITCHES.iter().map(|(n, m)| (*n, offset, *m)));
+                }
                 (!switches.is_empty()).then(|| Some((read_u32(class + 0x20)?, switches))).flatten()
             });
             tracing::info!("Weapons: {} live weapon switches found", firing.as_ref().map_or(0, |(_, s)| s.len()));
@@ -196,4 +207,32 @@ pub fn for_match_state(under_way: bool) -> HashMap<String, u32> {
         }
         _ => HashMap::new(),
     }
+}
+
+/// The gamebox's `firing`: the live weapons' switch word (WeaponFiringComponent's at 236), each
+/// value seen and how often, and how many weapons have each bit on: for checking which bit is
+/// which before reading more of them.
+#[cfg(feature = "test-commands")]
+pub fn test_firing_words() {
+    let Some(f) = found() else { return };
+    let Some((class, switches)) = &f.firing else { return };
+    let Some(offset) = switches.first().map(|(_, o, _)| *o) else { return };
+    let mut values: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut bits = [0u32; 32];
+    crate::round_state::each_object(|o| {
+        if !crate::round_state::of_class(o, *class) {
+            return;
+        }
+        if let Some(w) = read_u32(o + usize::from(offset)) {
+            *values.entry(w).or_insert(0) += 1;
+            for (b, n) in bits.iter_mut().enumerate() {
+                if w & (1 << b) != 0 {
+                    *n += 1;
+                }
+            }
+        }
+    });
+    let total: u32 = values.values().sum();
+    let on: Vec<String> = bits.iter().enumerate().filter(|(_, n)| **n > 0).map(|(b, n)| format!("{b}:{n}")).collect();
+    tracing::info!("Weapons: test: {total} live weapons at {offset}; bits on (bit:weapons) {}; values {values:x?}", on.join(" "));
 }
