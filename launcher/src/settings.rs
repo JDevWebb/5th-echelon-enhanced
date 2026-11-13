@@ -1325,7 +1325,72 @@ pub fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>, n
         (None, outcome) => outcome,
     };
     add("Internet play helper", nat);
+    // 0.5.2's J3: what on this PC gets in the game's way. A VPN adapter the game may use (several
+    // support replies were Radmin VPN or Hamachi), and Storm's port taken by another program.
+    if !hooks_config::running_under_wine() {
+        let vpns = vpn_adapters(&setup::net::adapters());
+        add(
+            "VPN adapters",
+            if vpns.is_empty() {
+                (Status::Ok, None)
+            } else {
+                (
+                    Status::Warn,
+                    Some(format!(
+                        "{} on: the game may use it for matches, and players outside it can't reach you then. Turn it off while you play, or pick your network adapter in Settings › Network",
+                        vpns.join(", ")
+                    )),
+                )
+            },
+        );
+    }
+    add("Game's match port (UDP 13000)", storm_port_free());
     results
+}
+
+/// The adapters that look like a VPN's (by name, or by the address ranges the common ones give):
+/// their names, with the VPN's. 0.5.2's J3.
+pub fn vpn_adapters(adapters: &[(String, std::net::IpAddr)]) -> Vec<String> {
+    const NAMES: [(&str, &str); 8] = [
+        ("radmin", "Radmin VPN"),
+        ("hamachi", "Hamachi"),
+        ("zerotier", "ZeroTier"),
+        ("tailscale", "Tailscale"),
+        ("wireguard", "WireGuard"),
+        ("nordlynx", "NordVPN"),
+        ("openvpn", "OpenVPN"),
+        ("proton", "Proton VPN"),
+    ];
+    adapters
+        .iter()
+        .filter_map(|(name, ip)| {
+            let lower = name.to_lowercase();
+            let by_name = NAMES.iter().find(|(key, _)| lower.contains(key)).map(|(_, vpn)| *vpn);
+            let by_range = match ip {
+                std::net::IpAddr::V4(v4) => match v4.octets() {
+                    [26, ..] => Some("Radmin VPN"),
+                    [25, ..] => Some("Hamachi"),
+                    _ => None,
+                },
+                std::net::IpAddr::V6(_) => None,
+            };
+            by_name.or(by_range).map(|vpn| if name.to_lowercase().contains(&vpn.to_lowercase()) { name.clone() } else { format!("{vpn} ({name})") })
+        })
+        .collect()
+}
+
+/// Whether UDP 13000 (Storm's port, which the game binds) is free on this PC while the game
+/// isn't running: another program holding it keeps the game's matches off it. 0.5.2's J3.
+fn storm_port_free() -> (setup::diagnose::Status, Option<String>) {
+    use setup::diagnose::Status;
+    match std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, nat_proto::STORM_PORT)) {
+        Ok(_) => (Status::Ok, None),
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => (
+            Status::Warn,
+            Some("another program holds it (or the game is running): close it, or the game's matches can't use their port".into()),
+        ),
+        Err(e) => (Status::Warn, Some(format!("couldn't check: {e}"))),
+    }
 }
 
 #[cfg(feature = "gui")]
@@ -1445,5 +1510,25 @@ mod tests {
         assert!(written.contains("[Beta]") && written.contains("MouseTurnPerSecond = true"), "{written}");
         assert_eq!(BETA_FEATURES.len(), hooks_config::Beta::NAMES.len(), "a switch for every beta");
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod vpn_tests {
+    use super::vpn_adapters;
+
+    /// J3: VPN adapters by name or by the ranges Radmin VPN and Hamachi give.
+    #[test]
+    fn vpn_adapters_are_named() {
+        use std::net::IpAddr;
+        let a = |name: &str, ip: &str| (name.to_string(), ip.parse::<IpAddr>().unwrap());
+        let found = vpn_adapters(&[
+            a("Ethernet", "192.168.1.20"),
+            a("Radmin VPN", "26.12.0.9"),
+            a("Ethernet 3", "25.1.2.3"),
+            a("Tailscale", "100.101.102.103"),
+            a("Wi-Fi", "10.0.0.5"),
+        ]);
+        assert_eq!(found, vec!["Radmin VPN", "Hamachi (Ethernet 3)", "Tailscale"]);
     }
 }
