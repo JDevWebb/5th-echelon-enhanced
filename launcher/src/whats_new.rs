@@ -120,8 +120,8 @@ pub const RELEASES: &[Release] = &[
         ],
         fixed: &[
             Fix {
-                lead: "Chat in the overlay scrolls with the mouse wheel",
-                rest: ", and its newest message is no longer cut off at the bottom.",
+                lead: "Chat in the overlay shows the newest messages",
+                rest: " and scrolls with the mouse wheel: it could look stuck hours back, with the newest message cut off.",
             },
             Fix {
                 lead: "Typing scbl.jdevwebb.net finds the community network",
