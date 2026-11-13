@@ -770,6 +770,11 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
         hook!(GetAddrinfoHook, addr, getaddrinfo);
     }
 
+    // The tunnel for this start, when the launcher found UDP blocked (0.5.2's T): before the
+    // NAT worker and the game send anything.
+    if let Some(target) = config.networking.tunnel.clone() {
+        crate::tunnel::start(target);
+    }
     nat::init_hooks(config, addr);
     storm::init_hooks(config, addr);
     nla::init_hooks();

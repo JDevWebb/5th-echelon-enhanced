@@ -901,6 +901,22 @@ pub struct Networking {
     /// `ip_address` was worked out at start (nothing pinned), not set by the player.
     #[serde(skip)]
     pub ip_address_automatic: bool,
+    /// For this start, the game's UDP goes through the server's tunnel over HTTPS (0.5.2's T):
+    /// the launcher found UDP blocked, or the player chose it. Written by the launcher at each
+    /// start; none is the usual.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel: Option<Tunnel>,
+}
+
+/// Where the tunnel goes, and the server's UDP services it carries (0.5.2's T).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct Tunnel {
+    /// The server's host name: the tunnel is `wss://<host>/tunnel`.
+    pub host: String,
+    /// The ports the game sends to on the server: the sign-in, the secure service, the helper.
+    pub login: u16,
+    pub secure: u16,
+    pub helper: u16,
 }
 
 const fn default_true() -> bool {
@@ -926,6 +942,7 @@ impl Default for Networking {
             relay_pings: Vec::new(),
             fixed_server_port: false,
             ip_address_automatic: false,
+            tunnel: None,
         }
     }
 }

@@ -44,7 +44,10 @@ serde_json = { workspace = true }
 server_api = { path = "../api", package = "api" }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "net", "time", "macros"] }
+# The tunnel for players whose UDP is blocked (0.5.2): a WebSocket over the same rustls.
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "__rustls-tls"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 toml = { workspace = true }
 tonic = { workspace = true, features = ["tls-ring", "tls-webpki-roots"] }
 tracing = { workspace = true }

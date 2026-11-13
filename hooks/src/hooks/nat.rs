@@ -392,6 +392,41 @@ pub(crate) fn set_mapping(mapping: Option<SocketAddrV4>) {
     }
 }
 
+/// Writes `addr` as the SOCKADDR_IN at `sa` (its length at `len`, which says how much room).
+fn write_addr(addr: SocketAddrV4, sa: *mut u8, len: *mut i32) {
+    let bytes = sockaddr(addr);
+    unsafe {
+        let room = usize::try_from(*len).unwrap_or(0);
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), sa, bytes.len().min(room));
+        *len = bytes.len() as i32;
+    }
+}
+
+/// The tunnel's first message (0.5.2's T): a probe naming this player, with the NAT ticket and
+/// signed with the session key, as a registering probe is. None before the game has a ticket.
+pub(crate) fn tunnel_proof() -> Option<Vec<u8>> {
+    let st = state();
+    if st.ticket == [0; 16] || st.name.is_empty() {
+        return None;
+    }
+    let nonce = rand::random::<u32>() | 1;
+    let cookie = [0u8; 16];
+    let mut data = Message::Probe {
+        flags: 0,
+        nonce,
+        mapping: None,
+        name: st.name.clone(),
+        ticket: st.ticket,
+        cookie,
+        rtt_ms: None,
+        reach: None,
+    }
+    .encode();
+    let key = session_key();
+    nat_proto::add_key(&mut data, &key.public_key(), &key.sign_bytes(&nat_proto::probe_message(nonce, &cookie, &st.name)));
+    Some(data)
+}
+
 fn read_addr(sa: *const u8) -> Option<SocketAddrV4> {
     if sa.is_null() {
         return None;
@@ -416,6 +451,8 @@ fn sockaddr(addr: SocketAddrV4) -> [u8; 16] {
 }
 
 fn send_raw(socket: usize, data: &[u8], to: SocketAddrV4) -> i32 {
+    // Through the tunnel when it's on (0.5.2's T): to the helper's forwarder.
+    let to = crate::tunnel::redirect(to).unwrap_or(to);
     let sa = sockaddr(to);
     unsafe { SendToHook.call(socket, data.as_ptr(), data.len() as i32, 0, sa.as_ptr(), sa.len() as i32) }
 }
@@ -596,6 +633,12 @@ fn forget_registration(st: &mut State) {
 }
 
 fn sendto(s: usize, buf: *const u8, len: i32, flags: i32, to: *const u8, tolen: i32) -> i32 {
+    // The tunnel (0.5.2's T): what any of the game's sockets sends to one of the server's UDP
+    // services goes to that service's forwarder on 127.0.0.1, which carries it over HTTPS.
+    if let Some(local) = read_addr(to).and_then(crate::tunnel::redirect) {
+        let sa = sockaddr(local);
+        return unsafe { SendToHook.call(s, buf, len, flags, sa.as_ptr(), sa.len() as i32) };
+    }
     if is_storm_socket(s) && !buf.is_null() && len > 0 {
         let data = unsafe { std::slice::from_raw_parts(buf, len as usize) };
         let dest = read_addr(to);
@@ -657,7 +700,14 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
     // loop on the same one.
     const MSG_PEEK: i32 = 2;
     if !is_storm_socket(s) || buf.is_null() || flags & MSG_PEEK != 0 {
-        return unsafe { RecvFromHook.call(s, buf, len, flags, from, fromlen) };
+        let n = unsafe { RecvFromHook.call(s, buf, len, flags, from, fromlen) };
+        // The tunnel: a reply from a forwarder is shown as from the server's service.
+        if n > 0 && crate::tunnel::on() && !from.is_null() && !fromlen.is_null() {
+            if let Some(server) = read_addr(from).and_then(crate::tunnel::from_forwarder) {
+                write_addr(server, from, fromlen);
+            }
+        }
+        return n;
     }
     // The sender is needed to trust NAT messages, even if the game doesn't
     // ask for it.
@@ -680,7 +730,12 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
             return n;
         }
         let data = unsafe { std::slice::from_raw_parts_mut(into, n as usize) };
-        let sender = read_addr(from_ptr);
+        let mut sender = read_addr(from_ptr);
+        // The tunnel: a forwarder's datagram is the server's service's.
+        if let Some(server) = sender.and_then(crate::tunnel::from_forwarder) {
+            write_addr(server, from_ptr, len_ptr);
+            sender = Some(server);
+        }
         if !nat_proto::is_nat_message(data) {
             if LOG_PACKETS.load(Ordering::Relaxed) {
                 info!("recvfrom {sender:?}: {}", to_hex(data));
