@@ -244,6 +244,8 @@ pub struct Players {
     pub total: u32,
     pub in_match: u32,
     pub in_lobby: u32,
+    /// The players this server's relay carries now (0.5.2's A2).
+    pub relayed: u32,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -357,6 +359,7 @@ pub async fn collect(storage: &Storage) -> (Metrics, Vec<u32>) {
             }
         }
     }
+    m.players.relayed = crate::nat_helper::relayed_now();
     m.places = places();
     if let (Some(key), Ok(ids)) = (activity_key(), storage.online_player_ids().await) {
         m.active = ids.into_iter().take(MAX_ACTIVE).map(|id| activity_id(key, id)).collect();

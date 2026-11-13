@@ -34,6 +34,8 @@ pub struct Point {
     pub t: i64,
     pub players: f64,
     pub in_match: f64,
+    /// Players its relay carries (0.5.2's A2).
+    pub relayed_players: f64,
     pub cpu: f64,
     pub process_cpu: f64,
     pub mem_used: f64,
@@ -54,6 +56,7 @@ impl Point {
     fn add(&mut self, o: &Point) {
         self.players += o.players;
         self.in_match += o.in_match;
+        self.relayed_players += o.relayed_players;
         self.cpu += o.cpu;
         self.process_cpu += o.process_cpu;
         self.mem_used += o.mem_used;
@@ -74,6 +77,7 @@ impl Point {
         for v in [
             &mut self.players,
             &mut self.in_match,
+            &mut self.relayed_players,
             &mut self.cpu,
             &mut self.process_cpu,
             &mut self.mem_used,
@@ -116,6 +120,7 @@ fn point(t: i64, m: &Value, prev: Option<(i64, &Value)>) -> Point {
         t,
         players: num(&m["players"]["online"]),
         in_match: num(&m["players"]["in_match"]),
+        relayed_players: num(&m["players"]["relayed"]),
         cpu: num(&s["cpu_percent"]),
         process_cpu: num(&s["process_cpu_percent"]),
         mem_used: (num(&s["mem_total"]) - num(&s["mem_available"])).max(0.0),
@@ -164,7 +169,7 @@ fn bucket(points: Vec<Point>, from: i64, step: i64) -> Vec<Point> {
 
 /// A server's samples since a time, cut down in SQL to the numbers [`point`] reads.
 const CHARTED: &str = "SELECT at, json_object(
-        'players', json_object('online', json_extract(data, '$.players.online'), 'in_match', json_extract(data, '$.players.in_match')),
+        'players', json_object('online', json_extract(data, '$.players.online'), 'in_match', json_extract(data, '$.players.in_match'), 'relayed', json_extract(data, '$.players.relayed')),
         'system', json_object(
             'cpu_percent', json_extract(data, '$.system.cpu_percent'), 'process_cpu_percent', json_extract(data, '$.system.process_cpu_percent'),
             'mem_total', json_extract(data, '$.system.mem_total'), 'mem_available', json_extract(data, '$.system.mem_available'),

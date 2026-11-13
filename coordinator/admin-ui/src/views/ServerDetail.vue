@@ -79,7 +79,7 @@ const charts = computed(() => {
   const pings = (data.value?.pings?.[props.id] || []).map(p => ({ t: p.t, v: p.ms }));
   const memTotal = sv.value?.metrics?.system?.mem_total;
   return [
-    { title: 'Players', series: [one('Online', 'players', PALETTE[0]), one('In a match', 'in_match', PALETTE[1])] },
+    { title: 'Players', series: [one('Online', 'players', PALETTE[0]), one('In a match', 'in_match', PALETTE[1]), one('Relayed here', 'relayed_players', PALETTE[2])] },
     { title: 'CPU', series: [one('Machine', 'cpu', PALETTE[0]), one('Server process', 'process_cpu', PALETTE[2])], format: v => fmt.pct(v), max: 100 },
     { title: 'Memory', series: [one('Used', 'mem_used', PALETTE[0]), one('Server process', 'rss', PALETTE[2])], format: fmt.bytes, max: memTotal || undefined },
     { title: 'Bandwidth', series: [one('In', 'rx', PALETTE[1]), one('Out', 'tx', PALETTE[0]), one('Relayed', 'relayed', PALETTE[2])], format: fmt.rate },
