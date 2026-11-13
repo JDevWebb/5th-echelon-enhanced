@@ -5,8 +5,10 @@
 
 use std::time::Duration;
 
-/// How long the quick UDP check waits for the NAT helper.
+/// How long the quick UDP check waits for the NAT helper, and the server's info over HTTPS
+/// (Play waits on them).
 const UDP_WAIT: Duration = Duration::from_millis(1500);
+const INFO_WAIT: Duration = Duration::from_secs(3);
 
 /// What the player is told when the tunnel is used.
 pub const NOTICE: &str = "Your connection blocks the game's traffic (UDP), so the game goes through HTTPS instead. It will be slower than usual.";
@@ -30,7 +32,10 @@ pub fn decide(server: &str, ports: Option<&setup::server_info::Ports>, udp_ok: b
 /// when the player hasn't chosen the tunnel anyway, and the server offers one).
 pub fn for_start(server: &str) -> Option<hooks_config::Tunnel> {
     let always = crate::prefs::Prefs::tunnel_always();
-    let info = crate::services::rt().block_on(crate::network::server_info_tls(server, 443))?;
+    let info = crate::services::rt()
+        .block_on(async { tokio::time::timeout(INFO_WAIT, crate::network::server_info_tls(server, 443)).await })
+        .ok()
+        .flatten()?;
     let ports = info.ports?;
     if !ports.tunnel {
         return None;
