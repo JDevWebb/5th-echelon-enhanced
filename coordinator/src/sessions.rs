@@ -1021,6 +1021,7 @@ fn describe(e: &Event) -> String {
                 Some("heartbeat") => "heartbeat",
                 Some("rules") => "rules",
                 Some("weapon") => "weapons",
+                Some("pawn") => "character",
                 _ => "fair play",
             },
             e.detail["detail"].as_str().unwrap_or("?"),

@@ -168,6 +168,37 @@ const SETTINGS: [&str; 34] = [
     "m_bSuddenDeathEnabled",
 ];
 
+/// Every BoolProperty declared on the class named `class` (its own, not its supers'), in memory
+/// order (offset, then bit): (offset, bit, name when the name table has it). The order is the
+/// declaration order, so a bool whose name this build lacks is found by its place in the
+/// script's declarations (Blacklist.umd's package order).
+pub(crate) fn class_bools(class: &str) -> Vec<(u16, u32, Option<String>)> {
+    let names = name_indices(&["Class", "BoolProperty", class_name_static(class)]);
+    let Some(owner) = classes_named(&names, class_name_static(class)).first().copied() else { return Vec::new() };
+    let Some(bool_class) = names.get("BoolProperty").map(|i| pack(*i, 0)) else { return Vec::new() };
+    let mut out = Vec::new();
+    each_object(|o| {
+        if read_u32(o + 0x18) == Some(owner as u32) && of_class(o, bool_class) {
+            if let (Some(offset), Some(mask)) = (read::<u16>(o + 0x3a), read_u32(o + BOOL_MASK_AT).filter(|m| m.count_ones() == 1)) {
+                out.push((offset, mask, read_u32(o + 0x20).and_then(name_text)));
+            }
+        }
+    });
+    out.sort_by_key(|(o, m, _)| (*o, *m));
+    out
+}
+
+/// The class names [`class_bools`] is asked for, as the static names `name_indices` takes.
+fn class_name_static(class: &str) -> &'static str {
+    match class {
+        "Pawn" => "Pawn",
+        "EPawn" => "EPawn",
+        "CharacterControl" => "CharacterControl",
+        "WeaponFiringComponent" => "WeaponFiringComponent",
+        _ => "",
+    }
+}
+
 /// Where a BoolProperty object keeps its bit mask (found on the gamebox, 2026-11-14: friendly fire
 /// 0x1 and friendly explosions 0x2 in one word, classic 0x80, sudden death 0x20, ...).
 pub(crate) const BOOL_MASK_AT: usize = 0x80;
@@ -610,6 +641,15 @@ fn test_setting(found: &Found, object: usize, adversarial: bool) {
     if text.trim() == "changes" {
         let _ = std::fs::remove_file(&file);
         test_changes(object);
+        return;
+    }
+    if text.trim() == "classbools" {
+        let _ = std::fs::remove_file(&file);
+        for class in ["Pawn", "EPawn", "CharacterControl"] {
+            let list = class_bools(class);
+            let shown: Vec<String> = list.iter().map(|(o, m, n)| format!("{o}:{m:#x}{}", n.as_deref().map(|n| format!("={n}")).unwrap_or_default())).collect();
+            info!("Class bools: test: {class}: {} bools: {}", list.len(), shown.join(" "));
+        }
         return;
     }
     if text.trim() == "firing" {

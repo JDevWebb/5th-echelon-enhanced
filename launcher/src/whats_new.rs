@@ -62,7 +62,7 @@ pub const RELEASES: &[Release] = &[
             },
             Item {
                 title: "Rules and weapons compared between games",
-                text: "Every game in a match now reads the match's rules and the stats of each weapon. One that differs from the host's was edited, and the admins see it. Report only, as before.",
+                text: "Every game in a match now reads the match's rules and the stats of each weapon. One that differs from the host's was edited, and the admins see it. Your game also checks your own character for cheat switches (god mode, invisibility, unlimited inventory and the like). Report only, as before.",
                 community: false,
             },
             Item {

@@ -67,6 +67,7 @@ mod overlay_input;
 mod pad;
 mod particle_fix;
 mod party_follow;
+mod pawn_switches;
 mod pawns;
 mod perception_fix;
 mod quickstart;
@@ -462,6 +463,8 @@ fn init(hmodule: Option<HMODULE>) {
         // Who's on which side, for the match state the host's game sends (the launcher's
         // Matches tab).
         watchers.push(Box::new(roster::Roster::default()));
+        // Cheat switches on the player's own character (0.5.2's P1, report only).
+        watchers.push(Box::new(pawn_switches::PawnSwitches::new(config.user.username.clone())));
         pawns::start(watchers);
     }
 

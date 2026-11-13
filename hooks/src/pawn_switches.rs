@@ -1,0 +1,207 @@
+//! 0.5.2's P1 (report only): the cheat switches on this player's own character and its
+//! controller, read every few seconds in a match under way. Any of them on is told the server
+//! once a match (`fair_play`, check `pawn`): god mode, invincibility, ghost mode, invisibility,
+//! blocked damage, unlimited inventory. No stock multiplayer character turns them on.
+//!
+//! Where they are: a class's bools share 32-bit words, in declaration order (Blacklist.umd's
+//! package order), one bit each, from the class's first bool word. Most of these have no name
+//! in this build's name table, so each is placed by its index in its class's declarations, and
+//! taken only when the class has exactly as many bools as the script declares (Pawn 26, EPawn
+//! 85, CharacterControl 39; the gamebox, 14 Nov: Pawn's at 884, EPawn's from 1248,
+//! CharacterControl's from 1376, and the two named ones, EPawn's m_bUseNightVision (38) and
+//! CharacterControl's m_bUseRumble (2), exactly where that order puts them).
+
+use std::time::Duration;
+use std::time::Instant;
+
+use tracing::info;
+use tracing::warn;
+
+use crate::dataversion::read_u32;
+use crate::pawns;
+use crate::round_state as rs;
+
+/// The switches: (class, how many bools it declares, (index among them, name)).
+const SWITCHES: [(&str, usize, &[(usize, &str)]); 3] = [
+    ("Pawn", 26, &[(2, "m_bInvisible"), (3, "m_bStateInvisible"), (4, "m_bStateUnhittable"), (25, "m_bBlockDamage")]),
+    (
+        "EPawn",
+        85,
+        &[(0, "m_bInvincible"), (3, "m_bGodMode"), (4, "m_bGodModeOverride"), (5, "m_bGhostMode"), (45, "bDamageInsensitive")],
+    ),
+    ("CharacterControl", 39, &[(30, "m_bUnlimitedInventory")]),
+];
+
+/// How often the own character is read.
+const EVERY: Duration = Duration::from_secs(3);
+/// How often the look-up is tried again while it found nothing (each is a few whole scans).
+const LOOK_AGAIN: Duration = Duration::from_secs(60);
+const MOST_LOOKS: u32 = 10;
+
+/// A switch's place: on the character (true) or its controller, the byte offset and the bit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Place {
+    name: &'static str,
+    on_character: bool,
+    offset: u16,
+    mask: u32,
+}
+
+/// The places of `wanted` (index, name) among a class's bools as the engine has them, when
+/// their count is the script's.
+fn placed(bools: &[(u16, u32)], declared: usize, wanted: &[(usize, &'static str)], on_character: bool) -> Vec<Place> {
+    if bools.len() != declared {
+        return Vec::new();
+    }
+    wanted
+        .iter()
+        .filter_map(|(i, name)| bools.get(*i).map(|(offset, mask)| Place { name, on_character, offset: *offset, mask: *mask }))
+        .collect()
+}
+
+fn look_up() -> Vec<Place> {
+    let mut out = Vec::new();
+    for (class, declared, wanted) in SWITCHES {
+        let bools: Vec<(u16, u32)> = rs::class_bools(class).into_iter().map(|(o, m, _)| (o, m)).collect();
+        let found = placed(&bools, declared, wanted, class != "CharacterControl");
+        if found.is_empty() {
+            info!("Character switches: {class} has {} bools, not the {declared} expected: its switches aren't read", bools.len());
+        }
+        out.extend(found);
+    }
+    out
+}
+
+/// The switches on, of `places`, for a character and its controller.
+fn on(places: &[Place], character: usize, controller: Option<usize>) -> Vec<&'static str> {
+    places
+        .iter()
+        .filter(|p| {
+            let object = if p.on_character { Some(character) } else { controller };
+            object.and_then(|o| read_u32(o + usize::from(p.offset))).is_some_and(|w| w & p.mask != 0)
+        })
+        .map(|p| p.name)
+        .collect()
+}
+
+pub struct PawnSwitches {
+    me: String,
+    places: Option<Vec<Place>>,
+    looked: Option<Instant>,
+    looks: u32,
+    read: Option<Instant>,
+    said: bool,
+    #[cfg(feature = "test-commands")]
+    logged: Option<Instant>,
+}
+
+impl PawnSwitches {
+    pub fn new(me: String) -> Self {
+        Self {
+            me,
+            places: None,
+            looked: None,
+            looks: 0,
+            read: None,
+            said: false,
+            #[cfg(feature = "test-commands")]
+            logged: None,
+        }
+    }
+
+    fn own(&self, c: &pawns::Sample) -> bool {
+        let own = pawns::own_peer();
+        (own != 0 && c.peer.is_some_and(|p| u32::from(p) == own)) || c.control.as_ref().and_then(|k| k.name.as_deref()).is_some_and(|n| n.eq_ignore_ascii_case(&self.me))
+    }
+}
+
+impl pawns::Watcher for PawnSwitches {
+    fn sample(&mut self, tables: &pawns::Tables, now: Instant, characters: &[pawns::Sample]) {
+        let (_, under_way, _) = rs::current();
+        if !under_way {
+            self.said = false;
+            return;
+        }
+        if self.read.is_some_and(|r| now.duration_since(r) < EVERY) || characters.is_empty() {
+            return;
+        }
+        self.read = Some(now);
+        if self.places.as_ref().is_none_or(Vec::is_empty) {
+            if self.looks >= MOST_LOOKS || self.looked.is_some_and(|l| now.duration_since(l) < LOOK_AGAIN) {
+                return;
+            }
+            self.looked = Some(now);
+            self.looks += 1;
+            let places = look_up();
+            info!("Character switches: {} of 10 found: {:?}", places.len(), places.iter().map(|p| (p.name, p.offset, p.mask)).collect::<Vec<_>>());
+            self.places = Some(places);
+        }
+        let Some(places) = self.places.as_ref().filter(|p| !p.is_empty()) else { return };
+        #[cfg(feature = "test-commands")]
+        if self.logged.is_none_or(|l| now.duration_since(l) >= Duration::from_secs(20)) {
+            self.logged = Some(now);
+            let all: Vec<String> = characters
+                .iter()
+                .map(|c| {
+                    let name = c.control.as_ref().and_then(|k| k.name.clone()).unwrap_or_default();
+                    format!("{name}({:?}{}): {:?}", c.peer, if self.own(c) { ", own" } else { "" }, on(places, c.object, pawns::controller_of(tables, c.object)))
+                })
+                .collect();
+            info!("Character switches: test: {}", all.join("; "));
+        }
+        let Some(own) = characters.iter().find(|c| self.own(c)) else { return };
+        // The gamebox's stand-in for a cheat (a test build only): `godmode` sets m_bGodMode on
+        // the own character.
+        #[cfg(feature = "test-commands")]
+        if let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) {
+            if std::fs::read_to_string(&file).is_ok_and(|t| t.trim() == "godmode") {
+                let _ = std::fs::remove_file(&file);
+                if let Some(p) = places.iter().find(|p| p.name == "m_bGodMode") {
+                    let at = own.object + usize::from(p.offset);
+                    if let Some(w) = read_u32(at) {
+                        // SAFETY: the own character's bool word, read just before.
+                        unsafe { (at as *mut u32).write_unaligned(w | p.mask) };
+                        info!("Character switches: test: m_bGodMode set on the own character");
+                    }
+                }
+            }
+        }
+        if self.said {
+            return;
+        }
+        let switched = on(places, own.object, pawns::controller_of(tables, own.object));
+        if switched.is_empty() {
+            return;
+        }
+        self.said = true;
+        let detail = format!("own character with a cheat switch on: {}", switched.join(", "));
+        warn!("Character switches: {detail}");
+        let count = switched.len();
+        let spawned = std::thread::Builder::new().name("fe-pawn-switch".into()).spawn(move || {
+            #[allow(clippy::cast_precision_loss)]
+            crate::api::fair_play_check("pawn", &detail, count as f64, hooks_config::running_under_wine());
+        });
+        if let Err(e) = spawned {
+            warn!("Character switches: couldn't report ({e})");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn switches_are_placed_by_declaration_order_only_when_the_count_is_the_scripts() {
+        let bools: Vec<(u16, u32)> = (0..26u32).map(|i| (884, 1 << i)).collect();
+        let p = placed(&bools, 26, SWITCHES[0].2, true);
+        assert_eq!(p.len(), 4);
+        assert_eq!((p[0].name, p[0].offset, p[0].mask), ("m_bInvisible", 884, 1 << 2));
+        assert_eq!((p[3].name, p[3].mask), ("m_bBlockDamage", 1 << 25));
+        assert!(placed(&bools[..25], 26, SWITCHES[0].2, true).is_empty(), "one missing: nothing placed");
+        // EPawn: three words, its 45th bool in the second (bit 13).
+        let e: Vec<(u16, u32)> = (0..85u32).map(|i| (1248 + 4 * u16::try_from(i / 32).unwrap(), 1 << (i % 32))).collect();
+        let p = placed(&e, 85, SWITCHES[1].2, true);
+        assert_eq!(p.iter().find(|p| p.name == "bDamageInsensitive").map(|p| (p.offset, p.mask)), Some((1252, 1 << 13)));
+    }
+}

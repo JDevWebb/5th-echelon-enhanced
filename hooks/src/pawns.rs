@@ -284,11 +284,17 @@ pub struct Control {
     pub last_kill: Option<(usize, f32)>,
 }
 
-fn control_of(t: &Tables, character: usize) -> Option<Control> {
+/// A character's controller, when it's a `CharacterControl`.
+pub fn controller_of(t: &Tables, character: usize) -> Option<usize> {
     let controller = read_u32(character + usize::from(t.controller?))? as usize;
-    if controller == 0 || t.character_control.is_empty() || !rs::made_from(read_u32(controller + 0x24)? as usize, rs::pack(*t.names.get("CharacterControl")?, 0)) {
+    (controller != 0 && rs::made_from(read_u32(controller + 0x24)? as usize, rs::pack(*t.names.get("CharacterControl")?, 0))).then_some(controller)
+}
+
+fn control_of(t: &Tables, character: usize) -> Option<Control> {
+    if t.character_control.is_empty() {
         return None;
     }
+    let controller = controller_of(t, character)?;
     let at = |o: Option<u16>| o.map(|o| controller + usize::from(o));
     Some(Control {
         name: at(t.nickname).and_then(fstring),
