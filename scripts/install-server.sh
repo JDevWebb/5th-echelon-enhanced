@@ -2216,6 +2216,13 @@ elif [ "$listed" = false ] || [ "$listed" = true ]; then
   warn "--listed and --unlisted only matter with a coordinator; ignored"
 fi
 if [ -z "$coordinator" ] && [ -n "$auto_update" ] && grep -q '^\[federation\]$' "$CONFIG"; then toml_put federation auto_update "$auto_update"; fi
+# A new name or region for a server that joined before, without --coordinator again: taken too
+# (they were kept as they were; 2026-11-13, na1 stayed "... North America" as the matchmaking
+# server). Both were checked against NAME_RE above, so they're safe in quotes.
+if [ -z "$coordinator" ] && grep -q '^\[federation\]$' "$CONFIG"; then
+  [ -z "$server_name" ] || { toml_put federation name "\"$server_name\""; say "Name in the directory: $server_name"; }
+  [ -z "$region" ] || { toml_put federation region "\"$region\""; say "Region in the directory: $region"; }
+fi
 # The network's matchmaking server is listed by its record, which players then use (and which
 # follows it in a failover), not by this machine's own name; any other server by its own.
 if grep -q '^\[federation\]$' "$CONFIG"; then
