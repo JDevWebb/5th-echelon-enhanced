@@ -1096,6 +1096,15 @@ pub fn run() -> Result<(), slint::PlatformError> {
     ui.load_banner();
     ui.check_dialogs(true);
     start_ticker(&ui);
+    // Started with the system (autostart.rs): minimised once the window is up.
+    if launcher::autostart::started_minimised() {
+        let weak = window.as_weak();
+        slint::Timer::single_shot(std::time::Duration::from_millis(200), move || {
+            if let Some(w) = weak.upgrade() {
+                w.window().set_minimized(true);
+            }
+        });
+    }
 
     let result = window.run();
     ui.quit.store(true, Ordering::Relaxed);

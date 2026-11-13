@@ -39,6 +39,8 @@ pub struct SettingsPage {
     update: Option<Result<(String, bool), String>>,
     found: Vec<String>,
     size: f32,
+    /// Why starting with the system couldn't be changed, if it couldn't.
+    autostart_failed: Option<String>,
 }
 
 impl SettingsPage {
@@ -149,6 +151,8 @@ impl Screen for SettingsPage {
                         .collect();
                 }
             }
+            // The system's own setting (autostart.rs), not the launcher's.
+            "start_with_system" => self.autostart_failed = launcher::autostart::set(on).err(),
             _ if id.starts_with("hook:") => self.set(app, "hook", json!([&id[5..], on])),
             _ => self.set(app, id, Value::Bool(on)),
         }
@@ -725,6 +729,20 @@ impl SettingsPage {
             &[("dark".into(), "Dark".into()), ("light".into(), "Light".into()), ("system".into(), "As the system".into())],
             current,
         ));
+        r.card("Starting");
+        r.add(note(if cfg!(target_os = "windows") {
+            "Start the launcher when you sign in to Windows, minimised, so friends and invitations reach you. Windows' Startup apps can turn it off too."
+        } else {
+            "Start the launcher when you sign in, minimised, so friends and invitations reach you."
+        }));
+        r.add(switch(
+            "start_with_system",
+            if cfg!(target_os = "windows") { "Start with Windows" } else { "Start when I sign in" },
+            launcher::autostart::is_on(),
+        ));
+        if let Some(why) = &self.autostart_failed {
+            r.add(warn(format!("Couldn't change it: {why}")));
+        }
         r.card("Size");
         r.add(note(
             "The launcher scales with its window: resize it, maximise it, or go full screen. Make everything bigger or smaller here; Reset puts it back.",

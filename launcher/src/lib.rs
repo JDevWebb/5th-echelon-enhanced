@@ -6,6 +6,7 @@
 #![cfg_attr(not(feature = "gui"), allow(dead_code, unused_imports))]
 
 pub mod activity;
+pub mod autostart;
 #[cfg(feature = "gui")]
 mod app;
 pub mod chat;
