@@ -120,7 +120,14 @@ const ROUND_STATES: [&str; 7] = [
 /// The round's settings read from the match manager (F4), with the class each is on
 /// (echelon.u's exports): EAdversarialMatchManager's for every Spies vs Mercs mode,
 /// ESpyVSMercMatchManager's team respawn times, ECTIMatchManager's (extraction).
-const SETTINGS: [&str; 9] = [
+///
+/// 0.5.2's R1 and P2 add the rest the cheat table edits that are numbers (Blacklist.umd's
+/// schema, worked out 2026-11-13: EMatchManager's time limit, EAdversarialMatchManager's rounds
+/// and lives and its detection and radar ranges, ESpyVSMercMatchManager's hack values and the
+/// respawn times with hacks to go). Each game reads them; the server compares a guest's with its
+/// host's (R4), so a local edit shows. The switches (friendly fire, loadouts, classic, sudden
+/// death) are BoolProperty bits: they wait for the bit mask's place (R1's RE).
+const SETTINGS: [&str; 28] = [
     "m_fGenericRespawnTime",
     "m_fAutoRespawnTime",
     "m_fCurrentRoundTimeLimit",
@@ -130,6 +137,27 @@ const SETTINGS: [&str; 9] = [
     "m_fRespawnTimeMercTeam",
     "m_fRespawnTimeDefendingTeam",
     "m_fRespawnTimeCourierTeam",
+    // R1: the match's rules.
+    "m_iTimeLimit",
+    "m_iNumRounds",
+    "m_iNumLives",
+    "m_iHackPoints",
+    "m_fTimeToCompleteHack",
+    "m_fTimeToDelayHacking",
+    "m_fHackerTagDuration",
+    "m_fTimeToTrackHacker",
+    "m_fRespawnTimeSpyTeam1HackToGo",
+    "m_fRespawnTimeSpyTeam2HacksToGo",
+    "m_fRespawnTimeMercTeam1HackToGo",
+    "m_fRespawnTimeMercTeam2HacksToGo",
+    // P2: detection and radar, which the menus never change.
+    "m_fSpyRadarRange",
+    "m_fBMSRange",
+    "m_fRFDRange",
+    "m_fRFDShortRange",
+    "m_fRFDMediumRange",
+    "m_fThreatIndicatorRadius",
+    "m_fPlayerNameDistance",
 ];
 
 const MISSION_STATES: [&str; 3] = ["CoopMissionState_None", "CoopMissionState_InGame", "CoopMissionState_Results"];
