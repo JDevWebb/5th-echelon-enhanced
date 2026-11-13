@@ -3284,6 +3284,43 @@ async fn the_database_is_in_wal_mode_for_the_live_backup() {
     assert_eq!(mode, "wal");
 }
 
+/// The add-on's own fair-play reports show on the player's page, the same finding folded into
+/// one line; the player is found by their network name as well as their account's (0.5.2's V).
+#[tokio::test]
+async fn a_players_page_shows_what_their_game_reported() {
+    let t = start("fair-play-tab").await;
+    let r = admin_router(&t);
+    let a = t.join("server-a").await;
+    let now = identity::now();
+    t.call("POST", "/v1/players", Some(&a), Some(json!({ "full": true, "players": [player(1189, "Butts", Some("ab12"))] }))).await;
+    sqlx::query("INSERT INTO names (name_key, name, global_id, claimed_at) VALUES ('osprey', 'Osprey', 'ab12', ?)")
+        .bind(now)
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    let code = json!({ "check": "code", "detail": "49 changes to the game's code", "value": 49.0, "wine": false });
+    let events = json!({ "events": [
+        { "id": 1, "at": now - 7200, "last_at": now - 7000, "player": 1189, "name": "Butts", "kind": "fair_play", "detail": code, "count": 2 },
+        { "id": 2, "at": now - 600, "last_at": now - 600, "player": 1189, "name": "Butts", "kind": "fair_play", "detail": code, "count": 1 },
+        { "id": 3, "at": now - 300, "last_at": now - 300, "player": 1189, "name": "Butts", "kind": "fair_play",
+          "detail": { "check": "speed", "detail": "clock 1.8x", "value": 1.8, "wine": true }, "count": 1 },
+        { "id": 4, "at": now - 200, "last_at": now - 200, "player": 1189, "name": "Butts", "kind": "join", "detail": { "room": 3 }, "count": 1 },
+        { "id": 5, "at": now - 100, "last_at": now - 100, "player": 77, "name": "Other", "kind": "fair_play", "detail": code, "count": 1 },
+    ] });
+    assert_eq!(t.call("POST", "/v1/events", Some(&a), Some(events)).await.0, StatusCode::OK);
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    let (status, v) = admin_call(&r, "GET", "/api/players/server-a/1189", &cookie, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let lines = v["fair_play"].as_array().unwrap();
+    assert_eq!(lines.len(), 2, "{v}");
+    assert_eq!((lines[0]["check"].as_str(), lines[0]["wine"].as_bool()), (Some("speed"), Some(true)));
+    assert_eq!((lines[1]["check"].as_str(), lines[1]["times"].as_i64()), (Some("code"), Some(3)));
+    assert_eq!((lines[1]["first"].as_i64(), lines[1]["last"].as_i64()), (Some(now - 7200), Some(now - 600)));
+    // Found by the network's name for them.
+    let (_, v) = admin_call(&r, "GET", "/api/players?q=osprey", &cookie, None).await;
+    assert_eq!((v["total"].as_i64(), v["players"][0]["name"].as_str()), (Some(1), Some("Butts")), "{v}");
+}
+
 #[tokio::test]
 async fn session_events_are_taken_once_and_shown_with_their_problems() {
     let t = start("session-events").await;

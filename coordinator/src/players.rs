@@ -632,7 +632,10 @@ impl Coordinator {
                       (p.banned_at IS NOT NULL AND (p.banned_until IS NULL OR p.banned_until > ?1)) AS banned_now
                  FROM players p LEFT JOIN servers s ON s.id = p.server_id),
              hit AS (SELECT DISTINCT person FROM acc
-                      WHERE (?2 = '' OR name LIKE ?3 ESCAPE '\\' OR identity = ?2 OR CAST(id AS TEXT) = ?2)
+                      WHERE (?2 = '' OR name LIKE ?3 ESCAPE '\\' OR identity = ?2 OR CAST(id AS TEXT) = ?2
+                             -- The network's name for them too (0.5.2): \"Osprey\" finds the account \"Butts\".
+                             OR identity IN (SELECT global_id FROM names WHERE name LIKE ?3 ESCAPE '\\'
+                                             UNION SELECT global_id FROM global_names WHERE name LIKE ?3 ESCAPE '\\'))
                         AND (?4 = '' OR server_id = ?4)
                         AND (?5 = 0 OR online_now)
                         AND (?6 = 0 OR banned_now))"
@@ -808,12 +811,31 @@ impl Coordinator {
             "network_ban": network_ban.map(|(reason, until, at, by)| json!({ "reason": reason, "until": until, "at": at, "by": by })),
             // Their PC (F10): its ids' kinds, a virtual machine, and what it shares with banned players'.
             "hardware": self.hardware_of(server, id).await?,
+            // What their game's add-on reported (fair_play events, the last 30 days), repeats folded.
+            "fair_play": self.fair_play_reports(server, id, now).await?,
             "mutes": mutes.into_iter().map(|(room, until, by, reason, at)| json!({ "room": room, "until": until, "by": by, "reason": reason, "at": at })).collect::<Vec<_>>(),
             "actions": actions.into_iter().map(|(aid, kind, args, by, at, status, message, done)| json!({
                 "id": aid, "kind": kind, "args": serde_json::from_str::<Value>(&args).unwrap_or_default(), "created_by": by,
                 "created_at": at, "status": status, "message": message, "done_at": done,
             })).collect::<Vec<_>>(),
         })))
+    }
+
+    /// The add-on's own fair-play reports for a player (their `fair_play` session events of the
+    /// last 30 days), newest first: the same check with the same finding is one line, with how
+    /// many times and when first and last. At most [`FAIR_PLAY_SHOWN`] lines.
+    pub(crate) async fn fair_play_reports(&self, server: &str, id: i64, now: i64) -> sqlx::Result<Value> {
+        let rows: Vec<(i64, i64, String, i64)> = sqlx::query_as(
+            "SELECT at, last_at, detail, count FROM session_events
+              WHERE server_id = ? AND player = ? AND kind = 'fair_play' AND last_at >= ?
+              ORDER BY last_at DESC LIMIT 2000",
+        )
+        .bind(server)
+        .bind(id)
+        .bind(now - crate::sessions::KEEP_FOR)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(fold_fair_play(rows))
     }
 
     /// The accounts sharing `player`'s identity (theirs too), as (server, id); just theirs
@@ -1078,6 +1100,41 @@ pub(crate) struct SessionDays {
     pub distinct: HashMap<String, HashSet<i64>>,
     /// The most playing at once, every server sending sessions together.
     pub peak: i64,
+}
+
+/// The most lines of fair-play reports a player's page shows.
+const FAIR_PLAY_SHOWN: usize = 50;
+
+/// Folds fair_play events (at, last at, detail JSON, count) into lines: one per check and
+/// finding, newest first.
+fn fold_fair_play(rows: Vec<(i64, i64, String, i64)>) -> Value {
+    let mut lines: Vec<Value> = Vec::new();
+    let mut at_line: HashMap<(String, String), usize> = HashMap::new();
+    for (at, last_at, detail, count) in rows {
+        let d: Value = serde_json::from_str(&detail).unwrap_or_default();
+        let check = d["check"].as_str().unwrap_or("").to_string();
+        let finding = d["detail"].as_str().unwrap_or("").to_string();
+        match at_line.get(&(check.clone(), finding.clone())) {
+            Some(&i) => {
+                let line = &mut lines[i];
+                line["times"] = json!(line["times"].as_i64().unwrap_or(0) + count.max(1));
+                if at < line["first"].as_i64().unwrap_or(i64::MAX) {
+                    line["first"] = json!(at);
+                }
+            }
+            None => {
+                if lines.len() == FAIR_PLAY_SHOWN {
+                    continue;
+                }
+                at_line.insert((check.clone(), finding.clone()), lines.len());
+                lines.push(json!({
+                    "check": check, "detail": finding, "value": d["value"], "wine": d["wine"] == true,
+                    "times": count.max(1), "first": at, "last": last_at,
+                }));
+            }
+        }
+    }
+    json!(lines)
 }
 
 #[cfg(test)]

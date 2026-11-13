@@ -15,9 +15,9 @@
             <span v-else-if="p.banned" class="pill bad">Banned here</span>
             <span v-for="mu in d.mutes" :key="mu.room" class="pill warn">Muted {{ muteWhere(mu.room) }}</span>
             <span v-if="support" class="pill" :class="support.status === 'open' ? 'warn' : 'info'">Support {{ support.status === 'waiting' ? 'waiting on them' : support.status }}</span>
-            <span v-if="flags.length" class="pill warn">Fair play: {{ flags.length }} flag{{ flags.length === 1 ? '' : 's' }}</span>
+            <span v-if="flags.length || reports.length" class="pill warn">Fair play: {{ fairPill }}</span>
             <span v-if="d.others.length" class="pill">{{ d.others.length + 1 }} accounts</span>
-            <span v-if="!d.network_ban && !p.banned && !d.mutes.length && !flags.length" class="pill">No bans, mutes or flags</span>
+            <span v-if="!d.network_ban && !p.banned && !d.mutes.length && !flags.length && !reports.length" class="pill">No bans, mutes or flags</span>
           </div>
           <div class="small faint">
             #{{ p.id }}<template v-if="p.created_at"> · account made {{ day(p.created_at) }}</template>
@@ -172,6 +172,27 @@
               <p v-if="d.hardware?.vm" class="callout warn">Plays on a virtual machine ({{ d.hardware.vm }}){{ (d.hardware.matches || []).some(m => m.outcome === 'vm') ? ': flagged as a new account on one, a way round a ban on a PC' : '' }}.</p>
             </div>
           </section>
+          <section class="panel">
+            <header><h2>What their game reported</h2><span class="small muted">the add-on's own checks, the last 30 days; report only</span></header>
+            <div v-if="!reports.length" class="empty">Nothing reported.</div>
+            <div v-else class="table-wrap">
+              <table>
+                <thead><tr><th>Last</th><th>Check</th><th>Found</th><th>Times</th></tr></thead>
+                <tbody>
+                  <tr v-for="(r, i) in reports" :key="i">
+                    <td class="nowrap">{{ fmt.when(r.last) }}<div v-if="r.times > 1" class="small faint">first {{ fmt.when(r.first) }}</div></td>
+                    <td class="nowrap">{{ checkName(r.check) }}<div v-if="r.wine" class="small faint">under Wine or Proton</div></td>
+                    <td class="found">
+                      <span v-if="expanded.has(i) || (r.detail || '').length <= CLIP">{{ r.detail }}</span>
+                      <span v-else>{{ r.detail.slice(0, CLIP) }}… <button type="button" class="link" @click="expanded.add(i)">show all</button></span>
+                    </td>
+                    <td class="num">{{ r.times }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p v-if="reports.some(r => r.wine)" class="small muted">Wine and Proton change some of the game's code and clocks themselves: weigh their reports so.</p>
+          </section>
         </template>
 
         <template v-else-if="tab === 'loadouts'">
@@ -226,7 +247,7 @@
 // One player's profile (#/players/<server>/<id>): who they are and their state at a glance,
 // what admins can do, and tabs for their activity (the Sessions page's timeline, the last
 // 5 days), sessions, moderation, fair play and loadouts.
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import LineChart from '../components/LineChart.vue';
 import PlayerAction from '../components/PlayerAction.vue';
@@ -310,11 +331,20 @@ const flagsOf = outcome => (d.value?.hardware?.matches || []).filter(m => outcom
 const evasions = computed(() => flagsOf(['evasion']));
 const hwMatches = computed(() => flagsOf(['ban', 'flag']));
 const flags = computed(() => [...evasions.value, ...hwMatches.value, ...(d.value?.hardware?.vm ? ['vm'] : [])]);
+// The add-on's own reports (fair_play session events), folded by the coordinator.
+const reports = computed(() => d.value?.fair_play || []);
+const reportTimes = computed(() => reports.value.reduce((n, r) => n + (r.times || 1), 0));
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+const fairPill = computed(() => [flags.value.length && plural(flags.value.length, 'flag'), reports.value.length && plural(reportTimes.value, 'report')].filter(Boolean).join(', '));
+const CHECKS = { code: 'Game code', speed: 'Clock speed', rules: 'Match rules', weapon: 'Weapons', pawn: 'Character', names: 'Names' };
+const checkName = c => CHECKS[c] || c || 'Fair play';
+const CLIP = 140;
+const expanded = reactive(new Set());
 
 const tabs = computed(() => TABS.map(([t, label]) => [t, label, {
   activity: problems.value.filter(x => x.level === 'bad').length,
   moderation: (d.value?.mutes.length || 0) + (d.value?.network_ban || p.value?.banned ? 1 : 0),
-  fair: flags.value.length,
+  fair: flags.value.length + reports.value.length,
 }[t] || 0]));
 
 // The timeline: a row a day, midnight to midnight in the admin's time zone.
@@ -487,4 +517,7 @@ a.acct:hover span:first-child { color: var(--accent); }
   .day { grid-template-columns: 1fr; gap: 4px; }
   .col.side { max-width: none; }
 }
+.nowrap { white-space: nowrap; }
+td.found { word-break: break-word; max-width: 520px; }
+button.link { border: none; background: none; padding: 0; height: auto; color: var(--accent); font-size: inherit; cursor: pointer; }
 </style>
