@@ -855,6 +855,7 @@ fn describe(e: &Event) -> String {
                 "too_many_signins" => "too many sign-ins from their address".into(),
                 "wrong_password" => "wrong password".into(),
                 "banned" => "banned".into(),
+                "maintenance" => "a maintenance window closed the server (not a tester)".into(),
                 other => other.to_string(),
             };
             format!("Sign-in refused: {}{times}", why.trim())

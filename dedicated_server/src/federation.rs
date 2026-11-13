@@ -315,10 +315,13 @@ fn note_maintenance(answer: &Value) {
                     "start": start, "end": end, "note": printable(w["note"].as_str().unwrap_or_default(), 100),
                     "network": w["network"].as_bool().unwrap_or(false),
                     "update": w["update"].as_bool().unwrap_or(false),
+                    "closed": w["closed"].as_bool().unwrap_or(false),
                 })
             })
         })
         .collect();
+    // A closed one keeps all but its testers out (maintenance.rs).
+    crate::maintenance::gate().note(&windows, answer);
     *MAINTENANCE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = windows;
 }
 
@@ -734,6 +737,21 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                         last_heartbeat = Some(Instant::now());
                         coordinator_seen_now();
                         note_maintenance(&answer);
+                        // A closed window just started: everyone but its testers is signed out.
+                        if crate::maintenance::gate().closed_now(identity::now()).is_some() {
+                            if let Ok(online) = storage.online_players_async(100_000).await {
+                                let online: Vec<u32> = online.into_iter().map(|(id, _, _)| id).collect();
+                                let out = crate::maintenance::gate().sign_outs_due(&online, identity::now());
+                                if !out.is_empty() {
+                                    info!(logger, "Maintenance under way: signed out {} players (testers stay)", out.len());
+                                }
+                                for user in out {
+                                    crate::players::sign_out(user);
+                                }
+                            }
+                        } else {
+                            crate::maintenance::gate().sign_outs_due(&[], identity::now());
+                        }
                         // Which client builds to take (clients.rs).
                         crate::clients::note_build_rules(&answer);
                         // The network's relays (relays.rs).
@@ -1511,8 +1529,8 @@ mod tests {
         assert_eq!(
             maintenance(0),
             [
-                serde_json::json!({ "start": 100, "end": 200, "note": "Moving", "network": false, "update": false }),
-                serde_json::json!({ "start": 400, "end": 500, "note": "", "network": false, "update": true }),
+                serde_json::json!({ "start": 100, "end": 200, "note": "Moving", "network": false, "update": false, "closed": false }),
+                serde_json::json!({ "start": 400, "end": 500, "note": "", "network": false, "update": true, "closed": false }),
             ]
         );
         assert_eq!(maintenance(200).len(), 1, "over at its end");

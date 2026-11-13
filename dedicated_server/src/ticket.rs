@@ -265,6 +265,11 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
             crate::session_events::refused(crate::session_events::Who::Id(user_id), "no_current_client", "game", None);
             return Err(quazal::rmc::Error::AccessDenied);
         }
+        // A maintenance window closes the server to all but its testers (0.5.2).
+        if crate::maintenance::may_play(user_id).is_err() {
+            crate::session_events::refused(crate::session_events::Who::Id(user_id), "maintenance", "game", None);
+            return Err(quazal::rmc::Error::AccessDenied);
+        }
         // A name that breaks the rules: the game stays out until they choose another (the
         // overlay and the launcher say how).
         if crate::storage::run(self.storage.find_person(user_id))

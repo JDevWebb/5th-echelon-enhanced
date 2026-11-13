@@ -1189,6 +1189,8 @@ async fn check_token<T>(logger: &Logger, key: &Key, storage: &Arc<Storage>, mut 
     if !storage.is_player_account(id).await.map_err(|_| Status::unauthenticated("Invalid token"))? {
         return Err(Status::unauthenticated("Invalid user"));
     }
+    // Nothing online while a maintenance window closes the server, but for its testers (0.5.2).
+    crate::maintenance::may_play(id).map_err(Status::unavailable)?;
 
     debug!(logger, "Looking for user {user_id}");
 
@@ -1290,6 +1292,11 @@ impl Users for MyUsers {
             return Err(Status::unauthenticated("Invalid login"));
         }
         attempt.succeeded();
+        // A maintenance window closes the server to all but its testers (0.5.2).
+        if let Err(why) = crate::maintenance::may_play(user_id) {
+            crate::session_events::refused(crate::session_events::Who::Id(user_id), "maintenance", "api", Some(client.as_str()));
+            return Err(Status::unavailable(why));
+        }
         // Their PC's ids, for the coordinator (F10): a PC tied to a banned player's is banned.
         crate::hardware::note(user_id, &hardware, &vm, peer);
         if let Err(refusal) = self.admit(user_id, &username, &client, &build).await {

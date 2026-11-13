@@ -89,6 +89,7 @@ mod ladder;
 mod link;
 mod lobbies;
 mod locale;
+mod maintenance;
 mod match_queue;
 mod match_started;
 mod metrics;
@@ -687,6 +688,8 @@ fn main() -> color_eyre::Result<()> {
     let federation_config = config.federation.clone();
     let server_id = federation::load_or_create_server_id(Path::new(federation::SERVER_ID_FILE))?;
     federation::init(server_id.clone(), federation_config.enabled());
+    // The last maintenance windows heard: a closed one holds before the first heartbeat (0.5.2).
+    maintenance::gate().load();
     relays::set_own_id(&server_id);
     community_api::publish_friends(
         server_id,

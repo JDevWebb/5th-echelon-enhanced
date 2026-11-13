@@ -27,7 +27,8 @@
 //!   (names), `saves` (`name:times` since the last).
 //! - `signin_refused`: `reason` (`outdated`, `too_many`: too many failed sign-ins,
 //!   `too_many_signins`: too many sign-ins from the address, failed or not, `wrong_password`,
-//!   `banned`, `no_current_client`, `name_not_allowed`), `via` (`game` or `api`), `client` when known.
+//!   `banned`, `no_current_client`, `name_not_allowed`, `maintenance`: a window closed the server, 0.5.2),
+//!   `via` (`game` or `api`), `client` when known.
 //! - `signout`: `how` (`closed`: the game said goodbye, or its connection went after it said
 //!   it was closing; `timed_out`: it went quiet; `closing`: the game said it's quitting, as
 //!   0.4.5 games do (Misc.Closing), ahead of its connection going: see [`closing`]).
