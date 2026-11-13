@@ -29,6 +29,10 @@ const REFRESH_EVERY: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 pub struct Play {
+    /// The network's urgent notices (0.5.2's U): read every minute, the ones not closed shown.
+    urgent: Vec<setup::directory::UrgentNotice>,
+    urgent_fetch: Slot<Result<Vec<setup::directory::UrgentNotice>, String>>,
+    urgent_at: Option<std::time::Instant>,
     /// The server just refused this launcher as outdated: the app looks for a newer release.
     pub(crate) refused_as_outdated: bool,
     /// The player asked to update the launcher (the checklist's Update).
@@ -1141,6 +1145,7 @@ fn finish(
     ui: &mut egui::Ui,
     to: Option<Go>,
 ) -> Option<Go> {
+    urgent_notices(play, ctx, ui);
     if let Some(notice) = &notice {
         match crate::update_notice::show(ui, notice) {
             Some(crate::update_notice::Action::UpdateLauncher) => play.update_asked = true,
@@ -1155,6 +1160,47 @@ fn finish(
         }
     }
     to
+}
+
+/// The network's urgent notices (0.5.2's U), read every minute: each not closed as a strip with
+/// its kind, text and Close (hidden until it's changed).
+fn urgent_notices(play: &mut Play, ctx: &egui::Context, ui: &mut egui::Ui) {
+    if let Some(Ok(list)) = play.urgent_fetch.poll() {
+        play.urgent = list;
+    }
+    if !play.urgent_fetch.running() && play.urgent_at.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(60)) {
+        if let Some(url) = crate::app::Prefs::directory() {
+            play.urgent_at = Some(std::time::Instant::now());
+            play.urgent_fetch.start(ctx, move || crate::services::rt().block_on(crate::network::urgent_notices(&url)));
+        }
+    }
+    let mut closed = None;
+    for n in play.urgent.iter().filter(|n| !crate::app::Prefs::notice_closed(&n.key())) {
+        let (color, heading) = match n.kind {
+            "issue" => (theme::WARN, "Known issue"),
+            "fixed" => (theme::OK, "Fixed"),
+            _ => (theme::ACCENT, "News"),
+        };
+        egui::Frame::new()
+            .fill(color.linear_multiply(0.07))
+            .stroke(egui::Stroke::new(1.0, color.linear_multiply(0.35)))
+            .inner_margin(egui::Margin::symmetric(32, 10))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(theme::display(heading, 15.0).color(color));
+                    ui.add(egui::Label::new(&n.text).wrap());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(theme::secondary("Close")).clicked() {
+                            closed = Some(n.key());
+                        }
+                    });
+                });
+            });
+    }
+    if let Some(key) = closed {
+        crate::app::Prefs::close_notice(&key);
+    }
 }
 
 /// The notice under the launch bar, if there's one for this player: a release going out to
