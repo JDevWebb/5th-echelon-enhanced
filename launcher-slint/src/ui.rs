@@ -575,6 +575,18 @@ impl Ui {
         });
     }
 
+    /// The network's urgent notices (0.5.2's U): every minute, and when one is closed.
+    pub fn load_urgent(self: &Arc<Self>) {
+        self.spawn("urgent", |ui| {
+            let Some(list) = core::urgent_notices() else { return };
+            let rows: Vec<crate::UrgentRow> = list
+                .into_iter()
+                .map(|n| crate::UrgentRow { key: s(n.key), kind: s(n.kind), heading: s(n.heading), text: s(n.text), posted: s(n.posted) })
+                .collect();
+            ui.show(move |w| w.set_urgent(model(rows)));
+        });
+    }
+
     pub fn load_notice(self: &Arc<Self>) {
         self.spawn("notice", |ui| {
             let n = core::notice(&ui.core);
@@ -1236,6 +1248,9 @@ fn start_ticker(ui: &Arc<Ui>) {
                 if notice_due {
                     ui.load_notice();
                 }
+                if tick % 120 == 7 {
+                    ui.load_urgent();
+                }
                 if screen == "matches" && tick % 10 == 0 || watching && tick % 20 == 0 {
                     ui.load_lobbies();
                 }
@@ -1513,6 +1528,21 @@ fn wire(w: &AppWindow, ui: &Arc<Ui>) {
             ui.spawn("switch", move |ui| {
                 core::switch_to_friend(&ui.core, &host);
             })
+        }
+    });
+    w.on_close_urgent({
+        let ui = ui.clone();
+        move |key| {
+            // Gone at once; kept closed until it's changed.
+            let key = key.to_string();
+            ui.show({
+                let key = key.clone();
+                move |w| {
+                    let left: Vec<crate::UrgentRow> = slint::Model::iter(&w.get_urgent()).filter(|n| n.key != key.as_str()).collect();
+                    w.set_urgent(model(left));
+                }
+            });
+            ui.spawn("urgent-close", move |_| core::close_urgent(&key));
         }
     });
     w.on_dismiss_emulator({

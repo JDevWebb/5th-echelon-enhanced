@@ -107,6 +107,16 @@ export struct NoticeRow {
     tone: string,
 }
 
+// An urgent notice from the network's admins (0.5.2's U).
+export struct UrgentRow {
+    key: string,
+    // "info", "issue" or "fixed".
+    kind: string,
+    heading: string,
+    text: string,
+    posted: string,
+}
+
 export struct NoticeView {
     shown: bool,
     heading: string,

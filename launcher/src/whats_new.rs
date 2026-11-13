@@ -56,6 +56,11 @@ pub const RELEASES: &[Release] = &[
                 community: false,
             },
             Item {
+                title: "Notices from the admins",
+                text: "When something's wrong across the network (or a fix is on its way), a notice above Play says the admins know, within a minute of their posting it. Close hides it until it's changed.",
+                community: true,
+            },
+            Item {
                 title: "Closed for maintenance, said plainly",
                 text: "When the servers are closed for maintenance the launcher says until when, in your time, and signs in again every minute. Support still works. The overlay warns you in the last ten minutes.",
                 community: false,

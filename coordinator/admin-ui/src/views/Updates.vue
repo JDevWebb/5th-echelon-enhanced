@@ -92,6 +92,7 @@
     </section>
   </template>
   <div v-else class="empty">Loading…</div>
+  <Notices />
   <Maintenance :servers="o?.servers || []" :windows="maint?.windows || null" :error="maintError" @changed="reloadMaint" />
 </template>
 
@@ -100,6 +101,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import PageTop from '../components/PageTop.vue';
 import Stat from '../components/Stat.vue';
 import Maintenance from '../components/Maintenance.vue';
+import Notices from '../components/Notices.vue';
 import { api } from '../lib/api.js';
 import { ensureOverview, useLoad } from '../lib/data.js';
 import { confirmBox } from '../lib/dialogs.js';

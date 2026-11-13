@@ -51,6 +51,7 @@ mod host_check;
 pub mod limits;
 pub mod maintenance;
 pub mod metrics;
+pub mod notices;
 pub mod players;
 pub mod reboots;
 pub mod recordings;
@@ -2110,6 +2111,12 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
     }
     if let Some(window) = network_maintenance {
         answer["network_maintenance"] = json!(window);
+    }
+    // Urgent notices to every player (0.5.2's U).
+    match c.live_notices(now).await {
+        Ok(n) if !n.is_empty() => answer["notices"] = json!(n),
+        Ok(_) => {}
+        Err(e) => return internal(e),
     }
     ok(answer)
 }

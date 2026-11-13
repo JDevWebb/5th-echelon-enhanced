@@ -8,7 +8,7 @@ import { Theme, Type, Layout } from "theme.slint";
 import { EchelonMark } from "brand.slint";
 import { Btn, Link, Spinner, Dot, Caps, Rule } from "widgets.slint";
 import { Icon, Icons } from "chrome.slint";
-import { InfoView, PlayButton, ServerCard, ServerRow, CheckRow, FriendRow, OtherRow, ElsewhereRow, ModeItem, NoticeView } from "types.slint";
+import { InfoView, PlayButton, ServerCard, ServerRow, CheckRow, FriendRow, OtherRow, ElsewhereRow, ModeItem, NoticeView, UrgentRow } from "types.slint";
 
 // A ping, coloured by how near: green to 90 ms, plain to 180, amber beyond, muted with none.
 component Ping inherits Text {
@@ -107,6 +107,8 @@ export component PlayScreen inherits Rectangle {
     in property <string> playing-more;
     in property <NoticeView> notice;
     in property <[string]> news;
+    // Urgent notices from the network's admins, above everything else on the stage.
+    in property <[UrgentRow]> urgent;
     in property <image> art;
     in property <bool> has-art;
     in property <bool> choose-offered;
@@ -133,6 +135,7 @@ export component PlayScreen inherits Rectangle {
     callback player-action(string, string, string);
     callback switch-to-friend(string);
     callback dismiss-emulator();
+    callback close-urgent(string);
     callback ask-review();
 
     background: Theme.bg;
@@ -181,6 +184,51 @@ export component PlayScreen inherits Rectangle {
                 padding-top: Layout.wide ? 28px : 22px;
                 padding-bottom: Layout.wide ? 30px : 22px;
                 spacing: Layout.wide ? 14px : 10px;
+
+                // The network's urgent notices: a known problem, news, a fix.
+                for n in root.urgent: Rectangle {
+                    border-radius: 6px;
+                    background: n.kind == "issue" ? #3a2c10e6 : n.kind == "fixed" ? #12301ae6 : #10263ae6;
+                    border-width: 1px;
+                    border-color: n.kind == "issue" ? #f0b44c : n.kind == "fixed" ? #9be05a : #8cc1ff;
+                    accessible-role: text;
+                    accessible-label: n.heading + ": " + n.text;
+                    HorizontalLayout {
+                        padding: 10px;
+                        padding-left: 14px;
+                        spacing: 10px;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 2px;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: n.heading;
+                                    font-weight: 700;
+                                    color: n.kind == "issue" ? #f0b44c : n.kind == "fixed" ? #9be05a : #8cc1ff;
+                                }
+                                Text {
+                                    text: n.posted;
+                                    font-family: Type.mono;
+                                    font-size: 11px;
+                                    color: Theme.stage-soft;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                            }
+                            Text {
+                                wrap: word-wrap;
+                                color: Theme.stage-fg;
+                                text: n.text;
+                            }
+                        }
+                        Btn {
+                            text: "Close";
+                            small: true;
+                            clicked => { root.close-urgent(n.key); }
+                        }
+                    }
+                }
 
                 // The banners: a name the network refuses, and a Uplay emulator.
                 if info.name-not-allowed != "": Rectangle {

@@ -399,6 +399,13 @@ fn base(w: &AppWindow) {
     w.set_playing_more(s("Also: 3 in lobbies"));
     w.set_notice(crate::NoticeView::default());
     w.set_news(model(vec![s("0.5.0: one matchmaking server for everyone, and fair play")]));
+    w.set_urgent(model(vec![crate::UrgentRow {
+        key: s("1:1"),
+        kind: s("issue"),
+        heading: s("Known issue"),
+        text: s("We're looking into connection problems for players in Europe. A hotfix is coming tonight."),
+        posted: s("9:40 am NZDT"),
+    }]));
     w.set_choose_offered(true);
     w.set_modes_allowed(true);
     w.set_server_blocked(s(""));

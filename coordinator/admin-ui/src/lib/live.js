@@ -24,6 +24,7 @@ export const live = reactive({
   reportTick: 0,
   /** Goes up when a maintenance window is booked or cancelled. */
   maintenanceTick: 0,
+  noticesTick: 0,
   /** Goes up when the roadmap or a suggestion changes. */
   roadmapTick: 0,
   /** Goes up when a support conversation changes (a player wrote, or an admin answered). */
@@ -71,6 +72,8 @@ export function connectLive() {
       live.reportTick++;
     } else if (msg.type === 'maintenance') {
       live.maintenanceTick++;
+    } else if (msg.type === 'notices') {
+      live.noticesTick++;
     } else if (msg.type === 'roadmap') {
       live.roadmapTick++;
     } else if (msg.type === 'support') {

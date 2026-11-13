@@ -1265,6 +1265,53 @@ pub fn notice(core: &Core) -> Option<NoticeView> {
     })
 }
 
+/// An urgent notice as the Play page shows it (0.5.2's U).
+#[derive(Debug, Clone)]
+pub struct Urgent {
+    pub key: String,
+    pub kind: &'static str,
+    pub heading: &'static str,
+    pub text: String,
+    /// When it was posted, in the player's time.
+    pub posted: String,
+}
+
+/// The network's urgent notices the player hasn't closed, read now (without pinging its
+/// servers). None when the directory didn't answer: what's shown stays.
+pub fn urgent_notices() -> Option<Vec<Urgent>> {
+    let url = Prefs::directory()?;
+    let list = match launcher::services::rt().block_on(launcher::network::urgent_notices(&url)) {
+        Ok(list) => list,
+        Err(e) => {
+            tracing::debug!("Urgent notices: {e}");
+            return None;
+        }
+    };
+    let clock = setup::clock::Clock::local();
+    let now = identity::now();
+    Some(
+        list.into_iter()
+            .filter(|n| !Prefs::notice_closed(&n.key()))
+            .map(|n| Urgent {
+                key: n.key(),
+                kind: n.kind,
+                heading: match n.kind {
+                    "issue" => "Known issue",
+                    "fixed" => "Fixed",
+                    _ => "News",
+                },
+                text: n.text,
+                posted: clock.time(n.posted.min(now), now),
+            })
+            .collect(),
+    )
+}
+
+/// The player closed an urgent notice: not shown again unless it's changed.
+pub fn close_urgent(key: &str) {
+    Prefs::close_notice(key);
+}
+
 /// Closes the notice that a Uplay emulator isn't a supported setup, for good.
 pub fn dismiss_emulator_notice(core: &Core) {
     if let Some(game) = core.lock().game.as_mut() {

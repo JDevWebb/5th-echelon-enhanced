@@ -5923,3 +5923,60 @@ async fn recordings_are_for_members_only_and_reserve_their_size() {
         assert_eq!(t.router.clone().oneshot(req).await.unwrap().status(), StatusCode::UNAUTHORIZED);
     }
 }
+
+/// 0.5.2's U: an urgent notice posted in the admin UI reaches every launcher (the directory),
+/// shows again when edited (its version), and stops when ended or when its hours are up.
+#[tokio::test]
+async fn urgent_notices_reach_every_launcher_until_ended() {
+    let t = start("notices").await;
+    let r = admin_router(&t);
+    assert_eq!(admin_call(&r, "GET", "/api/notices", "", None).await.0, StatusCode::UNAUTHORIZED);
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    for (bad, why) in [
+        (json!({ "text": "", "kind": "info" }), "empty"),
+        (json!({ "text": "hi", "kind": "urgent" }), "kind"),
+        (json!({ "text": "a\nb", "kind": "info" }), "two lines"),
+        (json!({ "text": "hi", "kind": "info", "hours": 0 }), "hours"),
+    ] {
+        assert_eq!(admin_call(&r, "POST", "/api/notices", &cookie, Some(bad)).await.0, StatusCode::BAD_REQUEST, "{why}");
+    }
+    let (_, dir) = t.call("GET", "/v1/servers", None, None).await;
+    assert!(dir.get("notices").is_none(), "none live: {dir}");
+
+    let (status, v) = admin_call(&r, "POST", "/api/notices", &cookie, Some(json!({ "text": " We're looking into connection problems ", "kind": "issue" }))).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let id = v["id"].as_i64().unwrap();
+    let (_, dir) = t.call("GET", "/v1/servers", None, None).await;
+    assert_eq!(dir["notices"][0]["text"], "We're looking into connection problems");
+    assert_eq!(dir["notices"][0]["kind"], "issue");
+    let version = dir["notices"][0]["version"].as_i64().unwrap();
+
+    // Edited: a new version, so launchers that closed it show it again.
+    let (status, _) = admin_call(&r, "PUT", &format!("/api/notices/{id}"), &cookie, Some(json!({ "text": "Fixed: matches connect again", "kind": "fixed", "hours": 6 }))).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, dir) = t.call("GET", "/v1/servers", None, None).await;
+    assert_eq!((dir["notices"][0]["kind"].as_str(), dir["notices"].as_array().unwrap().len()), (Some("fixed"), 1));
+    assert!(dir["notices"][0]["ends"].as_i64().is_some(), "{dir}");
+    assert_ne!(dir["notices"][0]["version"].as_i64().unwrap(), version);
+
+    // Three live at most.
+    for n in 0..2 {
+        assert_eq!(admin_call(&r, "POST", "/api/notices", &cookie, Some(json!({ "text": format!("news {n}"), "kind": "info" }))).await.0, StatusCode::OK);
+    }
+    assert_eq!(admin_call(&r, "POST", "/api/notices", &cookie, Some(json!({ "text": "one too many", "kind": "info" }))).await.0, StatusCode::CONFLICT);
+
+    // Ended: gone from launchers, still listed for the admins.
+    assert_eq!(admin_call(&r, "DELETE", &format!("/api/notices/{id}"), &cookie, None).await.0, StatusCode::OK);
+    assert_eq!(admin_call(&r, "DELETE", &format!("/api/notices/{id}"), &cookie, None).await.0, StatusCode::NOT_FOUND);
+    let (_, dir) = t.call("GET", "/v1/servers", None, None).await;
+    assert_eq!(dir["notices"].as_array().unwrap().len(), 2);
+    assert!(dir["notices"].as_array().unwrap().iter().all(|n| n["id"] != id));
+    let (_, v) = admin_call(&r, "GET", "/api/notices", &cookie, None).await;
+    let ended = v["notices"].as_array().unwrap().iter().find(|n| n["id"] == id).cloned().unwrap();
+    assert_eq!((ended["live"].as_bool(), ended["posted_by"].as_str()), (Some(false), Some("admin1")));
+
+    // Its hours up: gone by itself.
+    sqlx::query("UPDATE notices SET ends_at = ? WHERE ended_at IS NULL").bind(identity::now() - 1).execute(&t.c.pool).await.unwrap();
+    let (_, dir) = t.call("GET", "/v1/servers", None, None).await;
+    assert!(dir.get("notices").is_none(), "{dir}");
+}

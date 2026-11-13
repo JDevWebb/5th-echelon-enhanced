@@ -245,6 +245,58 @@ pub fn helper_host(helper: &Helper) -> String {
     }
 }
 
+/// An urgent notice to every player (0.5.2's U): what the network's admins know of now ("we're
+/// looking into connection problems", "a hotfix is coming"), shown above Play while it's live.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UrgentNotice {
+    pub id: i64,
+    pub text: String,
+    /// "info", "issue" or "fixed".
+    pub kind: &'static str,
+    pub posted: i64,
+    /// Changes with each edit: a notice the player closed shows again when it's changed.
+    pub version: i64,
+}
+
+impl UrgentNotice {
+    /// What the player's closing it is kept as.
+    pub fn key(&self) -> String {
+        format!("{}:{}", self.id, self.version)
+    }
+}
+
+/// The most notices shown, and the longest text taken.
+const MAX_NOTICES: usize = 3;
+const MAX_NOTICE_TEXT: usize = 200;
+
+/// The urgent notices in a directory's answer (none from a coordinator before 0.5.2).
+pub fn parse_notices(json: &str) -> Vec<UrgentNotice> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return Vec::new() };
+    v.get("notices")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|n| {
+            let text: String = n["text"].as_str()?.chars().filter(|c| !c.is_control()).take(MAX_NOTICE_TEXT).collect();
+            let kind = match n["kind"].as_str()? {
+                "issue" => "issue",
+                "fixed" => "fixed",
+                _ => "info",
+            };
+            let posted = n["posted"].as_i64()?;
+            let id = n["id"].as_i64()?;
+            (!text.trim().is_empty()).then(|| UrgentNotice {
+                id,
+                text: text.trim().to_string(),
+                kind,
+                posted,
+                version: n["version"].as_i64().unwrap_or(posted),
+            })
+        })
+        .take(MAX_NOTICES)
+        .collect()
+}
+
 /// A release going out to the network's servers, as the directory says while it lasts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rollout {
@@ -597,6 +649,11 @@ mod tests {
         assert!(list[1].maintenance.is_empty() && list[2].maintenance.is_empty());
         assert_eq!(parse_network_maintenance(json).map(|w| w.note), Some("New coordinator".into()));
         assert_eq!(parse_network_maintenance(r#"{"servers":[]}"#), None);
+        let n = parse_notices(r#"{"servers":[],"notices":[{"id":4,"text":"We're on it\n","kind":"issue","posted":10,"version":12},{"id":5,"text":" ","kind":"info","posted":1},{"id":6,"text":"Hotfix tonight","kind":"odd","posted":2}]}"#);
+        assert_eq!(n.len(), 2, "an empty one is left out: {n:?}");
+        assert_eq!((n[0].text.as_str(), n[0].kind, n[0].key().as_str()), ("We're on it", "issue", "4:12"));
+        assert_eq!((n[1].kind, n[1].version), ("info", 2), "an unknown kind is news; no version: its post time");
+        assert!(parse_notices(r#"{"servers":[]}"#).is_empty());
         // Kept in the cache with the list, and the network's window beside it.
         let dir = std::env::temp_dir().join(format!("fe-dir-windows-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

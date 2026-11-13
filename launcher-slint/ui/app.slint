@@ -14,9 +14,9 @@ import { PlayScreen } from "play.slint";
 import { MatchesScreen } from "matches.slint";
 import { ChatScreen } from "chat.slint";
 import { Page, Dialog, Row, RowButton } from "rows.slint";
-import { InfoView, PlayButton, ServerCard, ServerRow, CheckRow, FriendRow, OtherRow, ElsewhereRow, ModeItem, NoticeView, NoticeRow, LobbyRow, PersonRow, SettingRow, ChatView, ChatTab, ChatLine, RosterRow, ChatNote, ChatPick } from "types.slint";
+import { InfoView, PlayButton, ServerCard, ServerRow, CheckRow, FriendRow, OtherRow, ElsewhereRow, ModeItem, NoticeView, NoticeRow, UrgentRow, LobbyRow, PersonRow, SettingRow, ChatView, ChatTab, ChatLine, RosterRow, ChatNote, ChatPick } from "types.slint";
 
-export { Row, RowButton, Theme, ThemeChoice, InfoView, PlayButton, ServerCard, ServerRow, CheckRow, FriendRow, OtherRow, ElsewhereRow, ModeItem, NoticeView, NoticeRow, LobbyRow, PersonRow, SettingRow, ActivityView, ActionItem, ChatView, ChatTab, ChatLine, RosterRow, ChatNote, ChatPick }
+export { Row, RowButton, Theme, ThemeChoice, InfoView, PlayButton, ServerCard, ServerRow, CheckRow, FriendRow, OtherRow, ElsewhereRow, ModeItem, NoticeView, NoticeRow, UrgentRow, LobbyRow, PersonRow, SettingRow, ActivityView, ActionItem, ChatView, ChatTab, ChatLine, RosterRow, ChatNote, ChatPick }
 
 export component AppWindow inherits Window {
     title: "5th Echelon Enhanced " + release;
@@ -94,6 +94,7 @@ export component AppWindow inherits Window {
     in property <string> playing-more;
     in property <NoticeView> notice;
     in property <[string]> news;
+    in-out property <[UrgentRow]> urgent;
     in property <image> art;
     in property <bool> has-art;
     in property <bool> choose-offered;
@@ -154,6 +155,7 @@ export component AppWindow inherits Window {
     callback player-action(string, string, string);
     callback switch-to-friend(string);
     callback dismiss-emulator();
+    callback close-urgent(string);
     callback ask-review();
     // Matches.
     callback set-filter(string);
@@ -311,6 +313,7 @@ export component AppWindow inherits Window {
                         playing-more: root.playing-more;
                         notice: root.notice;
                         news: root.news;
+                        urgent: root.urgent;
                         art: root.art;
                         has-art: root.has-art;
                         choose-offered: root.choose-offered;
@@ -333,6 +336,7 @@ export component AppWindow inherits Window {
                         player-action(a, i, n) => { root.player-action(a, i, n); }
                         switch-to-friend(h) => { root.switch-to-friend(h); }
                         dismiss-emulator => { root.dismiss-emulator(); }
+                        close-urgent(key) => { root.close-urgent(key); }
                         ask-review => { root.ask-review(); }
                     }
                     if root.screen == "matches": MatchesScreen {

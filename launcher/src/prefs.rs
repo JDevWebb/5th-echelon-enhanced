@@ -182,6 +182,9 @@ pub struct Prefs {
     /// The player closed the notice that a Uplay emulator isn't a supported setup.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     uplay_emulator_told: bool,
+    /// The urgent notices the player closed (0.5.2's U), as "id:version": the newest few.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    notices_closed: Vec<String>,
     /// Play asks Steam to start a Steam copy on Windows (for Steam Input), not the launcher.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     start_through_steam: bool,
@@ -551,6 +554,21 @@ impl Prefs {
         let mut prefs = Self::load();
         prefs.uplay_emulator_told = true;
         prefs.save();
+    }
+
+    /// Whether the player closed this version of an urgent notice.
+    pub fn notice_closed(key: &str) -> bool {
+        Self::load().notices_closed.iter().any(|k| k == key)
+    }
+
+    pub fn close_notice(key: &str) {
+        let mut prefs = Self::load();
+        if !prefs.notices_closed.iter().any(|k| k == key) {
+            prefs.notices_closed.push(key.to_string());
+            let extra = prefs.notices_closed.len().saturating_sub(20);
+            prefs.notices_closed.drain(..extra);
+            prefs.save();
+        }
     }
 
     pub fn replies_seen() -> Option<i64> {

@@ -323,6 +323,15 @@ pub struct Browsed {
     pub network_maintenance: Option<setup::directory::Window>,
 }
 
+/// The network's urgent notices (0.5.2's U), read from its directory without pinging its
+/// servers: launchers ask every minute.
+pub async fn urgent_notices(coordinator: &str) -> Result<Vec<setup::directory::UrgentNotice>, String> {
+    if !setup::directory::valid_coordinator(coordinator) {
+        return Err("the server directory must be an https:// address".into());
+    }
+    fetch_directory(coordinator).await.map(|l| l.notices)
+}
+
 /// The servers in a coordinator's directory, each with this PC's ping to it, measured in
 /// parallel. When the directory doesn't answer: the list it gave last, else the community's
 /// built-in servers (see `setup::directory::fallback`), pinged the same way.
@@ -337,6 +346,7 @@ pub async fn server_directory(coordinator: &str) -> Result<Browsed, String> {
             mut servers,
             rollout,
             network_maintenance,
+            ..
         }) => {
             if let Some(dir) = &dir {
                 // Windows that just ended aren't listed any more, but a server not back from
@@ -404,6 +414,7 @@ struct Listed {
     servers: Vec<setup::directory::Listing>,
     rollout: Option<setup::directory::Rollout>,
     network_maintenance: Option<setup::directory::Window>,
+    notices: Vec<setup::directory::UrgentNotice>,
 }
 
 fn listed(body: &str) -> Result<Listed, String> {
@@ -411,6 +422,7 @@ fn listed(body: &str) -> Result<Listed, String> {
         servers: setup::directory::parse(body).map_err(|e| format!("the directory's answer isn't one: {e}"))?,
         rollout: setup::directory::parse_rollout(body),
         network_maintenance: setup::directory::parse_network_maintenance(body),
+        notices: setup::directory::parse_notices(body),
     })
 }
 

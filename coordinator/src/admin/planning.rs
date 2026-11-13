@@ -3,6 +3,8 @@
 //!
 //! * `GET /api/maintenance`; `POST /api/maintenance` `{servers, network, start, end, note, kind}`
 //!   books windows (an update window wants a second factor lately); `DELETE /api/maintenance/<id>` cancels one.
+//! * `GET /api/notices`; `POST /api/notices` `{text, kind, hours}` posts an urgent notice to every
+//!   player; `PUT /api/notices/<id>` edits a live one; `DELETE /api/notices/<id>` ends it.
 //! * `GET /api/roadmap`: lanes, every item, and how many suggestions are new.
 //! * `POST /api/roadmap/items`, `PUT|DELETE /api/roadmap/items/<id>`: items.
 //! * `PUT /api/roadmap/lanes/<lane>` `{release}`: the release a lane is for.
@@ -36,12 +38,15 @@ use super::Client;
 use super::Shared;
 use crate::admin::live::Event;
 use crate::maintenance;
+use crate::notices;
 use crate::roadmap;
 
 pub(super) fn routes() -> Router<Shared> {
     Router::new()
         .route("/maintenance", get(maintenance_list).post(book))
         .route("/maintenance/{id}", axum::routing::delete(cancel))
+        .route("/notices", get(notice_list).post(post_notice))
+        .route("/notices/{id}", put(edit_notice).delete(end_notice))
         .route("/roadmap", get(roadmap_get))
         .route("/roadmap/items", post(add_item))
         .route("/roadmap/items/{id}", put(edit_item).delete(remove_item))
@@ -115,6 +120,67 @@ async fn cancel(State(c): State<Shared>, Extension(client): Extension<Client>, h
             ok(json!({ "ok": true }))
         }
         Ok(false) => fail(StatusCode::NOT_FOUND, "no such window, or it's cancelled already"),
+        Err(e) => internal(e),
+    }
+}
+
+async fn notice_list(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap) -> Response {
+    if let Err(r) = c.full(&headers, &client).await {
+        return r;
+    }
+    c.notice_list(identity::now()).await.map_or_else(internal, ok)
+}
+
+async fn post_notice(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Json(p): Json<notices::Post>) -> Response {
+    let s = match c.full(&headers, &client).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    if let Err(why) = p.check() {
+        return fail(StatusCode::BAD_REQUEST, why);
+    }
+    match c.post_notice(&p, &s.username, identity::now()).await {
+        Ok(Some(id)) => {
+            c.audit(&s.username, Some(&client), "notice: posted", &format!("{id} ({}): {}", p.kind, p.text.trim())).await;
+            c.publish(Event::Notices);
+            ok(json!({ "id": id }))
+        }
+        Ok(None) => fail(StatusCode::CONFLICT, "three notices are live already: end one first"),
+        Err(e) => internal(e),
+    }
+}
+
+async fn edit_notice(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Path(id): Path<i64>, Json(p): Json<notices::Post>) -> Response {
+    let s = match c.full(&headers, &client).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    if let Err(why) = p.check() {
+        return fail(StatusCode::BAD_REQUEST, why);
+    }
+    match c.edit_notice(id, &p, identity::now()).await {
+        Ok(true) => {
+            c.audit(&s.username, Some(&client), "notice: edited", &format!("{id} ({}): {}", p.kind, p.text.trim())).await;
+            c.publish(Event::Notices);
+            ok(json!({ "ok": true }))
+        }
+        Ok(false) => fail(StatusCode::NOT_FOUND, "no such live notice"),
+        Err(e) => internal(e),
+    }
+}
+
+async fn end_notice(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Path(id): Path<i64>) -> Response {
+    let s = match c.full(&headers, &client).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    match c.end_notice(id, identity::now()).await {
+        Ok(true) => {
+            c.audit(&s.username, Some(&client), "notice: ended", &id.to_string()).await;
+            c.publish(Event::Notices);
+            ok(json!({ "ok": true }))
+        }
+        Ok(false) => fail(StatusCode::NOT_FOUND, "no such live notice"),
         Err(e) => internal(e),
     }
 }

@@ -70,6 +70,8 @@ pub enum Event {
     Report,
     /// A maintenance window was booked or cancelled.
     Maintenance,
+    /// An urgent notice was posted, edited or ended.
+    Notices,
     /// The roadmap or a suggestion changed (or a player sent one).
     Roadmap,
     /// A support conversation changed (a player wrote, or an admin answered).
@@ -435,6 +437,11 @@ async fn serve(c: Arc<Coordinator>, mut socket: WebSocket, headers: HeaderMap, c
                 }
                 Ok(Event::Maintenance) => {
                     if !send(&mut socket, json!({ "type": "maintenance" })).await {
+                        return;
+                    }
+                }
+                Ok(Event::Notices) => {
+                    if !send(&mut socket, json!({ "type": "notices" })).await {
                         return;
                     }
                 }
