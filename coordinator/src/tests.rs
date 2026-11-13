@@ -1021,6 +1021,35 @@ async fn a_servers_names_are_limited_and_clashes_reported() {
     assert_eq!(held, MAX_SERVER_NAMES);
 }
 
+/// A relay lists the matchmaking server's name (--mm-record, for a failover): no warning for
+/// that; a game server listing it still gets one.
+#[tokio::test]
+async fn relays_listing_the_matchmaking_servers_name_arent_warned() {
+    let t = start("server-names-mm").await;
+    let (_mm, relay, game) = (t.join("mm").await, t.join("relay").await, t.join("game").await);
+    t.c.set_matchmaking_server("mm");
+    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&_mm), Some(json!({ "name": "MM", "host": "play.example" }))).await;
+    assert!(v.get("warnings").is_none(), "{v}");
+    let (_, v) = t
+        .call(
+            "POST",
+            "/v1/heartbeat",
+            Some(&relay),
+            Some(json!({ "name": "R", "host": "relay.example", "names": ["play.example"], "role": "relay" })),
+        )
+        .await;
+    assert!(v.get("warnings").is_none(), "a relay standing in for the matchmaking server: {v}");
+    let (_, v) = t
+        .call(
+            "POST",
+            "/v1/heartbeat",
+            Some(&game),
+            Some(json!({ "name": "G", "host": "game.example", "names": ["play.example"] })),
+        )
+        .await;
+    assert!(v["warnings"][0].as_str().unwrap().contains("play.example is another member server's name"), "{v}");
+}
+
 #[test]
 fn addresses_are_counted_by_network() {
     assert_eq!(limit_key("203.0.113.9".parse().unwrap()), "203.0.113.9");

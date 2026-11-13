@@ -1201,6 +1201,10 @@ impl Coordinator {
             }
             match found {
                 Some(owner) if owner == server => {}
+                // The matchmaking server's own name, which its relays list too (--mm-record, so
+                // one could take it over in a failover): theirs to stand in for, not a clash to
+                // warn about every heartbeat (2026-11-13, every relay said so in the admin UI).
+                Some(owner) if self.matchmaking_server.get() == Some(&owner) && listing.role == "relay" => {}
                 Some(_) => clashes.push(format!("{key} is another member server's name: players' signatures for it aren't taken from this server")),
                 None => clashes.push(format!(
                     "{key} wasn't recorded: a server has at most {MAX_SERVER_NAMES} names (the operator can remove it and let it join again)"
