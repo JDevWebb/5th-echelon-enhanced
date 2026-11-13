@@ -219,6 +219,9 @@ pub struct Listing {
     pub relay: Option<RelayListing>,
     /// The players its relay carries now: a relay updates when it carries nobody.
     pub relayed: u32,
+    /// Whether an update of the system needs a reboot, and how long it has been empty
+    /// (reboot.rs): the coordinator says when.
+    pub reboot: crate::reboot::State,
 }
 
 /// A NAT helper and relay, as the directory lists it.
@@ -731,12 +734,19 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                     listing.playing = crate::playing::of(&sessions);
                 }
                 listing.relayed = crate::nat_helper::relayed_now();
+                crate::reboot::note_activity(
+                    crate::reboot::busy(listing.players_online, listing.relayed, listing.playing != server_api::playing::Playing::default()),
+                    identity::now(),
+                );
+                listing.reboot = crate::reboot::state();
                 match client.post("/v1/heartbeat", &listing).await {
                     Ok(answer) => {
                         heartbeats.worked(&logger, "the heartbeat");
                         last_heartbeat = Some(Instant::now());
                         coordinator_seen_now();
                         note_maintenance(&answer);
+                        // A reboot the system's updates need, when the coordinator says (reboot.rs).
+                        crate::reboot::answer(&logger, answer["reboot"]["why"].as_str(), identity::now());
                         // A closed window just started: everyone but its testers is signed out.
                         if crate::maintenance::gate().closed_now(identity::now()).is_some() {
                             if let Ok(online) = storage.online_players_async(100_000).await {

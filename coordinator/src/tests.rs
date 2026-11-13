@@ -4353,6 +4353,57 @@ async fn a_closed_window_and_its_testers_reach_the_server() {
     assert_eq!(v["maintenance_testers"], json!([]));
 }
 
+/// A reboot the system's updates need waits for the server to be empty in its quiet hours, or
+/// a booked window (0.5.2's M4 and M5); an admin can set the hours or say "any hour".
+#[tokio::test]
+async fn a_pending_reboot_is_answered_only_when_it_hurts_nobody() {
+    let t = start("reboots").await;
+    let r = admin_router(&t);
+    let a = t.join("server-a").await;
+    let now = identity::now();
+    let hour = now.rem_euclid(86_400) / 3600;
+    let beat = |reboot: Value| {
+        // More heartbeats than a server may send in a minute: the limit isn't what's tested here.
+        t.c.heartbeats.seen.lock().unwrap().clear();
+        json!({ "name": "server-a", "host": "server-a", "listed": true, "reboot": reboot })
+    };
+    // Nothing pending: nothing said.
+    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&a), Some(beat(json!({ "idle_since": now - 3600 })))).await;
+    assert!(v.get("reboot").is_none(), "{v}");
+    // Pending and empty, but no play anywhere yet: no quiet hours learned, so not now.
+    let pending = json!({ "pending_since": now - 600, "idle_since": now - 3600 });
+    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&a), Some(beat(pending.clone()))).await;
+    assert!(v.get("reboot").is_none(), "{v}");
+    // An admin's quiet hours around now: it may.
+    let cookie = admin_cookie(&t, "admin1", 60).await;
+    let hours = format!("{}-{}", hour, (hour + 1) % 24);
+    let (status, _) = admin_call(&r, "POST", "/api/servers/server-a/reboot", &cookie, Some(json!({ "quiet_hours": hours }))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(admin_call(&r, "POST", "/api/servers/server-a/reboot", &cookie, Some(json!({ "quiet_hours": "nonsense" }))).await.0, StatusCode::BAD_REQUEST);
+    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&a), Some(beat(pending.clone()))).await;
+    assert_eq!(v["reboot"]["why"], "quiet", "{v}");
+    // Someone on it: not now.
+    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&a), Some(beat(json!({ "pending_since": now - 600 }))) ).await;
+    assert!(v.get("reboot").is_none(), "{v}");
+    // Other hours: not now, unless an admin says any hour, or a window is booked.
+    let other = format!("{}-{}", (hour + 3) % 24, (hour + 4) % 24);
+    admin_call(&r, "POST", "/api/servers/server-a/reboot", &cookie, Some(json!({ "quiet_hours": other }))).await;
+    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&a), Some(beat(pending.clone()))).await;
+    assert!(v.get("reboot").is_none(), "{v}");
+    let (status, v) = admin_call(&r, "POST", "/api/servers/server-a/reboot", &cookie, Some(json!({ "any_hour": true }))).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&a), Some(beat(pending.clone()))).await;
+    assert_eq!(v["reboot"]["why"], "asked", "{v}");
+    admin_call(&r, "POST", "/api/servers/server-a/reboot", &cookie, Some(json!({ "any_hour": false }))).await;
+    admin_call(&r, "POST", "/api/maintenance", &cookie, Some(json!({ "servers": ["server-a"], "start": now, "end": now + 600, "closed": false }))).await;
+    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&a), Some(beat(json!({ "pending_since": now - 600 })))).await;
+    assert_eq!(v["reboot"]["why"], "window", "players were told: even with someone on it");
+    // The Servers page's view.
+    let (status, v) = admin_call(&r, "GET", "/api/servers/server-a/reboot", &cookie, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!((v["pending_since"].as_i64(), v["quiet_source"].as_str()), (Some(now - 600), Some("set")), "{v}");
+}
+
 #[tokio::test]
 async fn maintenance_is_told_to_launchers_and_servers_and_holds_updates() {
     let t = start("maintenance").await;

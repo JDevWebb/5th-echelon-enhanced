@@ -2486,6 +2486,9 @@ status() {
 # (never followed); a folder is never walked by root (rm -rf in a folder its
 # user can change underneath): it's renamed aside, in place, and said.
 wanted=""
+# The game server asks for a reboot the same way (0.5.2: reboot.rs), when an update of the
+# system needs one and the coordinator says it's a quiet moment or a booked window.
+reboot_asked=0
 for f in "$STATE_DIR/update-request" "$COORD_DIR/update-request"; do
   if [ -d "$f" ] && [ ! -L "$f" ]; then
     echo "update: $f is a folder, not a request: moved aside, not read"
@@ -2493,13 +2496,26 @@ for f in "$STATE_DIR/update-request" "$COORD_DIR/update-request"; do
   elif [ -e "$f" ] || [ -L "$f" ]; then
     if [ -f "$f" ] && [ ! -L "$f" ]; then
       v="$(dd if="$f" bs=64 count=1 iflag=nofollow,nonblock status=none 2>/dev/null | head -1 | tr -d '[:space:]' || true)"
-      if [[ "$v" =~ $VERSION_RE ]]; then wanted="$v"; fi
+      if [[ "$v" =~ $VERSION_RE ]]; then wanted="$v"; elif [ "$v" = reboot ] && [ "$f" = "$STATE_DIR/update-request" ]; then reboot_asked=1; fi
     else
       echo "update: $f isn't a plain file (a link, a pipe): removed, not read"
     fi
     rm -f -- "$f" 2>/dev/null || true
   fi
 done
+if [ -z "$wanted" ] && [ "$reboot_asked" -eq 1 ]; then
+  # Only when the system's updates need it; the services stop cleanly first.
+  if [ -e /run/reboot-required ]; then
+    echo "update: rebooting for an update of the system (the server asked: quiet, or in a window)"
+    systemctl stop "$STANDBY_SERVICE" "$MM_STANDBY_SERVICE" 2>/dev/null || true
+    systemctl stop "$SERVICE" 2>/dev/null || true
+    systemctl stop "$COORD_SERVICE" 2>/dev/null || true
+    systemctl reboot
+  else
+    echo "update: a reboot was asked for, but none is pending: nothing done"
+  fi
+  exit 0
+fi
 [ -n "$wanted" ] || exit 0
 [ "$wanted" != "$current" ] || exit 0
 
@@ -2842,6 +2858,23 @@ running_version() {
   printf '%s' "$info" | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4 || true
 }
 if [ "$use_systemd" -eq 1 ]; then install_updater; fi
+# Reboots for the system's updates are the server's to time (0.5.2, reboot.rs): when nobody is
+# on it in its quiet hours, or in a booked window. Unattended upgrades still install them, but
+# no longer reboot at a fixed hour (harden-host.sh's setting; a later file wins).
+if [ "$use_systemd" -eq 1 ] && [ "$coord_only" -eq 0 ] && [ -d /etc/apt/apt.conf.d ]; then
+  cat > /etc/apt/apt.conf.d/53-5th-echelon-reboots <<'APT'
+// Written by install-server.sh: the 5th Echelon server times reboots (when it's empty in its
+// quiet hours, or in a booked maintenance window) and asks its updater for them.
+Unattended-Upgrade::Automatic-Reboot "false";
+APT
+  # The stopgap weekly timer of 13 Nov 2026 (ca1), if it's there.
+  if [ -e /etc/systemd/system/5th-echelon-weekly-reboot.timer ]; then
+    systemctl disable --now 5th-echelon-weekly-reboot.timer >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/5th-echelon-weekly-reboot.timer /etc/systemd/system/5th-echelon-weekly-reboot.service
+    systemctl daemon-reload
+  fi
+  say "Reboots for system updates: timed by the server (empty, in its quiet hours, or in a booked window)"
+fi
 if [ "$use_systemd" -eq 1 ]; then install_backups; fi
 
 # A standby restores another server's encrypted backups: it needs the key that opens them,

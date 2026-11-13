@@ -52,6 +52,7 @@ pub mod limits;
 pub mod maintenance;
 pub mod metrics;
 pub mod players;
+pub mod reboots;
 pub mod recordings;
 pub mod reports;
 pub mod roadmap;
@@ -374,6 +375,9 @@ struct Listing {
     /// The players its relay carries now (a relay alone updates when it carries nobody).
     #[serde(default, skip_serializing_if = "is_zero")]
     relayed: u32,
+    /// A reboot the system's updates need, and how long it has been empty (reboots.rs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reboot: Option<reboots::State>,
 }
 
 /// A member's NAT helper and relay, as it sends it.
@@ -1594,6 +1598,14 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, body: axum::body
         Ok(windows) => answer["maintenance"] = windows,
         Err(e) => return internal(e),
     }
+    // Whether it may reboot now for the system's updates (0.5.2, reboots.rs).
+    if let Some(state) = &listing.reboot {
+        match c.reboot_answer(&server, state, identity::now()).await {
+            Ok(Some(why)) => answer["reboot"] = json!({ "why": why }),
+            Ok(None) => {}
+            Err(e) => return internal(e),
+        }
+    }
     // Its accounts that may play while a window closes it (0.5.2).
     match c.maintenance_testers(&server).await {
         Ok(testers) => answer["maintenance_testers"] = json!(testers),
@@ -2212,6 +2224,10 @@ impl Coordinator {
             // Members keep up with the network's releases, or leave the directory.
             let (version, auto_update) = (v["version"].as_str().unwrap_or_default(), v["auto_update"].as_bool().unwrap_or(false));
             if !offered || !v["relay"].is_object() || updates::delisted(&rollout, version, auto_update, now).is_some() {
+                continue;
+            }
+            // Draining for a reboot (reboots.rs): no new matches on it.
+            if v["reboot"]["draining"].as_bool() == Some(true) {
                 continue;
             }
             let private = self.host_checks_private.load(std::sync::atomic::Ordering::Relaxed);

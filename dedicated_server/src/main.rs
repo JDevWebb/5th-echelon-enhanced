@@ -107,6 +107,7 @@ mod playing;
 mod privileges;
 mod probe_wants;
 mod rate_limit;
+mod reboot;
 mod recent_log;
 mod recordings;
 mod relay_pass;
@@ -885,6 +886,7 @@ fn main() -> color_eyre::Result<()> {
                 ports: nat.relay_ports,
             }),
             relayed: 0,
+            reboot: reboot::State::default(),
         }
     };
 

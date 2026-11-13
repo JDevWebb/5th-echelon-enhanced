@@ -16,6 +16,27 @@
       <button class="danger small" type="button" @click="remove">Remove</button>
     </PageTop>
     <p><RouterLink class="small" to="/servers">← All servers</RouterLink></p>
+    <section v-if="rb" class="panel reboots">
+      <header><h2>System reboots</h2><span class="small muted">for the system's updates: when it's empty in its quiet hours, or in a booked window</span></header>
+      <div class="stack">
+        <p v-if="!rb.pending_since" class="small">No reboot pending.</p>
+        <p v-else class="callout" :class="rb.overdue ? 'warn' : ''">
+          A reboot has been pending since {{ fmt.when(rb.pending_since) }}{{ rb.draining ? ': draining now, rebooting in a moment' : '' }}.
+          <template v-if="rb.overdue"> It's been over three days: book a maintenance window, or let it reboot when empty at any hour.</template>
+        </p>
+        <p class="small">
+          {{ rb.idle_since ? `Empty since ${fmt.when(rb.idle_since)}.` : 'In use now.' }}
+          Quiet hours: <b>{{ rb.quiet }}</b> <span class="muted">({{ rb.quiet_source }})</span>.
+          <template v-if="rb.any_hour_until"> Reboots when empty at any hour until {{ fmt.when(rb.any_hour_until) }}.</template>
+        </p>
+        <div class="row">
+          <label class="small" for="rb-hours">Quiet hours (UTC)</label>
+          <input id="rb-hours" v-model="hours" type="text" placeholder="learned from play, e.g. 4-7" class="hours">
+          <button class="small" type="button" :disabled="rbBusy" @click="saveHours">Save</button>
+          <button class="ghost small" type="button" :disabled="rbBusy" @click="anyHour(!rb.any_hour_until)">{{ rb.any_hour_until ? 'Only in quiet hours' : 'Reboot when empty, any hour' }}</button>
+        </div>
+      </div>
+    </section>
     <div v-if="data" class="grid cols-2">
       <section v-for="c in charts" :key="c.title" class="panel">
         <header><h2>{{ c.title }}</h2><div class="legend"><span v-for="s in c.series" :key="s.name"><i :style="{ background: s.color }"></i>{{ s.name }}</span></div></header>
@@ -67,6 +88,24 @@ const charts = computed(() => {
   ];
 });
 
+// Reboots for the system's updates (0.5.2): pending, empty since, quiet hours.
+const rb = ref(null);
+const hours = ref('');
+const rbBusy = ref(false);
+async function loadReboot() {
+  try {
+    rb.value = await api('GET', `/servers/${encodeURIComponent(props.id)}/reboot`);
+    hours.value = rb.value.quiet_set || '';
+  } catch { rb.value = null; }
+}
+onMounted(loadReboot);
+async function rebootSettings(body, done) {
+  rbBusy.value = true;
+  try { await api('POST', `/servers/${encodeURIComponent(props.id)}/reboot`, body); toast(done); await loadReboot(); } catch (e) { toast(e.message, true); } finally { rbBusy.value = false; }
+}
+const saveHours = () => rebootSettings({ quiet_hours: hours.value.trim() }, hours.value.trim() ? `Quiet hours: ${hours.value.trim()} UTC.` : 'Quiet hours are learned from play.');
+const anyHour = on => rebootSettings({ any_hour: on }, on ? 'It reboots when empty, at any hour, for three days.' : 'It reboots only in its quiet hours (or a window).');
+
 async function purge() {
   if (!await confirmBox(`Release ${serverName(sv.value)}'s unused names?`, 'Its links made over an hour ago for identities never seen online, and linked nowhere else, go with the names only they held. For a server reserving names with throwaway identities.', 'Release names', true)) return;
   try { toast((await api('POST', `/servers/${encodeURIComponent(props.id)}/purge-names`)).message); } catch (e) { toast(e.message, true); }
@@ -76,3 +115,8 @@ async function remove() {
   try { toast((await api('DELETE', `/servers/${encodeURIComponent(props.id)}`)).message); router.push('/servers'); } catch (e) { toast(e.message, true); }
 }
 </script>
+
+<style scoped>
+.reboots { margin-bottom: 16px; }
+.hours { max-width: 180px; }
+</style>

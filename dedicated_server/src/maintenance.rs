@@ -132,8 +132,12 @@ pub fn gate() -> &'static Gate {
     &GATE
 }
 
-/// Whether `user_id` may play now (the server's gate).
+/// Whether `user_id` may play now (the server's gate): not while a closed window keeps them
+/// out, nor while the server drains for a reboot (reboot.rs).
 pub fn may_play(user_id: u32) -> Result<(), String> {
+    if crate::reboot::draining() {
+        return Err(crate::reboot::DRAINING_MESSAGE.to_string());
+    }
     GATE.may_play(user_id, identity::now())
 }
 

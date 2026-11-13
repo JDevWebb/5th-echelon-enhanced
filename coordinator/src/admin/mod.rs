@@ -261,6 +261,7 @@ pub fn router(c: Shared) -> Router {
         .route("/updates/{action}", post(update_action))
         .route("/servers/{id}", delete(remove_server))
         .route("/servers/{id}/purge-names", post(purge_names))
+        .route("/servers/{id}/reboot", get(reboot_view).post(reboot_settings))
         .route("/bandwidth", get(bandwidth))
         .route("/players-report", get(players_report))
         .route("/allowances", axum::routing::put(set_allowance))
@@ -2287,6 +2288,60 @@ async fn remove_server(State(c): State<Shared>, Extension(client): Extension<Cli
 
 /// Releases the names a server reserved for identities that never played (see
 /// [`Coordinator::purge_unused_names`]).
+/// A server's reboots for the system's updates (0.5.2): pending, empty since, its quiet hours.
+async fn reboot_view(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    if let Err(r) = c.full(&headers, &client).await {
+        return r;
+    }
+    let listing: Option<String> = match sqlx::query_scalar("SELECT listing FROM servers WHERE id = ?").bind(&id).fetch_optional(&c.pool).await {
+        Ok(l) => l.flatten(),
+        Err(e) => return internal(e),
+    };
+    let state: crate::reboots::State = listing
+        .and_then(|l| serde_json::from_str::<Value>(&l).ok())
+        .and_then(|v| serde_json::from_value(v["reboot"].clone()).ok())
+        .unwrap_or_default();
+    c.reboot_view(&id, &state, identity::now()).await.map_or_else(internal, ok)
+}
+
+#[derive(Deserialize)]
+struct RebootSettings {
+    /// "4-7" (UTC), or empty to learn them from play.
+    #[serde(default)]
+    quiet_hours: Option<String>,
+    /// "Reboot when empty, any hour" for three days, or off.
+    #[serde(default)]
+    any_hour: Option<bool>,
+}
+
+async fn reboot_settings(
+    State(c): State<Shared>,
+    Extension(client): Extension<Client>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<RebootSettings>,
+) -> Response {
+    let s = match c.full(&headers, &client).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let now = identity::now();
+    if let Some(hours) = &req.quiet_hours {
+        match c.set_quiet_hours(&id, Some(hours)).await {
+            Ok(true) => c.audit(&s.username, Some(&client), "set a server's quiet hours", &format!("{id}: {}", if hours.trim().is_empty() { "learned" } else { hours.trim() })).await,
+            Ok(false) => return fail(StatusCode::BAD_REQUEST, "quiet hours are from-to in UTC hours, like 4-7 (or empty to learn them)"),
+            Err(e) => return internal(e),
+        }
+    }
+    if let Some(on) = req.any_hour {
+        if let Err(e) = c.set_reboot_any_hour(&id, on, now).await {
+            return internal(e);
+        }
+        c.audit(&s.username, Some(&client), if on { "reboot when empty, any hour" } else { "reboot only in quiet hours" }, &id).await;
+    }
+    ok(json!({ "ok": true }))
+}
+
 async fn purge_names(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Path(id): Path<String>) -> Response {
     let s = match c.recent(&headers, &client).await {
         Ok(s) => s,
