@@ -1345,7 +1345,67 @@ pub fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>, n
         );
     }
     add("Game's match port (UDP 13000)", storm_port_free());
+    if cfg!(target_os = "windows") && !hooks_config::running_under_wine() {
+        add("Windows Firewall", firewall_says(game_firewall_rules().as_deref()));
+    }
     results
+}
+
+/// The inbound Windows Firewall rules for the game's two executables, as PowerShell's
+/// firewall cmdlets give them (their values aren't translated, unlike netsh's): JSON of
+/// `{p: program, e: "True"|"False", a: "Allow"|"Block"}`. None when it couldn't be read.
+#[cfg(target_os = "windows")]
+fn game_firewall_rules() -> Option<String> {
+    use std::os::windows::process::CommandExt as _;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let script = "Get-NetFirewallApplicationFilter | Where-Object { $_.Program -like '*Blacklist*game.exe' } | \
+        ForEach-Object { $f = $_; Get-NetFirewallRule -AssociatedNetFirewallApplicationFilter $f | Where-Object { \"$($_.Direction)\" -eq 'Inbound' } | \
+        ForEach-Object { [pscustomobject]@{ p = $f.Program; e = \"$($_.Enabled)\"; a = \"$($_.Action)\" } } } | ConvertTo-Json -Compress";
+    let out = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn game_firewall_rules() -> Option<String> {
+    None
+}
+
+/// What the game's inbound firewall rules say (0.5.2's J3): a rule blocking it (what Windows
+/// writes when its "Allow access" prompt is dismissed), or no rule letting it in, keeps other
+/// players out even with the router's port open.
+pub fn firewall_says(rules: Option<&str>) -> (setup::diagnose::Status, Option<String>) {
+    use setup::diagnose::Status;
+    let Some(text) = rules else {
+        return (Status::Warn, Some("couldn't read its rules; a firewall on this PC may still block the game".into()));
+    };
+    let value: serde_json::Value = serde_json::from_str(text.trim()).unwrap_or(serde_json::Value::Null);
+    let list: Vec<serde_json::Value> = match value {
+        serde_json::Value::Array(a) => a,
+        serde_json::Value::Object(_) => vec![value],
+        _ => Vec::new(),
+    };
+    let enabled: Vec<&serde_json::Value> = list.iter().filter(|r| r["e"] == "True").collect();
+    let exe = |r: &serde_json::Value| r["p"].as_str().and_then(|p| p.rsplit(['\\', '/']).next()).unwrap_or("the game").to_string();
+    if let Some(block) = enabled.iter().find(|r| r["a"] == "Block") {
+        return (
+            Status::Warn,
+            Some(format!(
+                "a rule blocks {} coming in (Windows writes one when its \"Allow access\" prompt is dismissed): other players can't reach you. Allow it in Windows Security › Firewall › Allow an app through firewall",
+                exe(block)
+            )),
+        );
+    }
+    if !enabled.iter().any(|r| r["a"] == "Allow") {
+        return (
+            Status::Warn,
+            Some("no rule lets the game in: if Windows asks when the game starts, choose Allow access, or allow it in Windows Security › Firewall › Allow an app through firewall".into()),
+        );
+    }
+    (Status::Ok, None)
 }
 
 /// The adapters that look like a VPN's (by name, or by the address ranges the common ones give):
@@ -1515,6 +1575,24 @@ mod tests {
 
 #[cfg(test)]
 mod vpn_tests {
+    use super::firewall_says;
+    use setup::diagnose::Status;
+
+    /// J3: the game's inbound firewall rules, as PowerShell lists them.
+    #[test]
+    fn the_firewall_rules_are_read() {
+        let allow = r#"[{"p":"C:\\Games\\Blacklist_DX11_game.exe","e":"True","a":"Allow"}]"#;
+        assert_eq!(firewall_says(Some(allow)).0, Status::Ok);
+        let block = r#"[{"p":"C:\\Games\\Blacklist_DX11_game.exe","e":"True","a":"Allow"},{"p":"C:\\Games\\Blacklist_game.exe","e":"True","a":"Block"}]"#;
+        let (status, why) = firewall_says(Some(block));
+        assert_eq!(status, Status::Warn);
+        assert!(why.unwrap().contains("blocks Blacklist_game.exe"));
+        let single_off = r#"{"p":"C:\\Games\\Blacklist_DX11_game.exe","e":"False","a":"Allow"}"#;
+        assert!(firewall_says(Some(single_off)).1.unwrap().starts_with("no rule lets the game in"), "a lone rule, switched off");
+        assert!(firewall_says(Some("")).1.unwrap().starts_with("no rule"), "none at all");
+        assert_eq!(firewall_says(None).0, Status::Warn);
+    }
+
     use super::vpn_adapters;
 
     /// J3: VPN adapters by name or by the ranges Radmin VPN and Hamachi give.
