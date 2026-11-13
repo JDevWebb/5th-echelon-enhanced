@@ -11,7 +11,7 @@ export const STATUS_HINTS = ['In 0.5.0', 'In 0.5.1', 'In 0.5.2', 'Building', 'Mo
 export const PROJECT_LANES = ['shipping', 'next', 'later'];
 
 /** Lane releases the project's roadmap sets. */
-export const STARTING_RELEASES = { shipping: '0.5.1', next: '0.5.2' };
+export const STARTING_RELEASES = { shipping: '0.5.2', next: '0.5.3' };
 
 /** The project's roadmap as it stands for this release (STARTING_RELEASES.shipping): what an
  * empty roadmap starts from, and what "Update from the project's roadmap" brings one up to.
@@ -23,9 +23,11 @@ export const STARTING_ITEMS = [
   ['shipping', 'A redesigned launcher', 'One native app for Windows, Linux and the Steam Deck, in a dark or a light look, with a Play button that says whether you\'re ready, and the overlay to match.', ['Launcher', 'Overlay'], 'In 0.5.0'],
   ['shipping', 'Matches, and lobbies that carry on', 'Every public match on a tab of its own, to join one, queue for a seat or start your own; the lobby carries on when its host leaves.', ['Launcher', 'Overlay'], 'In 0.5.0'],
   ['shipping', 'Fixes after the move to one network', 'The ping shown is your nearest relay\'s, in the launcher and the overlay; chat scrolls in the overlay; typing the community network\'s address works.', ['Launcher', 'Overlay'], 'In 0.5.1'],
-  ['next', 'Fair play, round two', 'The match\'s rules, weapons, characters and names checked against the other players\' games, so changed values show up. Report only.', ['Overlay', 'Server'], 'Planned'],
-  ['next', 'Joins that work', 'The server checks a player can really be reached before connecting others to them directly, and uses the relay after failed joins; the launcher\'s connection test names the cause.', ['Network', 'Launcher'], 'Planned'],
-  ['next', 'Playing where UDP is blocked', 'A tunnel over port 443 for networks that block the game\'s own traffic.', ['Network'], 'Planned'],
+  ['shipping', 'Joins that work', 'The server checks a forwarded port really lets others in before connecting them directly, and moves a player whose joins keep failing to the relay; two PCs behind one router both get through; the connection test names VPN adapters.', ['Network', 'Launcher'], 'In 0.5.2'],
+  ['shipping', 'Playing where UDP is blocked', 'The game goes through the server over HTTPS (port 443) on networks that block its own traffic, found by the launcher at each start.', ['Network', 'Launcher'], 'In 0.5.2'],
+  ['shipping', 'Fair play, round two', 'The match\'s rules and every weapon\'s stats compared between the games in a match, so an edited one shows; the checks report while a match runs. Report only.', ['Overlay', 'Server'], 'In 0.5.2'],
+  ['shipping', 'Maintenance that says so', 'When the servers are closed for maintenance the launcher says until when, and the overlay warns before it starts.', ['Launcher', 'Server'], 'In 0.5.2'],
+  ['next', 'Fair play: characters and names', 'Health, damage and movement switches on a player\'s own character, names shown to others, and the switches among the rules and weapons. Report only.', ['Overlay', 'Server'], 'Planned'],
   ['next', 'Matchmaking failover', 'Another server takes over matchmaking if the matchmaking server goes down.', ['Network'], 'Planned'],
   ['next', 'Turning speed at high frame rates', 'The view turns slower with the mouse above 60 fps; a fix is being tested.', ['Launcher'], 'Building'],
   ['later', 'More relays where players are', 'Only once the Sessions page shows relayed players far from the six.', ['Network'], 'When data says'],

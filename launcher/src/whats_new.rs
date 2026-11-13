@@ -41,6 +41,51 @@ pub struct Release {
 
 /// Newest first. A release with nothing a player would notice has no entry.
 pub const RELEASES: &[Release] = &[
+    Release {
+        version: "0.5.2",
+        thanks: &["Iceman", "KazakhBro", "Glacio1", "Gex"],
+        new: &[
+            Item {
+                title: "Joins that keep failing go through the server",
+                text: "If your router says it forwards the game's port but nothing gets in, the server now notices within seconds and sends your matches through its relay. If your joins keep failing with different hosts, your games move to the relay for the session, and the overlay says so.",
+                community: false,
+            },
+            Item {
+                title: "Play where the game's traffic is blocked",
+                text: "On a network that blocks the game's traffic (some mobile data), the launcher sends it through the server over HTTPS instead, and tells you. Slower than usual, so only when nothing else works. Settings › Network › Always go through HTTPS turns it on for a connection that loses most of it.",
+                community: false,
+            },
+            Item {
+                title: "Closed for maintenance, said plainly",
+                text: "When the servers are closed for maintenance the launcher says until when, in your time, and signs in again every minute. Support still works. The overlay warns you in the last ten minutes.",
+                community: false,
+            },
+            Item {
+                title: "Rules and weapons compared between games",
+                text: "Every game in a match now reads the match's rules and the stats of each weapon. One that differs from the host's was edited, and the admins see it. Report only, as before.",
+                community: false,
+            },
+            Item {
+                title: "Start with Windows",
+                text: "Settings › Display › Starting: the launcher starts minimised when you sign in to Windows, so friends and invitations reach you.",
+                community: false,
+            },
+        ],
+        fixed: &[
+            Fix {
+                lead: "Two PCs behind one router",
+                rest: " can both play on the same relay: the second one's port forwarding no longer collides with the first's traffic.",
+            },
+            Fix {
+                lead: "The connection test",
+                rest: " also names a VPN adapter that may carry your matches, and another program holding the game's match port.",
+            },
+            Fix {
+                lead: "Long answers from the server",
+                rest: " are numbered as the game expects (some went out backwards, which a game drops).",
+            },
+        ],
+    },
     // 0.5.0 and its hotfix in one: most players go straight from 0.4.7 to 0.5.1 (0.5.0 was out
     // one night), so they see all of 0.5.0 here, with 0.5.1's fix first.
     Release {
