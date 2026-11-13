@@ -321,12 +321,20 @@ impl Coordinator {
             tracing::warn!("Rollout: not rolling out {version} on its own: {why}");
             return Ok(Found::Held(why));
         }
-        self.start_rollout(version, "a new signed release").await?;
+        // A rollout an admin paused stays paused for the new release: they paused it to update
+        // by hand (on 2026-11-13, 0.5.0's publishing unpaused the cutover's pause, and only the
+        // update window's timing kept a canary from updating mid-merge).
+        self.begin_rollout(version, "a new signed release", r.paused).await?;
         Ok(Found::Started)
     }
 
-    /// Rolls out `version` from the start (a canary first).
+    /// Rolls out `version` from the start (a canary first): an admin's start, which also
+    /// resumes a paused rollout.
     pub async fn start_rollout(&self, version: &str, why: &str) -> sqlx::Result<()> {
+        self.begin_rollout(version, why, false).await
+    }
+
+    async fn begin_rollout(&self, version: &str, why: &str, paused: bool) -> sqlx::Result<()> {
         let mut r = self.rollout().await?;
         // What the network ran before: the old target, or else what most servers run.
         let previous = match r.target.clone() {
@@ -347,9 +355,9 @@ impl Coordinator {
         r.stage = "canary".into();
         r.canary = None;
         r.stage_since = identity::now();
-        r.paused = false;
+        r.paused = paused;
         r.anytime = false;
-        r.note = why.to_string();
+        r.note = if paused { format!("{why}; paused, as the rollout was before") } else { why.to_string() };
         self.save_rollout(&r).await?;
         self.tick_rollout().await
     }

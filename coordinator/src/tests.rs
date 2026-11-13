@@ -668,6 +668,25 @@ async fn new_releases_start_a_rollout_unless_pinned_or_held_back() {
     assert_eq!(versions, ["2.0.0", "1.2.0", "1.1.0", "1.0.5"], "every signed release is recorded, newest first");
 }
 
+/// A rollout an admin paused stays paused when a new release turns up (0.5.0's publishing
+/// unpaused the cutover's), with no canary picked; an admin's start or resume goes on.
+#[tokio::test]
+async fn a_paused_rollout_stays_paused_for_a_new_release() {
+    let t = start("rollout-paused-found").await;
+    let a = t.join("a").await;
+    heartbeat_asks(&t, &a, "a", "1.0.0", 0, false).await;
+    update_window(&t, None).await;
+    t.c.set_paused(true).await.unwrap();
+    assert_eq!(t.c.release_found("1.1.0", "", "").await.unwrap(), updates::Found::Started);
+    let r = t.c.rollout().await.unwrap();
+    assert_eq!((r.target.as_deref(), r.paused, r.canary.as_deref()), (Some("1.1.0"), true, None), "{}", r.note);
+    assert!(r.note.contains("paused"), "{}", r.note);
+    assert_eq!(heartbeat_asks(&t, &a, "a", "1.0.0", 0, false).await, None, "nobody's asked to update");
+    t.c.set_paused(false).await.unwrap();
+    t.c.tick_rollout().await.unwrap();
+    assert_eq!(t.c.rollout().await.unwrap().canary.as_deref(), Some("a"), "resumed: a canary");
+}
+
 #[tokio::test]
 async fn rolling_back_goes_to_the_release_before_everywhere_at_once() {
     let t = start("rollout-back").await;
