@@ -1,5 +1,5 @@
-//! Asks the router to forward a UDP port to this PC: UPnP first, then
-//! NAT-PMP. The game client keeps Storm's port (13000) mapped while the game
+//! Asks the router to forward a UDP port to this PC: UPnP first, then PCP
+//! (RFC 6887, which some newer routers offer instead), then NAT-PMP. The game client keeps Storm's port (13000) mapped while the game
 //! runs, so other players can reach it directly; the launcher's connection
 //! test maps it briefly to check the router allows it.
 //!
@@ -33,6 +33,7 @@ pub struct Mapping {
 enum Handle {
     Upnp { gateway: igd_next::Gateway, port: u16 },
     Pmp { gateway: Ipv4Addr, local: Ipv4Addr, port: u16 },
+    Pcp { gateway: Ipv4Addr, local: Ipv4Addr, port: u16, nonce: [u8; 12] },
 }
 
 impl Mapping {
@@ -44,6 +45,9 @@ impl Mapping {
             }
             Handle::Pmp { gateway, local, port } => {
                 let _ = pmp_map(gateway, local, port, 0, 0);
+            }
+            Handle::Pcp { gateway, local, port, nonce } => {
+                let _ = pcp_request(gateway, local, &pcp_map_request(local, nonce, port, 0, 0));
             }
         }
     }
@@ -63,7 +67,11 @@ pub fn map_as(port: u16, external: u16, pinned: Option<Ipv4Addr>, lease: u32, de
         Ok(m) => return Ok(m),
         Err(e) => e,
     };
-    pmp(port, external, pinned, lease).map_err(|pmp_err| format!("UPnP: {upnp_err}; NAT-PMP: {pmp_err}"))
+    let pcp_err = match pcp(port, external, pinned, lease) {
+        Ok(m) => return Ok(m),
+        Err(e) => e,
+    };
+    pmp(port, external, pinned, lease).map_err(|pmp_err| format!("UPnP: {upnp_err}; PCP: {pcp_err}; NAT-PMP: {pmp_err}"))
 }
 
 /// The router-side port to ask for, for this PC's `local` port: the one the server saw this PC's
@@ -265,8 +273,92 @@ fn pmp(port: u16, external_port: u16, pinned: Option<Ipv4Addr>, lease: u32) -> R
     })
 }
 
+/// A PCP MAP request (RFC 6887 §11.1) for UDP `port` on `local` to `external` (0: any) for
+/// `lifetime` seconds (0: remove), with the mapping's `nonce`.
+fn pcp_map_request(local: Ipv4Addr, nonce: [u8; 12], port: u16, external: u16, lifetime: u32) -> Vec<u8> {
+    let mut req = vec![2u8, 1, 0, 0];
+    req.extend_from_slice(&lifetime.to_be_bytes());
+    req.extend_from_slice(&local.to_ipv6_mapped().octets());
+    req.extend_from_slice(&nonce);
+    req.extend_from_slice(&[17, 0, 0, 0]);
+    req.extend_from_slice(&port.to_be_bytes());
+    req.extend_from_slice(&external.to_be_bytes());
+    req.extend_from_slice(&[0u8; 16]);
+    req
+}
+
+/// A PCP MAP answer for `nonce`: the assigned external address and port.
+fn pcp_map_answer(reply: &[u8], nonce: &[u8; 12]) -> Result<SocketAddrV4, String> {
+    if reply.len() < 60 || reply[0] != 2 || reply[1] != 0x81 {
+        return Err("not a PCP MAP answer".into());
+    }
+    if reply[3] != 0 {
+        return Err(format!("the router refused (result {})", reply[3]));
+    }
+    if reply[24..36] != nonce[..] {
+        return Err("an answer to another request".into());
+    }
+    let port = u16::from_be_bytes([reply[42], reply[43]]);
+    let ip: [u8; 16] = reply[44..60].try_into().map_err(|_| "short".to_string())?;
+    let ip = std::net::Ipv6Addr::from(ip).to_ipv4_mapped().ok_or("an IPv6 address")?;
+    Ok(SocketAddrV4::new(ip, port))
+}
+
+fn pcp_request(gateway: Ipv4Addr, local: Ipv4Addr, request: &[u8]) -> Result<Vec<u8>, String> {
+    let socket = UdpSocket::bind((local, 0)).map_err(|e| e.to_string())?;
+    socket.connect((gateway, PMP_PORT)).map_err(|e| e.to_string())?;
+    let mut wait = Duration::from_millis(250);
+    let mut buf = [0u8; 1100];
+    while wait <= Duration::from_secs(2) {
+        socket.send(request).map_err(|e| e.to_string())?;
+        socket.set_read_timeout(Some(wait)).map_err(|e| e.to_string())?;
+        if let Ok(n) = socket.recv(&mut buf) {
+            return Ok(buf[..n].to_vec());
+        }
+        wait *= 2;
+    }
+    Err("no answer".into())
+}
+
+fn pcp(port: u16, external_port: u16, pinned: Option<Ipv4Addr>, lease: u32) -> Result<Mapping, String> {
+    let gateway = default_gateway().ok_or("no default gateway")?;
+    let local = pinned.or_else(|| local_ip_towards(gateway)).ok_or("no local address towards the router")?;
+    let nonce: [u8; 12] = std::array::from_fn(|i| (std::process::id().wrapping_mul(2_654_435_761).wrapping_add(i as u32) >> 8) as u8);
+    let reply = pcp_request(gateway, local, &pcp_map_request(local, nonce, port, external_port, lease))?;
+    let public = pcp_map_answer(&reply, &nonce)?;
+    usable_external(*public.ip())?;
+    Ok(Mapping {
+        public,
+        how: "PCP",
+        handle: Handle::Pcp { gateway, local, port, nonce },
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    /// PCP (RFC 6887): a MAP request as the RFC lays it out, and its answer read back.
+    #[test]
+    fn pcp_map_requests_and_answers() {
+        let local = Ipv4Addr::new(192, 168, 1, 20);
+        let nonce = [9u8; 12];
+        let req = super::pcp_map_request(local, nonce, 13000, 13000, 3600);
+        assert_eq!(req.len(), 60);
+        assert_eq!((req[0], req[1]), (2, 1), "version 2, MAP");
+        assert_eq!(&req[4..8], &3600u32.to_be_bytes());
+        assert_eq!(&req[8..24], &local.to_ipv6_mapped().octets());
+        assert_eq!((req[36], u16::from_be_bytes([req[40], req[41]]), u16::from_be_bytes([req[42], req[43]])), (17, 13000, 13000));
+        let mut answer = req.clone();
+        answer[1] = 0x81;
+        answer[3] = 0;
+        answer[42..44].copy_from_slice(&41234u16.to_be_bytes());
+        answer[44..60].copy_from_slice(&Ipv4Addr::new(203, 0, 113, 7).to_ipv6_mapped().octets());
+        assert_eq!(super::pcp_map_answer(&answer, &nonce), Ok(SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, 7), 41234)));
+        assert!(super::pcp_map_answer(&answer, &[1; 12]).is_err(), "another nonce");
+        answer[3] = 2;
+        assert!(super::pcp_map_answer(&answer, &nonce).unwrap_err().contains("refused"));
+        assert!(super::pcp_map_answer(&[0u8; 8], &nonce).is_err());
+    }
+
     use super::*;
 
     #[test]
