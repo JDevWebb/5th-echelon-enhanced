@@ -212,7 +212,7 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
         let (sessions, far) = if invitation_search || !crate::far_rooms::enabled() {
             (sessions, 0)
         } else {
-            let me = ci.address().ip();
+            let me = crate::tunnel::source_ip(*ci.address());
             crate::far_rooms::order(
                 sessions
                     .into_iter()
@@ -248,7 +248,7 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
             rmc_err!(self.storage.with_participants(sessions, UrlsFor::AllBut(user_id)), logger, "Error reading participants")?
         };
         // A relayed housemate's LAN address, for a player at the same public address.
-        let sessions = crate::game_session::with_house_urls(sessions, user_id, ci.address().ip());
+        let sessions = crate::game_session::with_house_urls(sessions, user_id, crate::tunnel::source_ip(*ci.address()));
         info!(logger, "Found {} sessions", sessions.len());
         let mut detail = serde_json::json!({ "query": request.game_session_query.query_id, "found": sessions.len() });
         if started > 0 {

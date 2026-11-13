@@ -698,6 +698,9 @@ fn main() -> color_eyre::Result<()> {
     federation::init(server_id.clone(), federation_config.enabled());
     // The last maintenance windows heard: a closed one holds before the first heartbeat (0.5.2).
     maintenance::gate().load();
+    // The tunnel's players are counted under their own addresses by the connection limits,
+    // not all under 127.0.0.1 (0.5.2's T).
+    quazal::prudp::set_source_ip(tunnel::source_ip);
     relays::set_own_id(&server_id);
     community_api::publish_friends(
         server_id,

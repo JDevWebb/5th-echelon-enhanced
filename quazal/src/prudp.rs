@@ -87,6 +87,19 @@ const REPEAT_WINDOW: Duration = Duration::from_secs(5);
 /// its signature when all are in use ([`Server::quiet_signature`], [`Server::takes_over`]).
 const TAKE_OVER_AFTER: Duration = Duration::from_secs(20);
 
+/// The address a datagram from `src` is counted under: the server sets it so that the
+/// players of its HTTPS tunnel (whose datagrams come from loopback sockets) are counted under
+/// their own addresses, not all under 127.0.0.1.
+static SOURCE_IP: std::sync::OnceLock<fn(SocketAddr) -> std::net::IpAddr> = std::sync::OnceLock::new();
+
+pub fn set_source_ip(f: fn(SocketAddr) -> std::net::IpAddr) {
+    let _ = SOURCE_IP.set(f);
+}
+
+fn limit_ip(src: SocketAddr) -> std::net::IpAddr {
+    SOURCE_IP.get().map_or_else(|| src.ip(), |f| f(src))
+}
+
 /// Connections one address may hold: 256 (a LAN party behind one router), or
 /// `FE_MAX_CONNECTIONS_PER_IP` (the load test's players all share one).
 fn max_connections_per_ip() -> usize {
@@ -358,11 +371,13 @@ pub struct ClientRegistry<T> {
 impl<T> ClientRegistry<T> {
     /// Adds a new connection under its signature (not signed in yet).
     fn insert(&mut self, signature: u32, mut ci: ClientInfo<T>) {
-        *self.per_ip.entry(ci.address().ip()).or_default() += 1;
+        let ip = limit_ip(*ci.address());
+        ci.counted_ip = Some(ip);
+        *self.per_ip.entry(ip).or_default() += 1;
         if ci.user_id.is_none() {
             ci.counted_anonymous = true;
             self.anonymous += 1;
-            *self.anonymous_per_ip.entry(ci.address().ip()).or_default() += 1;
+            *self.anonymous_per_ip.entry(ip).or_default() += 1;
         }
         self.clients.insert(signature, RefCell::new(ci));
     }
@@ -387,7 +402,7 @@ impl<T> ClientRegistry<T> {
         };
         if ci.counted_anonymous && ci.user_id.is_some_and(|id| !shared(id)) {
             ci.counted_anonymous = false;
-            let ip = ci.address().ip();
+            let ip = ci.counted_ip.unwrap_or_else(|| ci.address().ip());
             self.uncount_anonymous(ip);
         }
     }
@@ -410,14 +425,15 @@ impl<T> ClientRegistry<T> {
         if let Some(conn_id) = ci.connection_id {
             self.connection_id_session_ids.remove(&conn_id);
         }
-        if let std::collections::hash_map::Entry::Occupied(mut n) = self.per_ip.entry(ci.address().ip()) {
+        let ip = ci.counted_ip.unwrap_or_else(|| ci.address().ip());
+        if let std::collections::hash_map::Entry::Occupied(mut n) = self.per_ip.entry(ip) {
             *n.get_mut() -= 1;
             if *n.get() == 0 {
                 n.remove();
             }
         }
         if ci.counted_anonymous {
-            self.uncount_anonymous(ci.address().ip());
+            self.uncount_anonymous(ip);
         }
         match ci.user_id {
             Some(uid) => !self.clients.values().any(|c| c.try_borrow().map_or(true, |c| c.user_id == Some(uid))),
@@ -1027,8 +1043,8 @@ where
         };
         // Bounded connections, per address and in all (checked again at CONNECT, where
         // they are made; here it saves answering).
-        let (anonymous_here, anonymous) = self.client_registry.anonymous_from(client.ip());
-        if self.client_registry.connections_from(client.ip()) >= max_connections_per_ip()
+        let (anonymous_here, anonymous) = self.client_registry.anonymous_from(limit_ip(client));
+        if self.client_registry.connections_from(limit_ip(client)) >= max_connections_per_ip()
             || self.client_registry.clients.len() >= MAX_CONNECTIONS
             || anonymous_here >= many_per_ip().unwrap_or(MAX_ANONYMOUS_PER_IP)
             || anonymous >= MAX_ANONYMOUS
@@ -1145,8 +1161,8 @@ where
             }
             return;
         }
-        let (anonymous_here, anonymous) = self.client_registry.anonymous_from(client.ip());
-        if self.client_registry.connections_from(client.ip()) >= max_connections_per_ip()
+        let (anonymous_here, anonymous) = self.client_registry.anonymous_from(limit_ip(client));
+        if self.client_registry.connections_from(limit_ip(client)) >= max_connections_per_ip()
             || self.client_registry.clients.len() >= MAX_CONNECTIONS
             || anonymous_here >= many_per_ip().unwrap_or(MAX_ANONYMOUS_PER_IP)
             || anonymous >= MAX_ANONYMOUS
@@ -1654,6 +1670,23 @@ mod tests {
         let gone = registry.clients.remove(&1).unwrap().into_inner();
         assert!(registry.forget(&gone), "no connection left: clean up");
         assert!(registry.forget(&client(None, 3077)), "never logged in: nothing to keep");
+    }
+
+    /// A connection is uncounted from the address it was counted under, even when its
+    /// address now stands for another (a tunnel's player whose tunnel has gone).
+    #[test]
+    fn a_connection_is_uncounted_where_it_was_counted() {
+        let mut registry = ClientRegistry::<()>::default();
+        let mut ci = client(None, 3074);
+        let counted = ci.address().ip();
+        registry.insert(1, client(None, 3074));
+        assert_eq!((registry.connections_from(counted), registry.anonymous_from(counted).0), (1, 1));
+        ci.counted_ip = Some(counted);
+        ci.counted_anonymous = true;
+        ci.address = "10.9.8.7:3074".parse().unwrap();
+        registry.clients.remove(&1);
+        registry.forget(&ci);
+        assert_eq!((registry.connections_from(counted), registry.anonymous_from(counted)), (0, (0, 0)));
     }
 
     fn test_server(ctx: &Context) -> Server<'_, fn(ClientInfo<()>), fn(ClientInfo<()>), ()> {

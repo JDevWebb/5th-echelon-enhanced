@@ -1735,7 +1735,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                 })
             })
             .collect();
-        note_house_urls(user_id, ci.address().ip(), house);
+        note_house_urls(user_id, crate::tunnel::source_ip(*ci.address()), house);
         let urls = only_reachable_addresses(urls, ci.address().ip(), &crate::relays::ranges());
         if urls != sent {
             info!(logger, "station urls {:?} -> {:?} (the address this client connected from)", sent, urls);
@@ -1885,7 +1885,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             }
         }
 
-        let sessions = with_house_urls(sessions, user_id, ci.address().ip());
+        let sessions = with_house_urls(sessions, user_id, crate::tunnel::source_ip(*ci.address()));
         info!(logger, "Found {} sessions", sessions.len());
 
         Ok(SearchSessionsWithParticipantsResponse {
@@ -2423,7 +2423,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             "error searching game sessions"
         )?;
         let sessions = rmc_err!(self.storage.with_participants(sessions, UrlsFor::Hosts), logger, "error reading participants")?;
-        let sessions = with_house_urls(sessions, user_id, ci.address().ip());
+        let sessions = with_house_urls(sessions, user_id, crate::tunnel::source_ip(*ci.address()));
         info!(logger, "Found {} sessions", sessions.len());
 
         Ok(SearchSessionsResponse {

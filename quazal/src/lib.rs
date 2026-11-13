@@ -115,6 +115,10 @@ pub struct ClientInfo<T = ()> {
     /// Whether it's counted among its address's connections that haven't signed in (the
     /// registry's count, settled when it signs in or goes).
     pub(crate) counted_anonymous: bool,
+    /// The address its connection is counted under (see [`prudp::set_source_ip`]): a
+    /// tunnel's player's real address, kept so it's uncounted from the same one when the
+    /// tunnel has gone.
+    pub(crate) counted_ip: Option<std::net::IpAddr>,
 }
 
 /// A reliable packet waiting for the client's acknowledgement.
@@ -157,6 +161,7 @@ impl<T> ClientInfo<T> {
             connect_request: None,
             connected: std::time::Instant::now(),
             counted_anonymous: false,
+            counted_ip: None,
         }
     }
 
