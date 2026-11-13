@@ -146,6 +146,9 @@ pub fn notice(input: &Input) -> Option<Notice> {
     let (mine, ping) = input.mine?;
     let (now, clock) = (input.now, input.clock);
     let (window, phase) = showing(&mine.maintenance, now, clock, ping.is_some())?;
+    if window.closed && phase == Phase::During {
+        return Some(closed_notice(mine, window, now, clock, crate::network::sign_in_gate::kept_out()));
+    }
     if window.update && phase != Phase::Overrun {
         return Some(update_notice(input, mine, ping, window, phase));
     }
@@ -237,6 +240,47 @@ pub fn notice(input: &Input) -> Option<Notice> {
             ..base
         },
     })
+}
+
+/// The notice while a window closes the player's server to all but testers (0.5.2): Play is
+/// blocked once the server has refused this player for it (`kept_out`, its refusal); a tester
+/// signs in, and sees the window as a banner only.
+fn closed_notice(mine: &Listing, window: &Window, now: i64, clock: &Clock, kept_out: Option<String>) -> Notice {
+    let my_place = place(mine);
+    let my_city = city(&my_place).to_string();
+    let back = clock.time(window.end, now);
+    let base = Notice {
+        kind: Kind::MaintenanceNow,
+        heading: String::new(),
+        eta: format!("until about {back} · {} left", minutes(window.end - now)),
+        text: String::new(),
+        note: None,
+        action: None,
+        servers: vec![],
+        status: String::new(),
+        blocks_play: None,
+    };
+    match kept_out {
+        Some(_) => Notice {
+            heading: "Closed for maintenance".into(),
+            text: format!(
+                "{} Only testers can play until then. Support in the launcher still works, and the launcher signs in again every minute.",
+                with_note(format!("{my_city} is closed for maintenance until about {back}"), &window.note)
+            ),
+            status: format!("{my_city} is closed for maintenance"),
+            blocks_play: Some(format!("{my_city} is closed for maintenance until about {back}: only testers can play")),
+            ..base
+        },
+        None => Notice {
+            heading: "Maintenance: testers only".into(),
+            text: format!(
+                "{} Only testers can play until then; if you're one, play as usual.",
+                with_note(format!("Maintenance on {my_city} is under way until about {back}"), &window.note)
+            ),
+            status: format!("Testers only · maintenance until {}", clock.clock_time(window.end)),
+            ..base
+        },
+    }
 }
 
 /// The notice for an update window on the player's server: it restarts with a new release
@@ -402,6 +446,7 @@ mod tests {
             end,
             note: note.into(),
             update: false,
+            closed: false,
         }
     }
 
@@ -617,5 +662,20 @@ mod tests {
         assert_eq!(winner.kind, Kind::MaintenanceNow);
         assert_eq!(crate::update_notice::most_pressing([net, soon]).unwrap().kind, Kind::Maintenance);
         assert_eq!(crate::update_notice::most_pressing([None, None]), None);
+    }
+
+    /// A closed window under way: a banner for a tester (signed in), Play blocked for a player
+    /// the server refused for it.
+    #[test]
+    fn a_closed_window_blocks_play_only_once_refused() {
+        let clock = nz();
+        let mine = listing("eu1", "Frankfurt, Germany", vec![Window { closed: true, ..window(START, END, "Moving to a faster machine") }]);
+        let n = closed_notice(&mine, &mine.maintenance[0], START + 600, &clock, None);
+        assert_eq!(n.heading, "Maintenance: testers only");
+        assert!(n.blocks_play.is_none());
+        let n = closed_notice(&mine, &mine.maintenance[0], START + 600, &clock, Some("Closed for maintenance until 21:00 UTC".into()));
+        assert_eq!(n.heading, "Closed for maintenance");
+        assert!(n.text.contains("Moving to a faster machine"), "{}", n.text);
+        assert!(n.blocks_play.unwrap().contains("only testers can play"));
     }
 }

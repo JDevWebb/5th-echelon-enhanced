@@ -95,6 +95,9 @@ pub struct Window {
     /// For installing a release: the server restarts with it, early in the window.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub update: bool,
+    /// Only testers may play while it's under way (0.5.2): the server refuses everyone else.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub closed: bool,
 }
 
 /// The most windows read for a server.
@@ -609,6 +612,7 @@ mod tests {
             end,
             note: String::new(),
             update: false,
+            closed: false,
         };
         let mut before = listing("a", 0);
         before.maintenance = vec![window(1000, 2000), window(5000, 6000), window(9000, 9500)];

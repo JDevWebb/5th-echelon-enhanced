@@ -110,8 +110,8 @@ impl Booking {
     }
 }
 
-/// The directory's windows: each server's own, the network's update windows (every server's
-/// too), and the network's next window.
+/// The directory's windows: each server's own, the network's update and closed windows (every
+/// server's too), and the network's next window.
 #[derive(Debug, Default)]
 pub struct DirectoryMaintenance {
     servers: std::collections::HashMap<String, Vec<Window>>,
@@ -163,7 +163,8 @@ impl Coordinator {
             match server {
                 Some(id) => d.servers.entry(id).or_default().push(w),
                 None => {
-                    if w.update {
+                    // An update or a closed window of the network's is every server's too.
+                    if w.update || w.closed {
                         d.everywhere.push(w.clone());
                     }
                     if d.network.is_none() {

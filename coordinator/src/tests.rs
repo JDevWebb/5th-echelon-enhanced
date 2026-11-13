@@ -4339,6 +4339,14 @@ async fn a_closed_window_and_its_testers_reach_the_server() {
     assert_eq!((windows[0]["closed"].as_bool(), windows[0]["network"].as_bool()), (Some(true), Some(false)));
     assert_eq!((windows[1]["closed"].as_bool(), windows[1]["network"].as_bool()), (Some(false), Some(true)));
 
+    // A closed network window is every server's in the directory (launchers block Play by it).
+    let (status, _) = admin_call(&r, "POST", "/api/maintenance", &cookie, Some(json!({ "network": true, "start": now + 10_000, "end": now + 11_000 }))).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, dir) = t.call("GET", "/v1/servers", None, None).await;
+    let a_windows = dir["servers"][0]["maintenance"].as_array().unwrap();
+    assert!(a_windows.iter().any(|w| w["start"] == json!(now + 10_000) && w["closed"] == json!(true)), "{dir}");
+    assert!(!a_windows.iter().any(|w| w["start"] == json!(now + 7200)), "a notice-only network window isn't: {dir}");
+
     // No longer a tester.
     admin_call(&r, "POST", "/api/players/server-a/1006/tester", &cookie, Some(json!({ "on": false }))).await;
     let (_, v) = t.call("POST", "/v1/heartbeat", Some(&a), Some(json!({ "name": "server-a", "host": "server-a", "listed": true }))).await;
@@ -4387,7 +4395,8 @@ async fn maintenance_is_told_to_launchers_and_servers_and_holds_updates() {
         "POST",
         "/api/maintenance",
         &cookie,
-        Some(json!({ "network": true, "start": now + 86_400, "end": now + 90_000 })),
+        // A notice only: a closed one would be every server's (see a_closed_window_and_its_testers_reach_the_server).
+        Some(json!({ "network": true, "start": now + 86_400, "end": now + 90_000, "closed": false })),
     )
     .await;
     assert_eq!((status, v["windows"][0]["server_name"].as_str()), (StatusCode::OK, Some("Whole network")), "{v}");
@@ -4433,7 +4442,7 @@ async fn maintenance_is_told_to_launchers_and_servers_and_holds_updates() {
         .await;
     assert_eq!(
         beat_b["maintenance"],
-        json!([{ "start": now + 86_400, "end": now + 90_000, "note": "", "network": true, "update": false, "closed": true }])
+        json!([{ "start": now + 86_400, "end": now + 90_000, "note": "", "network": true, "update": false, "closed": false }])
     );
 
     // No update starts on a server in its window, or anywhere in the network's.

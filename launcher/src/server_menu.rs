@@ -320,6 +320,7 @@ mod tests {
             end: 21 * 3600,
             note: String::new(),
             update: false,
+            closed: false,
         }];
         let tags = |now: i64| rows(&servers, "", now, &utc()).into_iter().map(|r| r.maintenance).collect::<Vec<_>>();
         assert_eq!(tags(3600), [Some("Maintenance 20:00".to_string()), None, None, None]);

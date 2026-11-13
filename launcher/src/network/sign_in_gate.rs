@@ -10,6 +10,8 @@
 //!   password is tried at once (the hold is for the password that was refused).
 //! - **Banned**: none for [`BANNED_WAIT`].
 //! - **The server is busy**: none for [`BUSY_WAIT`].
+//! - **Closed for maintenance** (0.5.2: a window keeps all but testers out): none for
+//!   [`CLOSED_WAIT`]; the maintenance notice says so ([`kept_out`]).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -22,6 +24,9 @@ const WRONG_TRIES: u32 = 3;
 const WRONG_WAIT: Duration = Duration::from_secs(30 * 60);
 const BANNED_WAIT: Duration = Duration::from_secs(30 * 60);
 const BUSY_WAIT: Duration = Duration::from_secs(60);
+const CLOSED_WAIT: Duration = Duration::from_secs(60);
+/// What a server closed for maintenance starts its refusal with (dedicated_server's maintenance.rs).
+pub const CLOSED: &str = "Closed for maintenance";
 
 /// What a sign-in's failure was.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +36,8 @@ pub enum Failure {
     Wrong,
     Banned(String),
     Busy,
+    /// A maintenance window keeps everyone but its testers out.
+    Closed(String),
     /// Anything else: no hold.
     Other,
 }
@@ -49,6 +56,7 @@ impl Failure {
     pub fn of_status(status: &tonic::Status) -> Self {
         use tonic::Code;
         match status.code() {
+            Code::Unavailable if status.message().starts_with(CLOSED) => Self::Closed(status.message().to_string()),
             Code::Unavailable | Code::DeadlineExceeded | Code::Cancelled | Code::Unknown => Self::Connection,
             Code::Unauthenticated | Code::NotFound => Self::Wrong,
             Code::FailedPrecondition => Self::Refused(status.message().to_string()),
@@ -69,6 +77,17 @@ struct Held {
     refused: Option<String>,
     banned: Option<(Instant, String)>,
     busy: Option<Instant>,
+    closed: Option<Instant>,
+}
+
+/// The last "closed for maintenance" refusal, and when: the notice under Play says it.
+static KEPT_OUT: Mutex<Option<(Instant, String)>> = Mutex::new(None);
+
+/// Why the player's sign-in was refused for maintenance in the last two minutes, if it was
+/// (a tester signs in, and then this is cleared).
+pub fn kept_out() -> Option<String> {
+    let k = KEPT_OUT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    k.as_ref().filter(|(at, _)| at.elapsed() < Duration::from_secs(120)).map(|(_, why)| why.clone())
 }
 
 /// Holds by server, and by server, account and password (hashed).
@@ -93,6 +112,9 @@ fn why_not_at(server: &str, account: &str, secret: &str, now: Instant) -> Option
     if let Some(h) = all.get(server) {
         if let Some(why) = &h.refused {
             return Some(format!("{why} (not signing in again until the launcher is updated)"));
+        }
+        if let Some(until) = h.closed.filter(|u| *u > now) {
+            return Some(format!("{CLOSED}; signing in again in {} s", left(until).as_secs().max(1)));
         }
         if let Some(until) = h.busy.filter(|u| *u > now) {
             return Some(format!("The server is busy; signing in again in {} s", left(until).as_secs().max(1)));
@@ -134,8 +156,9 @@ fn record_at(server: &str, account: &str, secret: &str, failure: Option<&Failure
         None => {
             all.remove(&key);
             if let Some(h) = all.get_mut(server) {
-                (h.connection, h.busy) = ((0, None), None);
+                (h.connection, h.busy, h.closed) = ((0, None), None, None);
             }
+            *KEPT_OUT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         }
         Some(Failure::Connection) => {
             let h = all.entry(server.to_string()).or_default();
@@ -145,6 +168,10 @@ fn record_at(server: &str, account: &str, secret: &str, failure: Option<&Failure
         }
         Some(Failure::Refused(why)) => all.entry(server.to_string()).or_default().refused = Some(why.clone()),
         Some(Failure::Busy) => all.entry(server.to_string()).or_default().busy = Some(now + BUSY_WAIT),
+        Some(Failure::Closed(why)) => {
+            all.entry(server.to_string()).or_default().closed = Some(now + CLOSED_WAIT);
+            *KEPT_OUT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((now, why.clone()));
+        }
         Some(Failure::Banned(why)) => all.entry(key).or_default().banned = Some((now + BANNED_WAIT, why.clone())),
         Some(Failure::Wrong) => {
             let h = all.entry(key).or_default();
@@ -211,5 +238,23 @@ mod tests {
         assert_eq!(Failure::of_status(&tonic::Status::permission_denied("banned")), Failure::Banned("banned".into()));
         assert_eq!(Failure::of_status(&tonic::Status::resource_exhausted("busy")), Failure::Busy);
         assert_eq!(Failure::of(&crate::network::Error::ConnectionFailed), Failure::Connection);
+    }
+
+    /// A server closed for maintenance: tried again after a minute, said by the notice; a
+    /// sign-in that works (a tester) clears it.
+    #[test]
+    fn closed_for_maintenance_waits_a_minute_and_is_said() {
+        let t = Instant::now();
+        let s = "https://closed.test";
+        let status = tonic::Status::unavailable("Closed for maintenance until 21:30 UTC. Only testers can play until then.");
+        let f = Failure::of_status(&status);
+        assert!(matches!(f, Failure::Closed(_)));
+        assert_eq!(Failure::of_status(&tonic::Status::unavailable("down")), Failure::Connection, "a plain unavailable is a connection failure");
+        record_at(s, "Kiwi", "pw", Some(&f), t);
+        assert!(why_not_at(s, "Kiwi", "pw", t + Duration::from_secs(30)).unwrap().starts_with("Closed for maintenance"));
+        assert_eq!(why_not_at(s, "Kiwi", "pw", t + Duration::from_secs(61)), None);
+        assert!(kept_out().is_some());
+        record_at(s, "Kiwi", "pw", None, t + Duration::from_secs(62));
+        assert!(kept_out().is_none());
     }
 }
