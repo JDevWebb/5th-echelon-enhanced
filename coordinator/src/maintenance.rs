@@ -6,6 +6,11 @@
 //! A window is for updates or for other maintenance. Releases are installed only in update
 //! windows (`updates.rs`), so players know ahead when their server restarts; no update starts
 //! during other maintenance.
+//!
+//! A window may also **close** its server, or the whole network (0.5.2): while it's under way the
+//! server refuses sign-ins and its online functions to everyone but the testers
+//! (`maintenance_testers`, kept on the player's page), and signs out the others when it starts.
+//! Each server hears its testers in its heartbeat answer with its windows.
 
 use serde::Serialize;
 use serde_json::json;
@@ -42,6 +47,9 @@ pub struct Window {
     /// Booked for installing a release.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub update: bool,
+    /// Only testers may play while it's under way.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub closed: bool,
 }
 
 /// What an admin books: windows for these servers, and the network's when `network`.
@@ -58,10 +66,17 @@ pub struct Booking {
     /// [`UPDATE`] or [`MAINTENANCE`] (the default).
     #[serde(default = "maintenance_kind")]
     pub kind: String,
+    /// Only testers may play while it's under way (the default); off, it's a notice only.
+    #[serde(default = "yes")]
+    pub closed: bool,
 }
 
 fn maintenance_kind() -> String {
     MAINTENANCE.into()
+}
+
+const fn yes() -> bool {
+    true
 }
 
 impl Booking {
@@ -121,8 +136,8 @@ type Upcoming = Vec<(Option<String>, Window)>;
 
 impl Coordinator {
     pub(crate) async fn upcoming_maintenance(&self, now: i64) -> sqlx::Result<Upcoming> {
-        let rows: Vec<(Option<String>, i64, i64, String, String)> = sqlx::query_as(
-            "SELECT server_id, starts, ends, note, kind FROM maintenance
+        let rows: Vec<(Option<String>, i64, i64, String, String, bool)> = sqlx::query_as(
+            "SELECT server_id, starts, ends, note, kind, closed FROM maintenance
               WHERE cancelled_at IS NULL AND ends > ? AND starts < ? ORDER BY starts, id",
         )
         .bind(now)
@@ -131,10 +146,10 @@ impl Coordinator {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(server, start, end, note, kind)| {
+            .map(|(server, start, end, note, kind, closed)| {
                 let update = kind == UPDATE;
                 let note = if update && note.is_empty() { UPDATE_NOTE.to_string() } else { note };
-                (server, Window { start, end, note, update })
+                (server, Window { start, end, note, update, closed })
             })
             .collect())
     }
@@ -168,7 +183,7 @@ impl Coordinator {
             .into_iter()
             .filter(|(s, _)| s.as_deref().is_none_or(|s| s == server))
             .take(PER_HEARTBEAT)
-            .map(|(s, w)| json!({ "start": w.start, "end": w.end, "note": w.note, "network": s.is_none(), "update": w.update }))
+            .map(|(s, w)| json!({ "start": w.start, "end": w.end, "note": w.note, "network": s.is_none(), "update": w.update, "closed": w.closed }))
             .collect();
         Ok(json!(list))
     }
@@ -218,8 +233,8 @@ impl Coordinator {
 
     /// The admin UI's list: windows not ended or ended lately, newest start first.
     pub(crate) async fn maintenance_list(&self, now: i64) -> sqlx::Result<Value> {
-        let rows: Vec<(i64, Option<String>, Option<String>, i64, i64, String, String, i64, Option<i64>, String)> = sqlx::query_as(
-            "SELECT m.id, m.server_id, s.listing, m.starts, m.ends, m.note, m.created_by, m.created_at, m.cancelled_at, m.kind
+        let rows: Vec<(i64, Option<String>, Option<String>, i64, i64, String, String, i64, Option<i64>, String, bool)> = sqlx::query_as(
+            "SELECT m.id, m.server_id, s.listing, m.starts, m.ends, m.note, m.created_by, m.created_at, m.cancelled_at, m.kind, m.closed
                FROM maintenance m LEFT JOIN servers s ON s.id = m.server_id
               WHERE m.ends > ? ORDER BY m.starts DESC, m.id DESC LIMIT 200",
         )
@@ -228,7 +243,7 @@ impl Coordinator {
         .await?;
         let windows: Vec<Value> = rows
             .into_iter()
-            .map(|(id, server, listing, start, end, note, created_by, created_at, cancelled_at, kind)| {
+            .map(|(id, server, listing, start, end, note, created_by, created_at, cancelled_at, kind, closed)| {
                 let name = match &server {
                     None => String::from("Whole network"),
                     Some(id) => listing
@@ -239,6 +254,7 @@ impl Coordinator {
                 json!({
                     "id": id, "server": server, "server_name": name, "start": start, "end": end, "note": note,
                     "created_by": created_by, "created_at": created_at, "cancelled_at": cancelled_at, "kind": kind,
+                    "closed": closed,
                 })
             })
             .collect();
@@ -264,7 +280,9 @@ impl Coordinator {
                     return Ok(None);
                 }
             }
-            let id: i64 = sqlx::query_scalar("INSERT INTO maintenance (server_id, starts, ends, note, created_by, created_at, kind) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id")
+            let id: i64 = sqlx::query_scalar(
+                "INSERT INTO maintenance (server_id, starts, ends, note, created_by, created_at, kind, closed) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+            )
                 .bind(server)
                 .bind(b.start)
                 .bind(b.end)
@@ -272,12 +290,51 @@ impl Coordinator {
                 .bind(by)
                 .bind(now)
                 .bind(&b.kind)
+                .bind(b.closed)
                 .fetch_one(&mut *tx)
                 .await?;
             ids.push(id);
         }
         tx.commit().await?;
         Ok(Some(ids))
+    }
+
+    /// The accounts on `server` that may play while a window closes it.
+    pub(crate) async fn maintenance_testers(&self, server: &str) -> sqlx::Result<Vec<i64>> {
+        sqlx::query_scalar("SELECT player FROM maintenance_testers WHERE server_id = ? ORDER BY player")
+            .bind(server)
+            .fetch_all(&self.pool)
+            .await
+    }
+
+    /// Whether `player` on `server` is a tester.
+    pub(crate) async fn is_maintenance_tester(&self, server: &str, player: i64) -> sqlx::Result<bool> {
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM maintenance_testers WHERE server_id = ? AND player = ?")
+            .bind(server)
+            .bind(player)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(n > 0)
+    }
+
+    /// Makes `player` on `server` a tester or not: answers whether that changed anything.
+    pub(crate) async fn set_maintenance_tester(&self, server: &str, player: i64, on: bool, by: &str, now: i64) -> sqlx::Result<bool> {
+        let done = if on {
+            sqlx::query("INSERT OR IGNORE INTO maintenance_testers (server_id, player, added_by, added_at) VALUES (?, ?, ?, ?)")
+                .bind(server)
+                .bind(player)
+                .bind(by)
+                .bind(now)
+                .execute(&self.pool)
+                .await?
+        } else {
+            sqlx::query("DELETE FROM maintenance_testers WHERE server_id = ? AND player = ?")
+                .bind(server)
+                .bind(player)
+                .execute(&self.pool)
+                .await?
+        };
+        Ok(done.rows_affected() > 0)
     }
 
     /// Cancels a window: answers whether there was one not cancelled yet.
@@ -328,6 +385,7 @@ mod tests {
             end,
             note: note.into(),
             kind: MAINTENANCE.into(),
+            closed: true,
         };
         assert!(b(&["eu1"], false, now + 60, now + 3660, "Moving").check(now).is_ok());
         assert!(b(&[], true, now, now + 60, "").check(now).is_ok());

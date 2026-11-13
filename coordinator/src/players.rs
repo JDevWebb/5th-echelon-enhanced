@@ -813,6 +813,8 @@ impl Coordinator {
             "hardware": self.hardware_of(server, id).await?,
             // What their game's add-on reported (fair_play events, the last 30 days), repeats folded.
             "fair_play": self.fair_play_reports(server, id, now).await?,
+            // May play while a maintenance window closes their server (0.5.2).
+            "tester": self.is_maintenance_tester(server, id).await?,
             "mutes": mutes.into_iter().map(|(room, until, by, reason, at)| json!({ "room": room, "until": until, "by": by, "reason": reason, "at": at })).collect::<Vec<_>>(),
             "actions": actions.into_iter().map(|(aid, kind, args, by, at, status, message, done)| json!({
                 "id": aid, "kind": kind, "args": serde_json::from_str::<Value>(&args).unwrap_or_default(), "created_by": by,

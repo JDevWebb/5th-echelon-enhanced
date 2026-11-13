@@ -8,6 +8,8 @@
 //!   queues an action (for every account sharing the identity, with `all_servers`). Bans and
 //!   unbans are always for the identity, across the network, and its later accounts too. Bans,
 //!   deletes, renames and password resets want a second factor proved lately.
+//! * `POST /api/players/<server>/<id>/tester` `{on}`: may play while a maintenance window closes
+//!   the server (0.5.2), or not.
 //! * `GET /api/actions/<id>`: how an action went; a reset password once, to who asked.
 //! * `GET /api/matches-report?days=`: matches per day by mode, lengths, players, maps.
 
@@ -39,6 +41,7 @@ pub(super) fn routes() -> Router<Shared> {
         .route("/players/{server}/{id}", get(detail))
         .route("/players/{server}/{id}/actions", post(act))
         .route("/players/{server}/{id}/content", get(content))
+        .route("/players/{server}/{id}/tester", post(tester))
         .route("/actions/{id}", get(action))
         .route("/matches-report", get(matches_report))
 }
@@ -69,6 +72,38 @@ async fn content(State(c): State<Shared>, Extension(client): Extension<Client>, 
     match c.player_content(&server, id).await {
         Ok(Some(v)) => ok(v),
         Ok(None) => fail(StatusCode::NOT_FOUND, "nothing uploaded by this player's game"),
+        Err(e) => internal(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct TesterRequest {
+    on: bool,
+}
+
+/// Lets a player in while a maintenance window closes their server, or not (audited).
+async fn tester(
+    State(c): State<Shared>,
+    Extension(client): Extension<Client>,
+    headers: HeaderMap,
+    Path((server, id)): Path<(String, i64)>,
+    Json(req): Json<TesterRequest>,
+) -> Response {
+    let s = match c.full(&headers, &client).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let Ok(Some(name)) = c.player_name(&server, id).await else {
+        return fail(StatusCode::NOT_FOUND, "no such player");
+    };
+    match c.set_maintenance_tester(&server, id, req.on, &s.username, identity::now()).await {
+        Ok(changed) => {
+            if changed {
+                let what = if req.on { "player: tester in maintenance" } else { "player: no longer a tester" };
+                c.audit(&s.username, Some(&client), what, &format!("{name} (#{id}) on {server}")).await;
+            }
+            ok(json!({ "tester": req.on }))
+        }
         Err(e) => internal(e),
     }
 }

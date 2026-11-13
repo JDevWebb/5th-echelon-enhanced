@@ -4304,6 +4304,47 @@ async fn admins_change_the_networks_settings_and_each_change_is_audited() {
     assert!(v["events"].as_array().unwrap().iter().all(|e| e["admin"] == "kiwi"), "{v}");
 }
 
+/// A window closes its server to all but testers by default (0.5.2): the server hears it, and its
+/// testers, in its heartbeat answer; an admin marks a tester on the player's page.
+#[tokio::test]
+async fn a_closed_window_and_its_testers_reach_the_server() {
+    let t = start("maintenance-closed").await;
+    let r = admin_router(&t);
+    let a = t.join("server-a").await;
+    t.call("POST", "/v1/players", Some(&a), Some(json!({ "full": true, "players": [player(1006, "NexusX", None), player(1007, "Exo", None)] }))).await;
+    let now = identity::now();
+    let cookie = admin_cookie(&t, "admin1", 60).await;
+    let (status, v) = admin_call(&r, "POST", "/api/maintenance", &cookie, Some(json!({ "servers": ["server-a"], "start": now, "end": now + 3600 }))).await;
+    assert_eq!((status, v["windows"][0]["closed"].as_bool()), (StatusCode::OK, Some(true)), "closed by default: {v}");
+    let (status, _) = admin_call(
+        &r,
+        "POST",
+        "/api/maintenance",
+        &cookie,
+        Some(json!({ "network": true, "start": now + 7200, "end": now + 9000, "closed": false, "note": "Notice only" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(admin_call(&r, "POST", "/api/players/server-a/1/tester", &cookie, Some(json!({ "on": true }))).await.0, StatusCode::NOT_FOUND);
+    let (status, v) = admin_call(&r, "POST", "/api/players/server-a/1006/tester", &cookie, Some(json!({ "on": true }))).await;
+    assert_eq!((status, v["tester"].as_bool()), (StatusCode::OK, Some(true)), "{v}");
+    let (_, v) = admin_call(&r, "GET", "/api/players/server-a/1006", &cookie, None).await;
+    assert_eq!(v["tester"].as_bool(), Some(true));
+
+    let (status, v) = t.call("POST", "/v1/heartbeat", Some(&a), Some(json!({ "name": "server-a", "host": "server-a", "listed": true }))).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["maintenance_testers"], json!([1006]), "{v}");
+    let windows = v["maintenance"].as_array().unwrap();
+    assert_eq!(windows.len(), 2, "{v}");
+    assert_eq!((windows[0]["closed"].as_bool(), windows[0]["network"].as_bool()), (Some(true), Some(false)));
+    assert_eq!((windows[1]["closed"].as_bool(), windows[1]["network"].as_bool()), (Some(false), Some(true)));
+
+    // No longer a tester.
+    admin_call(&r, "POST", "/api/players/server-a/1006/tester", &cookie, Some(json!({ "on": false }))).await;
+    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&a), Some(json!({ "name": "server-a", "host": "server-a", "listed": true }))).await;
+    assert_eq!(v["maintenance_testers"], json!([]));
+}
+
 #[tokio::test]
 async fn maintenance_is_told_to_launchers_and_servers_and_holds_updates() {
     let t = start("maintenance").await;
@@ -4373,7 +4414,7 @@ async fn maintenance_is_told_to_launchers_and_servers_and_holds_updates() {
     let server = |id: &str| dir["servers"].as_array().unwrap().iter().find(|s| s["id"] == id).cloned().unwrap();
     assert_eq!(
         server("server-a")["maintenance"],
-        json!([{ "start": now + 3600, "end": now + 7200, "note": "Moving to a faster machine" }])
+        json!([{ "start": now + 3600, "end": now + 7200, "note": "Moving to a faster machine", "closed": true }])
     );
     assert!(server("server-b").get("maintenance").is_none());
     assert_eq!(dir["network_maintenance"]["start"], json!(now + 86_400));
@@ -4392,7 +4433,7 @@ async fn maintenance_is_told_to_launchers_and_servers_and_holds_updates() {
         .await;
     assert_eq!(
         beat_b["maintenance"],
-        json!([{ "start": now + 86_400, "end": now + 90_000, "note": "", "network": true, "update": false }])
+        json!([{ "start": now + 86_400, "end": now + 90_000, "note": "", "network": true, "update": false, "closed": true }])
     );
 
     // No update starts on a server in its window, or anywhere in the network's.

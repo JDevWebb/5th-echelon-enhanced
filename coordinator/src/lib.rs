@@ -1594,6 +1594,11 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, body: axum::body
         Ok(windows) => answer["maintenance"] = windows,
         Err(e) => return internal(e),
     }
+    // Its accounts that may play while a window closes it (0.5.2).
+    match c.maintenance_testers(&server).await {
+        Ok(testers) => answer["maintenance_testers"] = json!(testers),
+        Err(e) => return internal(e),
+    }
     // Which client builds to take (clients.rs).
     match c.client_rules().await {
         Ok(rules) => answer["clients"] = rules,
