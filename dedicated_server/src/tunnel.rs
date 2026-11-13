@@ -87,6 +87,17 @@ pub fn real_ip(port: u16) -> Option<IpAddr> {
     open().by_port.get(&port).copied()
 }
 
+/// The address a datagram from `src` stands for: a tunnel's player's real address when `src` is
+/// a tunnel's loopback socket, else `src`'s own.
+pub fn source_ip(src: SocketAddr) -> IpAddr {
+    if src.ip().is_loopback() {
+        if let Some(ip) = real_ip(src.port()) {
+            return ip;
+        }
+    }
+    src.ip()
+}
+
 /// Whether a new tunnel from `ip` may open now.
 fn admits(o: &Open, ip: IpAddr) -> Result<(), &'static str> {
     if o.by_id.len() >= MAX_TUNNELS {

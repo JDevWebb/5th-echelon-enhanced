@@ -148,7 +148,7 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
     ) -> Result<LoginResponse, quazal::rmc::Error> {
         // Nothing checks a password here, but each try looks a name up: the same limit on
         // tries per address as the other logins.
-        if request.str_user_name.chars().count() > crate::rate_limit::MAX_NAME || !crate::rate_limit::plain_login(Some(ci.address().ip())) {
+        if request.str_user_name.chars().count() > crate::rate_limit::MAX_NAME || !crate::rate_limit::plain_login(Some(crate::tunnel::source_ip(*ci.address()))) {
             warn!(logger, "plain login from {} refused (too many, or too long a name)", ci.address().ip());
             return Err(quazal::rmc::Error::AccessDenied);
         }
@@ -222,7 +222,9 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
             return Err(quazal::rmc::Error::AccessDenied);
         }
         info!(logger, "LoginEx attempt by {:?} ({:?})", ubi_username, username);
-        let peer = Some(ci.address().ip());
+        // A game through the tunnel (0.5.2's T) is at 127.0.0.1: its player's real address.
+        let ip = crate::tunnel::source_ip(*ci.address());
+        let peer = Some(ip);
         // The game signs in where its launcher just did (over TLS): that address is the
         // player's, and others' failures for the name don't hold it up.
         let vouched = self
@@ -230,7 +232,7 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
             .find_user_id_by_name(ubi_username)
             .ok()
             .flatten()
-            .is_some_and(|id| crate::clients::address_proven(id, ci.address().ip()));
+            .is_some_and(|id| crate::clients::address_proven(id, ip));
         let attempt = match crate::rate_limit::begin_login_vouched(peer, ubi_username, vouched) {
             Ok(attempt) => attempt,
             Err(refused) => {
@@ -239,7 +241,7 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
                         crate::rate_limit::Refused::Flood => "too many logins",
                         crate::rate_limit::Refused::Failures => "too many failed logins",
                     };
-                    warn!(logger, "{what} from {} or for {ubi_username:?}; refused (said once an hour)", ci.address().ip());
+                    warn!(logger, "{what} from {ip} or for {ubi_username:?}; refused (said once an hour)");
                 }
                 crate::session_events::refused(crate::session_events::Who::Name(ubi_username.clone()), refused.reason(), "game", None);
                 return Err(quazal::rmc::Error::AccessDenied);
