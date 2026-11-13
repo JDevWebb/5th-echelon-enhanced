@@ -57,7 +57,7 @@ pub const RELEASES: &[Release] = &[
             },
             Item {
                 title: "Notices from the admins",
-                text: "When something's wrong across the network (or a fix is on its way), a notice above Play says the admins know, within a minute of their posting it. Close hides it until it's changed.",
+                text: "When something's wrong across the network (or a fix is on its way), a notice above Play says the admins know, within a minute of their posting it, and the overlay shows it once if you're in a match. Close hides it until it's changed.",
                 community: true,
             },
             Item {

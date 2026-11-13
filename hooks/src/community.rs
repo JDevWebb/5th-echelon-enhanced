@@ -98,6 +98,48 @@ pub struct ServerInfo {
     /// Maintenance booked for this server or the whole network, not over yet.
     #[serde(default)]
     pub maintenance: Vec<Maintenance>,
+    /// The network's urgent notices (0.5.2's U): each shown once as a toast.
+    #[serde(default)]
+    pub notices: Vec<AdminNotice>,
+}
+
+/// An urgent notice from the network's admins ("we're looking into connection problems").
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct AdminNotice {
+    pub id: i64,
+    pub version: i64,
+    #[serde(default)]
+    pub kind: String,
+    pub text: String,
+}
+
+/// How long a notice's toast shows, from when this game first saw it.
+pub const NOTICE_SHOWN: Duration = Duration::from_secs(20);
+
+/// The notice to show now, if any: each one (a version of it) for [`NOTICE_SHOWN`] from when
+/// this game first saw it, then not again; a heading and its text.
+pub fn notice_to_show(notices: &[AdminNotice], now: Instant) -> Option<(&'static str, String)> {
+    static SEEN: std::sync::Mutex<Vec<((i64, i64), Instant)>> = std::sync::Mutex::new(Vec::new());
+    let mut seen = SEEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for n in notices {
+        if !seen.iter().any(|(k, _)| *k == (n.id, n.version)) {
+            if seen.len() >= 64 {
+                seen.remove(0);
+            }
+            seen.push(((n.id, n.version), now));
+        }
+    }
+    notices.iter().find_map(|n| {
+        let (_, first) = seen.iter().find(|(k, _)| *k == (n.id, n.version))?;
+        (now.duration_since(*first) < NOTICE_SHOWN).then(|| {
+            let heading = match n.kind.as_str() {
+                "issue" => "Known issue",
+                "fixed" => "Fixed",
+                _ => "News from the server",
+            };
+            (heading, n.text.clone())
+        })
+    })
 }
 
 /// A maintenance window (Unix seconds), as the server heard it from the coordinator.
@@ -852,6 +894,16 @@ fn refresh_now() {
             .map(|m| Maintenance {
                 note: clip(&m.note, MAX_TEXT),
                 ..m
+            })
+            .collect(),
+        notices: i
+            .notices
+            .into_iter()
+            .take(3)
+            .map(|n| AdminNotice {
+                text: clip(&n.text, MAX_TEXT),
+                kind: clip(&n.kind, MAX_NAME),
+                ..n
             })
             .collect(),
     });

@@ -5950,6 +5950,10 @@ async fn urgent_notices_reach_every_launcher_until_ended() {
     assert_eq!(dir["notices"][0]["text"], "We're looking into connection problems");
     assert_eq!(dir["notices"][0]["kind"], "issue");
     let version = dir["notices"][0]["version"].as_i64().unwrap();
+    // Servers hear it in their heartbeat answer, for their games' overlay.
+    let a = t.join("server-a").await;
+    let (status, hb) = t.call("POST", "/v1/heartbeat", Some(&a), Some(json!({ "name": "server-a", "host": "server-a", "listed": true }))).await;
+    assert_eq!((status, hb["notices"][0]["id"].as_i64()), (StatusCode::OK, Some(id)), "{hb}");
 
     // Edited: a new version, so launchers that closed it show it again.
     let (status, _) = admin_call(&r, "PUT", &format!("/api/notices/{id}"), &cookie, Some(json!({ "text": "Fixed: matches connect again", "kind": "fixed", "hours": 6 }))).await;

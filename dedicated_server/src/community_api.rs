@@ -246,6 +246,11 @@ fn info(cfg: CommunityApiConfig) -> Value {
             if !windows.is_empty() {
                 info["maintenance"] = json!(windows);
             }
+            // The network's urgent notices: the game's overlay shows each once (0.5.2's U).
+            let notices = crate::federation::notices();
+            if !notices.is_empty() {
+                info["notices"] = json!(notices);
+            }
         }
     }
     if let Some((ports, host)) = PUBLIC.get() {

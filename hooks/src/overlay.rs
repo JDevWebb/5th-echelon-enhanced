@@ -1021,12 +1021,23 @@ impl MyRenderLoop {
     }
 
     /// From 10 minutes before a maintenance window (this server's or the network's): a toast,
-    /// under an invite's when both show.
+    /// under an invite's when both show. Otherwise, a notice from the network's admins its
+    /// first 20 seconds (0.5.2's U).
     fn show_maintenance(&self, ui: &Ui) {
         if self.ui_state == UiState::Show || self.invite_notification.is_some() {
             return;
         }
-        let Some((heading, text)) = self.maintenance_warning() else { return };
+        let Some((heading, text)) = self.maintenance_warning() else {
+            let Some((heading, text)) = self.data.server.as_ref().and_then(|s| crate::community::notice_to_show(&s.notices, std::time::Instant::now())) else {
+                return;
+            };
+            self.toast(ui, "##fe-notice", None, || {
+                self.heading_colored(ui, if heading == "Known issue" { pal().warn } else { pal().accent }, heading);
+                let _c = ui.push_style_color(StyleColor::Text, pal().muted);
+                ui.text_wrapped(&text);
+            });
+            return;
+        };
         self.toast(ui, "##fe-maintenance", None, || {
             self.heading_colored(ui, pal().warn, &heading);
             let _c = ui.push_style_color(StyleColor::Text, pal().muted);

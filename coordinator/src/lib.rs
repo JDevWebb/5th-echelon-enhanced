@@ -1599,6 +1599,11 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, body: axum::body
         Ok(windows) => answer["maintenance"] = windows,
         Err(e) => return internal(e),
     }
+    // Urgent notices to every player (0.5.2's U), for its games' overlay.
+    match c.live_notices(identity::now()).await {
+        Ok(n) => answer["notices"] = json!(n),
+        Err(e) => return internal(e),
+    }
     // Whether it may reboot now for the system's updates (0.5.2, reboots.rs).
     if let Some(state) = &listing.reboot {
         match c.reboot_answer(&server, state, identity::now()).await {

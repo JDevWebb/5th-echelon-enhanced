@@ -328,6 +328,35 @@ fn note_maintenance(answer: &Value) {
     *MAINTENANCE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = windows;
 }
 
+/// The network's urgent notices the coordinator last told of (0.5.2's U), for `/api/info`: the
+/// game's overlay shows each once.
+static NOTICES: Mutex<Vec<Value>> = Mutex::new(Vec::new());
+
+/// Keeps a heartbeat answer's notices, checked (none from an older coordinator).
+fn note_notices(answer: &Value) {
+    let notices: Vec<Value> = answer["notices"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(3)
+        .filter_map(|n| {
+            let text = printable(n["text"].as_str()?, 200);
+            let kind = match n["kind"].as_str()? {
+                k @ ("issue" | "fixed") => k,
+                _ => "info",
+            };
+            let (id, version) = (n["id"].as_i64()?, n["version"].as_i64()?);
+            (!text.trim().is_empty()).then(|| json!({ "id": id, "version": version, "kind": kind, "text": text }))
+        })
+        .collect();
+    *NOTICES.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = notices;
+}
+
+/// The network's live urgent notices, for `/api/info`.
+pub fn notices() -> Vec<Value> {
+    NOTICES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+}
+
 /// The maintenance windows not over yet at `now`, for `/api/info`.
 pub fn maintenance(now: i64) -> Vec<Value> {
     let windows = MAINTENANCE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -745,6 +774,7 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                         last_heartbeat = Some(Instant::now());
                         coordinator_seen_now();
                         note_maintenance(&answer);
+                        note_notices(&answer);
                         // A reboot the system's updates need, when the coordinator says (reboot.rs).
                         crate::reboot::answer(&logger, answer["reboot"]["why"].as_str(), identity::now());
                         // A closed window just started: everyone but its testers is signed out.
@@ -1499,6 +1529,22 @@ async fn pull(logger: &Logger, storage: &Storage, client: &Coordinator<'_>, user
 
 #[cfg(test)]
 mod tests {
+
+    /// The coordinator's notices kept for /api/info: three at most, checked, unknown kinds as news.
+    #[test]
+    fn notices_from_the_heartbeat_are_kept_checked() {
+        super::note_notices(&serde_json::json!({ "notices": [
+            { "id": 1, "version": 5, "kind": "issue", "text": "We know" },
+            { "id": 2, "version": 6, "kind": "odd", "text": "News" },
+            { "id": 3, "version": 7, "kind": "info", "text": "  " },
+            { "id": 4, "kind": "info", "text": "no version" },
+        ] }));
+        let kept = super::notices();
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        assert_eq!((kept[0]["kind"].as_str(), kept[1]["kind"].as_str()), (Some("issue"), Some("info")));
+        super::note_notices(&serde_json::json!({}));
+        assert!(super::notices().is_empty(), "an answer without them clears them");
+    }
 
     #[test]
     fn a_report_the_coordinator_wont_take_is_dropped_after_its_tries() {
