@@ -288,6 +288,33 @@ impl Throttle {
     }
 }
 
+/// The fragment ids of a message sent in `count` packets, in order: 1, 2, 3, ... for the
+/// leading ones and 0 for the last (a message in one packet is just 0), as PRUDP numbers them
+/// and `add_fragment` expects. Past 255 they count on from 1 again.
+fn fragment_ids(count: usize) -> impl Iterator<Item = u8> {
+    #[allow(clippy::cast_possible_truncation)] // i % 255 < 255
+    (0..count).map(move |i| if i + 1 == count { 0 } else { (i % 255) as u8 + 1 })
+}
+
+/// An RMC reply's protocol and method, for the log (none for an error reply or a short one).
+fn rmc_reply_head(payload: &[u8]) -> Option<(u16, u32)> {
+    let mut at = 4; // the size
+    let protocol = match *payload.get(at)? {
+        0x7f => {
+            at += 2;
+            u16::from_le_bytes([*payload.get(at - 1)?, *payload.get(at)?])
+        }
+        p => u16::from(p),
+    };
+    at += 1;
+    if *payload.get(at)? != 1 {
+        return None;
+    }
+    at += 1 + 4; // the status, the call id
+    let method = u32::from_le_bytes(payload.get(at..at + 4)?.try_into().ok()?) & !0x8000;
+    Some((protocol, method))
+}
+
 /// A token bucket: `burst` at once, refilled at `rate` a second.
 struct Bucket {
     at: Instant,
@@ -505,6 +532,8 @@ where
     echo_sweep: Instant,
     /// Log lines for what anyone can send.
     noise: Throttle,
+    /// For the "Large reply" lines (replies of 3+ packets).
+    large_replies: Throttle,
     /// Whether only connections that signed in (with a ticket) are handled: the secure
     /// service's. Everyone else's data is dropped unread.
     pub sign_in_required: bool,
@@ -532,6 +561,7 @@ where
             echoes: HashMap::default(),
             echo_sweep: Instant::now(),
             noise: Throttle::default(),
+            large_replies: Throttle::default(),
             sign_in_required: false,
             anonymous_calls: HashMap::default(),
             anonymous_sweep: Instant::now(),
@@ -843,13 +873,23 @@ where
         match resp {
             Some(Ok(payload)) => {
                 let chunks = payload.chunks(MAX_PAYLOAD_SIZE);
-                for (fid, chunk) in (0..chunks.len()).rev().zip(chunks) {
+                let count = chunks.len();
+                let (protocol, method) = rmc_reply_head(&payload).unwrap_or_default();
+                debug!(logger, "Reply"; "bytes" => payload.len(), "packets" => count, "protocol" => protocol, "method" => method);
+                // Replies of 3+ packets are the ones whose numbering was backwards before 0.5.2:
+                // logged in production so we know which calls send them.
+                if count >= 3 {
+                    if let Some(skipped) = self.large_replies.allow() {
+                        info!(logger, "Large reply"; "bytes" => payload.len(), "packets" => count, "protocol" => protocol, "method" => method, "similar_skipped" => skipped);
+                    }
+                }
+                for (fid, chunk) in fragment_ids(count).zip(chunks) {
                     let resp = QPacket {
                         source: packet.destination,
                         destination: packet.source,
                         packet_type: PacketType::Data,
                         payload: chunk.to_vec(),
-                        fragment_id: Some(fid as u8),
+                        fragment_id: Some(fid),
                         ..Default::default()
                     };
                     if let Err(e) = self.send_response(&logger, &client, resp, ci) {
@@ -1493,6 +1533,49 @@ mod tests {
         // Unfragmented messages around it.
         assert_eq!(whole(add_fragment(&mut ci, fragment(17, 0, b"h"))), Some((17, b"h".to_vec(), 1)));
         assert!(ci.packet_fragments.is_empty() && ci.held_last_fragments.is_empty());
+    }
+
+    /// A reply is numbered as PRUDP numbers fragments: 1, 2, 3 ... and 0 for the last (before
+    /// 0.5.2 it went 3, 2, 1, 0, which a game drops: Cross-Com's Future Soldier stalled on it).
+    #[test]
+    fn fragments_are_numbered_up_and_the_last_is_zero() {
+        assert_eq!(fragment_ids(1).collect::<Vec<_>>(), vec![0]);
+        assert_eq!(fragment_ids(2).collect::<Vec<_>>(), vec![1, 0]);
+        assert_eq!(fragment_ids(4).collect::<Vec<_>>(), vec![1, 2, 3, 0]);
+        let many: Vec<u8> = fragment_ids(258).collect();
+        assert_eq!(&many[253..], &[254, 255, 1, 2, 0]);
+        assert!(!many[..257].contains(&0));
+    }
+
+    /// A reply of 11 packets, numbered as we send it, comes out whole through our own receiver.
+    #[test]
+    fn a_long_reply_comes_back_whole() {
+        let mut ci = client(Some(1000), 3074);
+        let payload: Vec<u8> = (0..10_500u32).map(|i| (i % 251) as u8).collect();
+        let chunks = payload.chunks(MAX_PAYLOAD_SIZE);
+        let n = chunks.len();
+        let mut out = None;
+        for (i, (fid, chunk)) in fragment_ids(n).zip(chunks).enumerate() {
+            out = whole(add_fragment(&mut ci, fragment(100 + i as u16, fid, chunk)));
+        }
+        assert_eq!(out, Some((100 + n as u16 - 1, payload, n)));
+    }
+
+    /// The log line's protocol and method come from the reply's RMC header.
+    #[test]
+    fn a_replys_protocol_and_method_are_read() {
+        let reply = |proto: &[u8], status: u8| {
+            let mut b = vec![0, 0, 0, 0];
+            b.extend_from_slice(proto);
+            b.push(status);
+            b.extend_from_slice(&7u32.to_le_bytes()); // call id
+            b.extend_from_slice(&(12u32 | 0x8000).to_le_bytes());
+            b
+        };
+        assert_eq!(rmc_reply_head(&reply(&[109], 1)), Some((109, 12)));
+        assert_eq!(rmc_reply_head(&reply(&[0x7f, 0x34, 0x12], 1)), Some((0x1234, 12)));
+        assert_eq!(rmc_reply_head(&reply(&[109], 0)), None, "an error reply has no method");
+        assert_eq!(rmc_reply_head(&[0, 0]), None);
     }
 
     /// A leftover of a message that never completed isn't mixed into the next one, and
