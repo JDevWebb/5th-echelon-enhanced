@@ -1,7 +1,9 @@
 //! 0.5.2's P1 (report only): the cheat switches on this player's own character and its
 //! controller, read every few seconds in a match under way. Any of them on is told the server
 //! once a match (`fair_play`, check `pawn`): god mode, invincibility, ghost mode, invisibility,
-//! blocked damage, unlimited inventory. No stock multiplayer character turns them on.
+//! blocked damage, unlimited inventory, overridden health tuning; and health over the
+//! character's own starting health (EPawn.InitialHealth). No stock multiplayer character turns
+//! them on or goes over it.
 //!
 //! Where they are: a class's bools share 32-bit words, in declaration order (Blacklist.umd's
 //! package order), one bit each, from the class's first bool word. Most of these have no name
@@ -17,6 +19,7 @@ use std::time::Instant;
 use tracing::info;
 use tracing::warn;
 
+use crate::dataversion::read;
 use crate::dataversion::read_u32;
 use crate::pawns;
 use crate::round_state as rs;
@@ -27,7 +30,7 @@ const SWITCHES: [(&str, usize, &[(usize, &str)]); 3] = [
     (
         "EPawn",
         85,
-        &[(0, "m_bInvincible"), (3, "m_bGodMode"), (4, "m_bGodModeOverride"), (5, "m_bGhostMode"), (45, "bDamageInsensitive")],
+        &[(0, "m_bInvincible"), (1, "m_bOverrideHealthTuning"), (3, "m_bGodMode"), (4, "m_bGodModeOverride"), (5, "m_bGhostMode"), (45, "bDamageInsensitive")],
     ),
     ("CharacterControl", 39, &[(30, "m_bUnlimitedInventory")]),
 ];
@@ -87,6 +90,10 @@ fn on(places: &[Place], character: usize, controller: Option<usize>) -> Vec<&'st
 pub struct PawnSwitches {
     me: String,
     places: Option<Vec<Place>>,
+    /// EPawn.InitialHealth's offset (found by name).
+    initial_health: Option<u16>,
+    /// Reads in a row with health over it.
+    over: u32,
     looked: Option<Instant>,
     looks: u32,
     read: Option<Instant>,
@@ -100,6 +107,8 @@ impl PawnSwitches {
         Self {
             me,
             places: None,
+            initial_health: None,
+            over: 0,
             looked: None,
             looks: 0,
             read: None,
@@ -133,7 +142,10 @@ impl pawns::Watcher for PawnSwitches {
             self.looked = Some(now);
             self.looks += 1;
             let places = look_up();
-            info!("Character switches: {} of 10 found: {:?}", places.len(), places.iter().map(|p| (p.name, p.offset, p.mask)).collect::<Vec<_>>());
+            let names = rs::name_indices(&["Class", "EPawn", "InitialHealth"]);
+            self.initial_health = rs::class_named(&names, "EPawn").and_then(|c| rs::offset_in(&names, "InitialHealth", c));
+            info!("Character switches: starting health at {:?}", self.initial_health);
+            info!("Character switches: {} of 11 found: {:?}", places.len(), places.iter().map(|p| (p.name, p.offset, p.mask)).collect::<Vec<_>>());
             self.places = Some(places);
         }
         let Some(places) = self.places.as_ref().filter(|p| !p.is_empty()) else { return };
@@ -144,39 +156,47 @@ impl pawns::Watcher for PawnSwitches {
                 .iter()
                 .map(|c| {
                     let name = c.control.as_ref().and_then(|k| k.name.clone()).unwrap_or_default();
-                    format!("{name}({:?}{}): {:?}", c.peer, if self.own(c) { ", own" } else { "" }, on(places, c.object, pawns::controller_of(tables, c.object)))
+                    let initial = self.initial_health.and_then(|o| read::<i32>(c.object + usize::from(o)));
+                    format!(
+                        "{name}({:?}{}): {:?}, health {:?} of {initial:?}",
+                        c.peer,
+                        if self.own(c) { ", own" } else { "" },
+                        on(places, c.object, pawns::controller_of(tables, c.object)),
+                        c.health
+                    )
                 })
                 .collect();
             info!("Character switches: test: {}", all.join("; "));
         }
         let Some(own) = characters.iter().find(|c| self.own(c)) else { return };
-        // The gamebox's stand-in for a cheat (a test build only): `godmode` sets m_bGodMode on
-        // the own character.
         #[cfg(feature = "test-commands")]
-        if let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) {
-            if std::fs::read_to_string(&file).is_ok_and(|t| t.trim() == "godmode") {
-                let _ = std::fs::remove_file(&file);
-                if let Some(p) = places.iter().find(|p| p.name == "m_bGodMode") {
-                    let at = own.object + usize::from(p.offset);
-                    if let Some(w) = read_u32(at) {
-                        // SAFETY: the own character's bool word, read just before.
-                        unsafe { (at as *mut u32).write_unaligned(w | p.mask) };
-                        info!("Character switches: test: m_bGodMode set on the own character");
-                    }
-                }
-            }
-        }
+        test_command(places, own);
         if self.said {
             return;
         }
-        let switched = on(places, own.object, pawns::controller_of(tables, own.object));
-        if switched.is_empty() {
+        let mut found: Vec<String> = on(places, own.object, pawns::controller_of(tables, own.object)).into_iter().map(String::from).collect();
+        // Health over the character's own starting health (spies 90, mercs 170 in SvM: the
+        // gamebox, 14 Nov), on two reads in a row: no stock character goes over it. Pawn.Health
+        // is a copy: the game writes it back from its health system (m_pHealthSystem) within
+        // seconds (999 written once was 170 again by the next read), so only a cheat that keeps
+        // writing it shows here; one that edits the health system needs that object's layout.
+        let initial = self.initial_health.and_then(|o| read::<i32>(own.object + usize::from(o))).filter(|i| *i > 0);
+        match (own.health, initial) {
+            (Some(health), Some(initial)) if health > initial => {
+                self.over += 1;
+                if self.over >= 2 {
+                    found.push(format!("health {health} of {initial}"));
+                }
+            }
+            _ => self.over = 0,
+        }
+        if found.is_empty() {
             return;
         }
         self.said = true;
-        let detail = format!("own character with a cheat switch on: {}", switched.join(", "));
+        let detail = format!("own character: {}", found.join(", "));
         warn!("Character switches: {detail}");
-        let count = switched.len();
+        let count = found.len();
         let spawned = std::thread::Builder::new().name("fe-pawn-switch".into()).spawn(move || {
             #[allow(clippy::cast_precision_loss)]
             crate::api::fair_play_check("pawn", &detail, count as f64, hooks_config::running_under_wine());
@@ -184,6 +204,36 @@ impl pawns::Watcher for PawnSwitches {
         if let Err(e) = spawned {
             warn!("Character switches: couldn't report ({e})");
         }
+    }
+}
+
+/// The gamebox's stand-ins for a cheat (a test build only): `godmode` sets m_bGodMode on the own
+/// character, `health999` its health.
+#[cfg(feature = "test-commands")]
+fn test_command(places: &[Place], own: &pawns::Sample) {
+    let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else { return };
+    let Ok(text) = std::fs::read_to_string(&file) else { return };
+    match text.trim() {
+        "godmode" => {
+            let _ = std::fs::remove_file(&file);
+            if let Some(p) = places.iter().find(|p| p.name == "m_bGodMode") {
+                let at = own.object + usize::from(p.offset);
+                if let Some(w) = read_u32(at) {
+                    // SAFETY: the own character's bool word, read just before.
+                    unsafe { (at as *mut u32).write_unaligned(w | p.mask) };
+                    info!("Character switches: test: m_bGodMode set on the own character");
+                }
+            }
+        }
+        "health999" => {
+            let _ = std::fs::remove_file(&file);
+            if let Some(at) = pawns::health_at(own.object) {
+                // SAFETY: the own character's Health, an int the sampler reads every 100 ms.
+                unsafe { (at as *mut i32).write_unaligned(999) };
+                info!("Character switches: test: health set to 999 on the own character");
+            }
+        }
+        _ => {}
     }
 }
 

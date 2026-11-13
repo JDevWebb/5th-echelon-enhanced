@@ -284,6 +284,14 @@ pub struct Control {
     pub last_kill: Option<(usize, f32)>,
 }
 
+/// Where a character keeps its Pawn.Health (the gamebox's test commands).
+#[cfg(feature = "test-commands")]
+pub fn health_at(character: usize) -> Option<usize> {
+    let names = rs::name_indices(&["Class", "Pawn", "Health"]);
+    let class = rs::class_named(&names, "Pawn")?;
+    rs::offset_in(&names, "Health", class).map(|o| character + usize::from(o))
+}
+
 /// A character's controller, when it's a `CharacterControl`.
 pub fn controller_of(t: &Tables, character: usize) -> Option<usize> {
     let controller = read_u32(character + usize::from(t.controller?))? as usize;
