@@ -130,6 +130,12 @@ pub fn tunnel_auth(data: &[u8]) -> Option<String> {
     .then_some(name)
 }
 
+/// Sets the helper's keys for a test (as a test of its own does), the same in every test.
+#[cfg(test)]
+pub(crate) fn test_keys() {
+    let _ = KEYS.set(Keys { ticket: [1; 32], cookie: [2; 32] });
+}
+
 /// Days a ticket works: the day it was issued and the next six. The game
 /// gets a new one each time it signs in to the API (at every start), so
 /// only a game left running for a week loses its relay; a ticket someone

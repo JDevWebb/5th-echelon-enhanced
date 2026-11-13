@@ -315,4 +315,59 @@ mod tests {
         let next = tokio::time::timeout(Duration::from_secs(5), ws.next()).await.unwrap();
         assert!(!matches!(next, Some(Ok(Ws::Binary(_)))));
     }
+
+    /// T5: a tunnel end to end. Proven with a signed probe and its ticket, a datagram for the
+    /// sign-in goes to the service's port from the tunnel's own socket, and the service's answer
+    /// comes back down the tunnel marked as the sign-in's; the tunnel is registered by its loopback
+    /// port with the player's real address (Caddy's), and gone when it closes.
+    #[tokio::test]
+    async fn a_proven_tunnel_carries_datagrams_both_ways() {
+        crate::nat_helper::test_keys();
+        let logger = slog::Logger::root(slog::Discard, slog::o!());
+        // The sign-in service: answers each datagram with "re:" and it.
+        let service = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let login = service.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 1500];
+            while let Ok((n, from)) = service.recv_from(&mut buf).await {
+                let mut answer = b"re:".to_vec();
+                answer.extend_from_slice(&buf[..n]);
+                let _ = service.send_to(&answer, from).await;
+            }
+        });
+        let services = Services { login, secure: 1, helper: 2 };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let at = listener.local_addr().unwrap();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await.unwrap();
+            let _ = done_tx.send(handle(&logger, stream, peer, services).await);
+        });
+        // The proof: a probe for the name with its ticket for this session key, signed with it.
+        let key = identity::Identity::generate();
+        let name = "TunnelTester";
+        let ticket = crate::nat_helper::ticket_for(name, Some(&key.public_key())).unwrap();
+        let (nonce, cookie) = (7u32, [0u8; 16]);
+        let mut probe = nat_proto::Message::Probe { flags: 0, nonce, mapping: None, name: name.into(), ticket, cookie, rtt_ms: None, reach: None }.encode();
+        nat_proto::add_key(&mut probe, &key.public_key(), &key.sign_bytes(&nat_proto::probe_message(nonce, &cookie, name)));
+        let request = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(format!("ws://{at}/tunnel")).unwrap();
+        let mut request = request;
+        request.headers_mut().insert("x-forwarded-for", "203.0.113.77".parse().unwrap());
+        let (mut ws, _) = tokio_tungstenite::client_async(request, tokio::net::TcpStream::connect(at).await.unwrap()).await.unwrap();
+        ws.send(Ws::Binary(tunnel::frame(tunnel::AUTH, &probe).into())).await.unwrap();
+        ws.send(Ws::Binary(tunnel::frame(tunnel::LOGIN, b"hello").into())).await.unwrap();
+        let answer = loop {
+            match tokio::time::timeout(Duration::from_secs(5), ws.next()).await.unwrap() {
+                Some(Ok(Ws::Binary(data))) => break data,
+                Some(Ok(_)) => {}
+                other => panic!("no answer: {other:?}"),
+            }
+        };
+        assert_eq!(tunnel::parse(&answer), Some((tunnel::LOGIN, &b"re:hello"[..])));
+        assert!(open().by_port.values().any(|ip| *ip == "203.0.113.77".parse::<IpAddr>().unwrap()), "kept by its loopback port, with the real address");
+        ws.close(None).await.unwrap();
+        let ended = tokio::time::timeout(Duration::from_secs(5), done_rx).await.unwrap().unwrap();
+        assert!(ended.is_ok(), "{ended:?}");
+        assert!(!open().by_port.values().any(|ip| *ip == "203.0.113.77".parse::<IpAddr>().unwrap()), "gone when it closed");
+    }
 }
