@@ -136,6 +136,10 @@ pub mod probe_flags {
 pub mod reply_flags {
     /// The player is relayed: `advertise` is a relay address.
     pub const RELAYED: u8 = 1;
+    /// Not registered: another live player is registered from this address and port, and this
+    /// probe says the router forwards that port to this PC (two PCs behind one router, the
+    /// forward colliding with the other's traffic, 0.5.2's J7). Forward another port.
+    pub const PORT_TAKEN: u8 = 2;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

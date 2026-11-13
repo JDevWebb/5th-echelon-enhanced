@@ -37,6 +37,9 @@ use slog::Logger;
 /// A player is forgotten after this long without a probe or relayed packet
 /// (the hook probes every 20 s).
 const EXPIRY: Duration = Duration::from_secs(90);
+/// A registration heard from within this (a keepalive is every 20 s) is a live game: another
+/// name probing from its address and port is another PC, not this one restarted (J7).
+const LIVE_AT_ADDRESS: Duration = Duration::from_secs(25);
 /// Other ports a player's relayed data may come from (see [`Peer::aliases`]); the oldest goes.
 const MAX_ALIASES: usize = 4;
 /// Packets for a player go back to where their data last came from, for this long after.
@@ -534,6 +537,23 @@ impl Table {
             && known.and_then(|o| o.vport).or_else(|| self.free_vport_for(src)).is_none()
         {
             return None;
+        }
+        // Another player live at this very address and port, and this one says the router
+        // forwards that port to it: two PCs behind one router, the forward colliding with the
+        // other's traffic (J7). The live one stays; this one is told to forward another port.
+        if let Some(other) = self.by_real.get(&src).and_then(|id| self.peers.get(id)) {
+            if other.name != key && mapping == Some(src) && now.saturating_duration_since(other.last_seen) < LIVE_AT_ADDRESS {
+                return Some(Message::ProbeReply {
+                    nonce,
+                    observed: src,
+                    advertise: src,
+                    flags: reply_flags::PORT_TAKEN,
+                    relay_ip: self.relay_ip,
+                    relay_ports: self.cfg.relay_ports,
+                    cookie: [0; 16],
+                    tag: [0; 8],
+                });
+            }
         }
         let old = self.by_name.get(&key).copied().and_then(|id| self.take(id).map(|p| (id, p)));
         // Someone else registered from this address before (a restarted game
@@ -2136,6 +2156,15 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
                 let why = t.by_name.get(&identity::name_key(&name)).and_then(|id| t.peers.get(id)).map_or("", |p| p.why);
                 (reply, t.len(), t.relayed(), new || moved, why)
             };
+            if let Message::ProbeReply { flags: rf, .. } = &reply {
+                if rf & reply_flags::PORT_TAKEN != 0 {
+                    if crate::clients::worth_saying(&format!("port-taken/{src}")) {
+                        info!(logger, "NAT helper: {name} at {src} says its router forwards that port to it, but another player is live there: told to forward another (said once an hour)");
+                    }
+                    let _ = socket.send_to(&reply.encode(), src);
+                    continue;
+                }
+            }
             if new {
                 if let Message::ProbeReply { advertise, flags: rf, .. } = &reply {
                     crate::reports::nat_registered(&name, rf & reply_flags::RELAYED != 0);
@@ -2419,6 +2448,25 @@ mod tests {
         assert_eq!(why(&t, "WhyMapped"), Some("failed_joins"));
         game_signed_out("WhyMapped");
         assert!(!forced().contains_key(&identity::name_key("WhyMapped")), "for the session only");
+    }
+
+    /// Two PCs behind one router (J7): a second player probing from the address and port a live
+    /// one is registered at, saying its router forwards that port to it, is told the port is
+    /// taken; the live one stays. A game restarted with another account (the old one gone quiet)
+    /// takes the address as before.
+    #[test]
+    fn a_second_pc_forwarded_the_same_port_is_told_it_is_taken() {
+        let now = Instant::now();
+        let mut t = table(RelayMode::Auto);
+        let at = a("198.51.100.20:13000");
+        t.probe(at, 0, 1, None, "HomeOne", now);
+        let reply = t.probe(at, probe_flags::HAS_MAPPING, 2, Some(at), "HomeTwo", now + Duration::from_secs(5));
+        assert!(matches!(reply, Message::ProbeReply { flags, .. } if flags & reply_flags::PORT_TAKEN != 0));
+        assert!(t.advertised_for("HomeOne", (*at.ip()).into()).is_some(), "the live one stays");
+        assert!(t.advertised_for("HomeTwo", (*at.ip()).into()).is_none());
+        let later = now + Duration::from_secs(60);
+        let reply = t.probe(at, probe_flags::HAS_MAPPING, 3, Some(at), "HomeTwo", later);
+        assert!(matches!(reply, Message::ProbeReply { flags, .. } if flags & reply_flags::PORT_TAKEN == 0), "the first went quiet: a restart");
     }
 
     #[test]
