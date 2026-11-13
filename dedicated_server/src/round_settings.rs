@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 /// The most settings taken from one game, and the longest name.
-const MOST: usize = 32;
+const MOST: usize = 48;
 const LONGEST: usize = 48;
 const MOST_HOSTS: usize = 20_000;
 

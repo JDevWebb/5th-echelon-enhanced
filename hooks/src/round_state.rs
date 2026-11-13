@@ -127,7 +127,7 @@ const ROUND_STATES: [&str; 7] = [
 /// respawn times with hacks to go). Each game reads them; the server compares a guest's with its
 /// host's (R4), so a local edit shows. The switches (friendly fire, loadouts, classic, sudden
 /// death) are BoolProperty bits: they wait for the bit mask's place (R1's RE).
-const SETTINGS: [&str; 28] = [
+const SETTINGS: [&str; 34] = [
     "m_fGenericRespawnTime",
     "m_fAutoRespawnTime",
     "m_fCurrentRoundTimeLimit",
@@ -158,7 +158,19 @@ const SETTINGS: [&str; 28] = [
     "m_fRFDMediumRange",
     "m_fThreatIndicatorRadius",
     "m_fPlayerNameDistance",
+    // R1's switches (BoolProperty: a bit of the word at the property's offset, the bit its object
+    // keeps at +0x80; found on the gamebox, 2026-11-14), as 1 or 0.
+    "m_bIsFriendlyFireEnabled",
+    "m_bIsFriendlyExplosionsEnabled",
+    "m_bClassicMode",
+    "m_bRandomLoadout",
+    "m_bRLPerRespawn",
+    "m_bSuddenDeathEnabled",
 ];
+
+/// Where a BoolProperty object keeps its bit mask (found on the gamebox, 2026-11-14: friendly fire
+/// 0x1 and friendly explosions 0x2 in one word, classic 0x80, sudden death 0x20, ...).
+pub(crate) const BOOL_MASK_AT: usize = 0x80;
 
 const MISSION_STATES: [&str; 3] = ["CoopMissionState_None", "CoopMissionState_InGame", "CoopMissionState_Results"];
 
@@ -478,12 +490,91 @@ fn settings_of(found: &Found, object: usize) -> std::collections::BTreeMap<Strin
         let Some(offset) = read::<u16>(prop + 0x3a) else { continue };
         let at = object + usize::from(offset);
         #[allow(clippy::cast_precision_loss)]
-        let value = if name.starts_with("m_f") { read::<f32>(at) } else { read::<i32>(at).map(|v| v as f32) };
+        let value = if name.starts_with("m_f") {
+            read::<f32>(at)
+        } else if name.starts_with("m_b") {
+            // A switch: its bit of the word (one bit only, or it isn't a mask).
+            read_u32(prop + BOOL_MASK_AT)
+                .filter(|m| m.count_ones() == 1)
+                .and_then(|mask| read_u32(at).map(|w| if w & mask != 0 { 1.0 } else { 0.0 }))
+        } else {
+            read::<i32>(at).map(|v| v as f32)
+        };
         if let Some(v) = value.filter(|v| v.is_finite()) {
             out.insert((*name).to_string(), v);
         }
     }
     out
+}
+
+/// The switches 0.5.2 wants to read (R1, W2, P1), for the gamebox's `bools` command: where each
+/// BoolProperty object keeps its bit mask isn't known yet. m_bForceEndRound's is (bit 27 at 852),
+/// so the word holding 1 << 27 in its property object is where the mask is.
+#[cfg(feature = "test-commands")]
+const BOOLS: [&str; 16] = [
+    "m_bForceEndRound",
+    "m_bIsFriendlyFireEnabled",
+    "m_bIsFriendlyExplosionsEnabled",
+    "m_bClassicMode",
+    "m_bRandomLoadout",
+    "m_bRLPerRespawn",
+    "m_bSuddenDeathEnabled",
+    "m_bFriendlyFire",
+    "m_bUnlimitedAmmo",
+    "m_bNoReloadNecessary",
+    "m_bInfiniteBulletPenetration",
+    "m_bDisableSpread",
+    "m_bIsFullyAccurate",
+    "m_bBlockDamage",
+    "m_bInvisible",
+    "m_bUnlimitedInventory",
+];
+
+/// The gamebox's `changes` (D1's allowlist): which 32-bit words of the live match manager's first
+/// 4 KB changed since the last `changes`, by offset, with their values before and after.
+#[cfg(feature = "test-commands")]
+fn test_changes(manager: usize) {
+    static LAST: std::sync::Mutex<Option<(usize, Vec<u32>)>> = std::sync::Mutex::new(None);
+    let now: Vec<u32> = (0..1024).map(|i| read_u32(manager + i * 4).unwrap_or(0)).collect();
+    let mut last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    match last.as_ref() {
+        Some((at, before)) if *at == manager => {
+            let changed: Vec<String> = before
+                .iter()
+                .zip(&now)
+                .enumerate()
+                .filter(|(_, (a, b))| a != b)
+                .map(|(i, (a, b))| format!("{}:{a:#x}->{b:#x}", i * 4))
+                .collect();
+            info!("Changes: test: {} words changed: {}", changed.len(), changed.join(" "));
+        }
+        _ => info!("Changes: test: first look at the manager {manager:#x}"),
+    }
+    *last = Some((manager, now));
+}
+
+/// The gamebox's `bools`: each switch's property objects (owner, offset at +0x3a, and the words
+/// of the object from +0x30), and the live manager's word at the offset, for finding the mask.
+#[cfg(feature = "test-commands")]
+fn test_bools(manager: usize) {
+    let mut wanted: Vec<&'static str> = BOOLS.to_vec();
+    wanted.push("BoolProperty");
+    let names = name_indices(&wanted);
+    info!("Bools: test: {} of {} names found", names.len(), wanted.len());
+    for name in BOOLS {
+        let Some(index) = names.get(name) else {
+            info!("Bools: test: {name}: no name");
+            continue;
+        };
+        for p in named(pack(*index, 0)) {
+            let owner = read_u32(p + 0x18).and_then(|o| read_u32(o as usize + 0x20)).and_then(name_text).unwrap_or_default();
+            let class = read_u32(p + 0x24).and_then(|c| read_u32(c as usize + 0x20)).and_then(name_text).unwrap_or_default();
+            let offset = read::<u16>(p + 0x3a).unwrap_or(0);
+            let words: Vec<String> = (0..40).map(|i| format!("{:#x}", read_u32(p + i * 4).unwrap_or(0))).collect();
+            let live = (owner.contains("MatchManager")).then(|| read_u32(manager + usize::from(offset)).map(|w| format!("{w:#010x}"))).flatten();
+            info!("Bools: test: {name} on {owner} ({class}) at {offset}: +0x00.. {words:?}; the manager's word {live:?}");
+        }
+    }
 }
 
 /// `m_bForceEndRound`'s bitfield and bit in an adversarial match manager (test command `end-round`).
@@ -514,6 +605,16 @@ fn test_setting(found: &Found, object: usize, adversarial: bool) {
             info!("Match settings: test: offsets: {name} {at:?}");
         }
         crate::pawns::test_offsets();
+        return;
+    }
+    if text.trim() == "changes" {
+        let _ = std::fs::remove_file(&file);
+        test_changes(object);
+        return;
+    }
+    if text.trim() == "bools" {
+        let _ = std::fs::remove_file(&file);
+        test_bools(object);
         return;
     }
     if text.trim() == "end-round" && adversarial {

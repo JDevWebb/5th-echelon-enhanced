@@ -38,9 +38,16 @@ impl Beats {
     /// `user`'s game said whether its match is under way: how long its heartbeats have been
     /// silent, the first time a gap reaches [`SILENT_FOR`] in a match under way.
     pub fn match_said(&mut self, user: u32, under_way: bool, now: Instant) -> Option<Duration> {
+        // Between rounds (or out of a match) no beats are due: the watch starts again with the
+        // next round's first beat. A beat from an earlier match never counts against this one
+        // (the gamebox, 14 Nov: copies flagged 13 s into a new match).
+        if !under_way {
+            self.last.remove(&user);
+            return None;
+        }
         let (at, _, noted) = self.last.get_mut(&user)?;
         let silent = now.duration_since(*at);
-        if !under_way || silent < SILENT_FOR || *noted {
+        if silent < SILENT_FOR || *noted {
             return None;
         }
         *noted = true;
@@ -71,12 +78,24 @@ mod tests {
         assert!(b.beat(5, 1, t));
         assert!(!b.beat(5, 2, t + Duration::from_secs(5)), "too soon");
         assert_eq!(b.match_said(5, true, t + Duration::from_secs(60)), None);
-        assert_eq!(b.match_said(5, false, t + SILENT_FOR * 2), None, "not in a match: no beats expected");
         assert_eq!(b.match_said(5, true, t + SILENT_FOR), Some(SILENT_FOR));
         assert_eq!(b.match_said(5, true, t + SILENT_FOR * 2), None, "once per gap");
         assert!(b.beat(5, 3, t + SILENT_FOR * 3), "it came back");
         assert_eq!(b.match_said(5, true, t + SILENT_FOR * 3 + Duration::from_secs(10)), None);
         b.signed_out(5);
         assert_eq!(b.match_said(5, true, t + SILENT_FOR * 9), None);
+    }
+
+    /// The round ends (or the match): the next round's watch starts with its first beat, so a
+    /// beat from before never makes a new round look silent.
+    #[test]
+    fn a_beat_from_an_earlier_round_never_counts() {
+        let mut b = Beats::default();
+        let t = Instant::now();
+        assert!(b.beat(7, 1, t));
+        assert_eq!(b.match_said(7, false, t + Duration::from_secs(60)), None, "between rounds");
+        assert_eq!(b.match_said(7, true, t + SILENT_FOR * 2), None, "a new round, no beat yet: not silent");
+        assert!(b.beat(7, 2, t + SILENT_FOR * 2));
+        assert_eq!(b.match_said(7, true, t + SILENT_FOR * 3), Some(SILENT_FOR));
     }
 }

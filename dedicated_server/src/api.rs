@@ -2167,7 +2167,7 @@ impl Misc for MyMisc {
     async fn fair_play_check(&self, request: Request<misc::FairPlayCheckRequest>) -> Result<Response<misc::FairPlayCheckResponse>, Status> {
         let user_id = caller(&request)?;
         let r = request.into_inner();
-        if !matches!(r.check.as_str(), "speed" | "code" | "self" | "heartbeat") {
+        if !matches!(r.check.as_str(), "speed" | "code" | "self" | "heartbeat" | "weapon") {
             return Err(Status::invalid_argument("Not a check"));
         }
         // The add-on's heartbeat in a match (0.5.2's H): kept, not an event of its own.
