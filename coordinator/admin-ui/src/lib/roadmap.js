@@ -6,25 +6,29 @@ export const PROMOTE_LANES = [['requested', 'Requested'], ['next', 'Next'], ['la
 export const AREAS = ['Launcher', 'Overlay', 'Server', 'Admin', 'Network'];
 export const SUGGESTION_STATUSES = [['new', 'New'], ['planned', 'Planned'], ['done', 'Done'], ['declined', 'Declined']];
 /** Statuses offered when editing an item (any other text up to 24 characters works too). */
-export const STATUS_HINTS = ['In 0.4.6', 'In 0.4.7', 'In 0.5.0', 'Building', 'Mocked up', 'Planned', 'Later', 'On hold', 'When data says', 'Requested', 'Done'];
+export const STATUS_HINTS = ['In 0.5.0', 'In 0.5.1', 'In 0.5.2', 'Building', 'Mocked up', 'Planned', 'Later', 'On hold', 'When data says', 'Requested', 'Done'];
 /** The lanes the project's roadmap fills; Requested is the players' and admins' own. */
 export const PROJECT_LANES = ['shipping', 'next', 'later'];
 
 /** Lane releases the project's roadmap sets. */
-export const STARTING_RELEASES = { shipping: '0.4.6', next: '0.5.0' };
+export const STARTING_RELEASES = { shipping: '0.5.1', next: '0.5.2' };
 
 /** The project's roadmap as it stands for this release (STARTING_RELEASES.shipping): what an
  * empty roadmap starts from, and what "Update from the project's roadmap" brings one up to.
  * Requested items start hidden from players. */
 export const STARTING_ITEMS = [
-  ['shipping', 'Chat and who\'s online', 'Global, lobby and friends chat in the launcher and the game\'s overlay, and who\'s online on your server. Community network only.', ['Launcher', 'Overlay'], 'In 0.4.6'],
-  ['shipping', 'Coordinator failover', 'The community network\'s new address, scbl.jdevwebb.net, so another server can take over if the coordinator\'s goes down.', ['Network'], 'In 0.4.6'],
-  ['shipping', 'Crash and freeze fixes', 'Four crashes in the game\'s own code fixed (big Spies vs Mercs lobbies, leaving a match, voice chat, its network code), a host migration that never ends, and freezes that say where they stuck.', ['Overlay'], 'In 0.4.6'],
-  ['next', 'Fewer relayed matches', 'Relayed players connect straight to hosts that have a port open.', ['Network'], 'Planned'],
+  ['shipping', 'Global matchmaking', 'One matchmaking server for everyone on the community network, so every search finds players from every region, and the game plays through the nearest of six relays: Falkenstein, Beauharnois, Silicon Valley, Santiago, Singapore and Sydney.', ['Server', 'Network'], 'In 0.5.0'],
+  ['shipping', 'Fair play', 'Bans that hold across the network and for the PC, the game reporting a sped-up clock or changed code, other players\' games noticing impossible movement, Report a player from the overlay, and match recordings for the admins. Report only: people decide.', ['Overlay', 'Server'], 'In 0.5.0'],
+  ['shipping', 'Crash and rubberbanding fixes', 'Six crashes in the game\'s own code patched, and the rubberbanding of long sessions in 0.4.6 and 0.4.7 found and fixed.', ['Overlay'], 'In 0.5.0'],
+  ['shipping', 'A redesigned launcher', 'One native app for Windows, Linux and the Steam Deck, in a dark or a light look, with a Play button that says whether you\'re ready, and the overlay to match.', ['Launcher', 'Overlay'], 'In 0.5.0'],
+  ['shipping', 'Matches, and lobbies that carry on', 'Every public match on a tab of its own, to join one, queue for a seat or start your own; the lobby carries on when its host leaves.', ['Launcher', 'Overlay'], 'In 0.5.0'],
+  ['shipping', 'Fixes after the move to one network', 'The ping shown is your nearest relay\'s, in the launcher and the overlay; chat scrolls in the overlay; typing the community network\'s address works.', ['Launcher', 'Overlay'], 'In 0.5.1'],
+  ['next', 'Fair play, round two', 'The match\'s rules, weapons, characters and names checked against the other players\' games, so changed values show up. Report only.', ['Overlay', 'Server'], 'Planned'],
+  ['next', 'Joins that work', 'The server checks a player can really be reached before connecting others to them directly, and uses the relay after failed joins; the launcher\'s connection test names the cause.', ['Network', 'Launcher'], 'Planned'],
+  ['next', 'Playing where UDP is blocked', 'A tunnel over port 443 for networks that block the game\'s own traffic.', ['Network'], 'Planned'],
+  ['next', 'Matchmaking failover', 'Another server takes over matchmaking if the matchmaking server goes down.', ['Network'], 'Planned'],
   ['next', 'Turning speed at high frame rates', 'The view turns slower with the mouse above 60 fps; a fix is being tested.', ['Launcher'], 'Building'],
-  ['later', 'Global matchmaking', 'One matchmaking server for everyone, relays kept near players, hosts ranked by ping.', ['Server', 'Network'], 'Later'],
-  ['later', 'Lobby browser', 'A list of every open public lobby (mode, map, players and seats), alongside global matchmaking.', ['Launcher', 'Overlay'], 'Later'],
-  ['later', 'Relays in US West and Brazil', 'Only once the Sessions page shows relayed players there.', ['Network'], 'When data says'],
+  ['later', 'More relays where players are', 'Only once the Sessions page shows relayed players far from the six.', ['Network'], 'When data says'],
   ['later', 'Code signing for Windows', 'A signed launcher and DLL, so antivirus programs stop guessing.', ['Release'], 'Later'],
   ['later', 'Settings of our own', 'Stop the two launchers resetting each other\'s settings.', ['Launcher'], 'On hold'],
   // Requests quote players: admins only until someone chooses to show them. (0.4.2's two are
