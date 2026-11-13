@@ -17,6 +17,8 @@
           <circle class="spot core" :cx="p.cx" :cy="p.cy" r="0.7" />
         </g>
       </template>
+      <!-- Each relayed player to the relay carrying them; direct players in one match to each other (0.5.2's A3). -->
+      <line v-for="l in links" :key="l.key" class="link" :class="l.kind" :x1="l.x1" :y1="l.y1" :x2="l.x2" :y2="l.y2"><title>{{ l.label }}</title></line>
       <rect v-for="s in serverSpots" :key="s.id" class="server" :x="s.cx - 1.6" :y="s.cy - 1.6" width="3.2" height="3.2" :transform="`rotate(45 ${s.cx} ${s.cy})`"><title>{{ s.name }} (server)</title></rect>
       <g v-for="g in groups" :key="g.key" class="player" :class="g.status" tabindex="0" @mouseenter="show(g, $event)" @focus="show(g, $event)" @blur="hover = null">
         <circle class="ring" :cx="g.cx" :cy="g.cy" :r="1.6 + Math.min(4, Math.sqrt(g.players.length) * 0.9)" />
@@ -34,7 +36,7 @@
           <span class="pill" :class="p.status === 'match' ? 'ok' : ''">{{ statusLabel(p) }}</span>
         </div>
         <div class="small muted">
-          {{ serverNames.get(p.server) || p.server }}<template v-if="p.since"> · online {{ fmt.dur(now - p.since) || '<1m' }}</template><template v-if="p.network"> · {{ NETWORK[p.network] }}</template>
+          {{ serverNames.get(p.server) || p.server }}<template v-if="p.since"> · online {{ fmt.dur(now - p.since) || '<1m' }}</template><template v-if="p.network"> · {{ NETWORK[p.network] }}</template><template v-if="p.relay && p.network === 'relayed'"> by {{ serverNames.get(p.relay) || p.relay }}</template><template v-if="p.why && WHY[p.why]"> ({{ WHY[p.why] }})</template><template v-if="p.ping_ms != null"> · {{ p.ping_ms }} ms</template>
         </div>
         <div v-if="p.with?.length" class="small muted">with {{ p.with.join(', ') }}</div>
       </div>
@@ -62,6 +64,7 @@ const lons = [-150, -120, -90, -60, -30, 0, 30, 60, 90, 120, 150];
 const lats = [-60, -30, 0, 30, 60];
 const NETWORK = { relayed: 'relayed', direct: 'direct', unregistered: 'not registered for online play' };
 const MODES = { coop: 'co-op', svm: 'Spies vs Mercs' };
+const WHY = { asked: 'chose it', symmetric: 'router changes ports', no_mapping: 'no port forwarded', double_nat: 'router behind another', failed_joins: 'joins kept failing', unreachable_mapping: 'forwarded port unreachable' };
 
 // The time, for the sun and the tooltips: every half minute is plenty.
 const now = ref(Date.now() / 1000);
@@ -98,6 +101,33 @@ const spots = computed(() => {
 });
 const serverSpots = computed(() => props.servers.filter(sv => sv.place).map(sv => ({ id: sv.id, name: serverName(sv), cx: sv.place.lon + 180, cy: 90 - sv.place.lat })));
 const serverNames = computed(() => new Map(props.servers.map(sv => [sv.id, serverName(sv)])));
+
+// The lines (0.5.2's A3): a relayed player to their relay's server; two direct players in one
+// match to each other (each pair once).
+const links = computed(() => {
+  if (!props.live) return [];
+  const servers = new Map(props.servers.filter(sv => sv.place).map(sv => [sv.id, sv]));
+  const at = p => ({ x: p.lon + 180, y: 90 - p.lat });
+  const placed = online.value.filter(p => p.country && (p.lat || p.lon));
+  const byName = new Map(placed.map(p => [p.name, p]));
+  const out = [];
+  for (const p of placed) {
+    const relay = servers.get(p.relay);
+    if (p.network === 'relayed' && relay) {
+      const a = at(p);
+      out.push({ key: `r-${p.server}-${p.id}`, kind: 'relayed', x1: a.x, y1: a.y, x2: relay.place.lon + 180, y2: 90 - relay.place.lat, label: `${p.name} through ${serverName(relay)}` });
+    }
+    if (p.network === 'direct' && p.status === 'match') {
+      for (const other of p.with || []) {
+        const q = byName.get(other);
+        if (!q || q.network !== 'direct' || q.name < p.name) continue;
+        const a = at(p), b = at(q);
+        out.push({ key: `d-${p.name}-${q.name}`, kind: 'direct', x1: a.x, y1: a.y, x2: b.x, y2: b.y, label: `${p.name} and ${q.name}, directly` });
+      }
+    }
+  }
+  return out;
+});
 
 // Players in one city share a marker; it shows what the busiest of them is doing.
 const RANK = { match: 0, lobby: 1, menus: 2 };
@@ -170,4 +200,7 @@ const tipStyle = computed(() => (tipAt.value.right
 .tip-place { display: flex; flex-direction: column; gap: 2px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
 .tip-player { display: flex; flex-direction: column; gap: 2px; }
 .unplaced { margin: 6px 0 0; }
+.link { stroke-width: 0.35; fill: none; pointer-events: stroke; }
+.link.relayed { stroke: var(--accent); opacity: 0.55; }
+.link.direct { stroke: var(--warn, #c98a00); stroke-dasharray: 1.2 0.8; opacity: 0.7; }
 </style>

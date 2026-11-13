@@ -234,6 +234,13 @@ pub struct OnlinePlayer {
     /// "relayed", "direct" or "unregistered" (no NAT helper registration: nobody can reach
     /// them); empty when the server runs no NAT helper.
     pub network: &'static str,
+    /// The server whose relay they're registered at (its id): this one, or a relay of the
+    /// network's (0.5.2's A3, the map's lines); empty when not registered.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub relay: String,
+    /// Why relayed or direct, when this server's own helper has them (J5).
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub why: &'static str,
     /// Their game's round trip to this server, as it last measured it.
     pub ping_ms: Option<u16>,
 }
@@ -466,8 +473,16 @@ fn online_player(id: u32, name: String, since: Option<i64>, sessions: &[crate::s
             None => "unregistered",
         },
     };
+    let relay = match &remote {
+        Some((id, _, _)) => id.clone(),
+        None if !network.is_empty() && network != "unregistered" => crate::federation::server_id().to_string(),
+        None => String::new(),
+    };
+    let why = crate::nat_helper::why_of(&name).unwrap_or("");
     OnlinePlayer {
         id,
+        relay,
+        why,
         country: place.country,
         country_name: place.country_name,
         region: place.region,

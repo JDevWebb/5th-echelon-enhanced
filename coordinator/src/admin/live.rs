@@ -166,6 +166,9 @@ fn online_list(v: &Value) -> Value {
                 "with": p["with"].as_array().into_iter().flatten().take(16).map(text).collect::<Vec<_>>(),
                 "since": p["since"].as_i64(),
                 "network": text(&p["network"]),
+                // The server whose relay has them, and why (0.5.2's A3 and J5): a server id, a word.
+                "relay": p["relay"].as_str().filter(|r| r.len() <= 32 && r.bytes().all(|b| b.is_ascii_alphanumeric())).unwrap_or(""),
+                "why": p["why"].as_str().filter(|w| w.len() <= 24 && w.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')).unwrap_or(""),
                 "ping_ms": p["ping_ms"].as_u64().filter(|ms| *ms < 10_000),
             })
         })
