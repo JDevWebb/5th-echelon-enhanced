@@ -1937,6 +1937,15 @@ impl Misc for MyMisc {
                 }),
             );
         }
+        // A guest's: their game's rules against their host's (R4, consensus).
+        if rooms.is_empty() && !r.settings.is_empty() {
+            if let Ok(Some(host)) = self.storage.match_host_of_async(user_id).await {
+                if let Some(detail) = crate::round_settings::guest_said(user_id, host, r.under_way, &r.settings) {
+                    warn!(self.logger, "Fair play: {user_id}'s game reads other rules than its host {host}'s: {}", detail["detail"]);
+                    crate::session_events::note(crate::session_events::Who::Id(user_id), "fair_play", detail);
+                }
+            }
+        }
         // The round's settings (F4): noted as a round starts, and any change while it runs.
         if !rooms.is_empty() {
             if let Some(detail) = crate::round_settings::said(user_id, r.under_way, &r.settings) {

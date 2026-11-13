@@ -1300,6 +1300,25 @@ impl Storage {
         .await?)
     }
 
+    /// The host of the live match (room kind 0) `user_id` is in without hosting it, the newest if
+    /// several: whose rules their game should have (0.5.2's R4).
+    pub async fn match_host_of_async(&self, user_id: u32) -> Result<Option<u32>> {
+        let query = format!(
+            r"
+            SELECT g.creator_id
+            FROM game_sessions g
+            WHERE g.creator_id != ?1
+              AND g.destroyed_at IS NULL
+              AND {kind} = 0
+              AND (EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?1)
+                   OR EXISTS (SELECT 1 FROM guests gu WHERE gu.game_id = g.id AND gu.user_id = ?1))
+            ORDER BY g.id DESC LIMIT 1
+            ",
+            kind = attribute_sql(113)
+        );
+        Ok(sqlx::query_scalar(&query).bind(user_id).fetch_optional(&self.pool).await?)
+    }
+
     /// The parties (room kind 1) `user_id` is a participant of without hosting them, their
     /// host still in them, newest first: where a member's invitation may lead (the invite
     /// handler checks the host trusts them). Not a party they're only a guest of: anyone may

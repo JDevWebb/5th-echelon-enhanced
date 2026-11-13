@@ -65,9 +65,68 @@ pub fn said(host: u32, under_way: bool, settings: &HashMap<String, f32>) -> Opti
     }
 }
 
+/// Guests whose rules were found to differ from their host's this round, with the host: told
+/// once a round (0.5.2's R4).
+fn told() -> std::sync::MutexGuard<'static, HashMap<u32, u32>> {
+    static TOLD: std::sync::LazyLock<Mutex<HashMap<u32, u32>>> = std::sync::LazyLock::new(Mutex::default);
+    TOLD.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// R4, consensus: `guest`'s game, in `host`'s match under way, has these settings. The settings
+/// both games read must agree (the host sets them; every game has the same): one that differs
+/// is a local edit of the guest's game (a cheat table's "rules" on a guest). What to note, once
+/// a round: each differing setting, the guest's value and the host's.
+pub fn guest_said(guest: u32, host: u32, under_way: bool, settings: &HashMap<String, f32>) -> Option<serde_json::Value> {
+    if !under_way {
+        told().remove(&guest);
+        return None;
+    }
+    let mine = clean(settings);
+    let hosts = rounds();
+    let theirs = hosts.get(&host)?;
+    let differ: BTreeMap<&String, (f32, f32)> = mine
+        .iter()
+        .filter_map(|(k, v)| theirs.get(k).filter(|h| (*h - v).abs() > 0.011).map(|h| (k, (*v, *h))))
+        .collect();
+    if differ.is_empty() {
+        return None;
+    }
+    let mut t = told();
+    if t.get(&guest) == Some(&host) {
+        return None;
+    }
+    if t.len() >= MOST_HOSTS {
+        t.clear();
+    }
+    t.insert(guest, host);
+    let said: Vec<String> = differ.iter().map(|(k, (g, h))| format!("{k} {g} (host {h})")).collect();
+    Some(serde_json::json!({
+        "check": "rules",
+        "detail": format!("their game's rules aren't their host's: {}", said.join(", ")),
+        "value": differ.len(),
+        "host": host,
+        "wine": false,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R4: a guest whose game reads other rules than its host's is noted once a round.
+    #[test]
+    fn a_guest_whose_rules_differ_from_the_hosts_is_noted_once() {
+        let s = |respawn: f32, limit: f32| HashMap::from([(String::from("m_fRespawnTimeSpyTeam"), respawn), (String::from("m_iScoreLimit"), limit)]);
+        assert!(guest_said(700_101, 700_100, true, &s(5.0, 10.0)).is_none(), "the host said nothing yet");
+        said(700_100, true, &s(5.0, 10.0));
+        assert!(guest_said(700_101, 700_100, true, &s(5.0, 10.0)).is_none(), "the same");
+        let d = guest_said(700_102, 700_100, true, &s(0.5, 10.0)).unwrap();
+        assert_eq!((d["check"].as_str(), d["value"].as_u64()), (Some("rules"), Some(1)));
+        assert!(d["detail"].as_str().unwrap().contains("m_fRespawnTimeSpyTeam 0.5 (host 5)"), "{d}");
+        assert!(guest_said(700_102, 700_100, true, &s(0.5, 10.0)).is_none(), "once a round");
+        guest_said(700_102, 700_100, false, &s(0.5, 10.0));
+        assert!(guest_said(700_102, 700_100, true, &s(0.5, 10.0)).is_some(), "the next round again");
+    }
 
     #[test]
     fn a_round_is_noted_as_it_starts_and_a_change_while_it_runs() {

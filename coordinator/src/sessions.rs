@@ -1013,6 +1013,7 @@ fn describe(e: &Event) -> String {
                 Some("code") => "game code",
                 Some("self") => "own code",
                 Some("heartbeat") => "heartbeat",
+                Some("rules") => "rules",
                 _ => "fair play",
             },
             e.detail["detail"].as_str().unwrap_or("?"),
