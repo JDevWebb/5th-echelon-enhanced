@@ -54,6 +54,11 @@ static_detour! {
     static SendToHook: unsafe extern "system" fn(usize, *const u8, i32, i32, *const u8, i32) -> i32;
     static RecvFromHook: unsafe extern "system" fn(usize, *mut u8, i32, i32, *mut u8, *mut i32) -> i32;
     static EchoSendHook: unsafe extern "thiscall" fn(*mut c_void);
+    // The game's sign-in (Quazal) uses an overlapped socket: WSASendTo, WSARecvFrom and
+    // WSAGetOverlappedResult. Only the tunnel needs them (0.5.2's T).
+    static WsaSendToHook: unsafe extern "system" fn(usize, *const c_void, u32, *mut u32, u32, *const u8, i32, *mut c_void, *const c_void) -> i32;
+    static WsaRecvFromHook: unsafe extern "system" fn(usize, *mut c_void, u32, *mut u32, *mut u32, *mut u8, *mut i32, *mut c_void, *const c_void) -> i32;
+    static WsaOverlappedResultHook: unsafe extern "system" fn(usize, *mut c_void, *mut u32, i32, *mut u32) -> i32;
 }
 
 /// The game's NAT reply parser: `this` = the NAT engine, the sender's
@@ -450,9 +455,23 @@ fn sockaddr(addr: SocketAddrV4) -> [u8; 16] {
     sa
 }
 
+/// Where socket `s` reaches the tunnel's forwarder for `dest` (0.5.2's T), if `dest` is one of
+/// the server's services: the forwarder's port at the address `s` is bound to, or 127.0.0.1 for
+/// a socket bound to any. A socket bound to the LAN address can't reach 127.0.0.1 everywhere
+/// (Linux drops it as a martian; the gamebox, 2026-11-15), and the forwarder listens on all.
+fn tunnel_target(s: usize, dest: SocketAddrV4) -> Option<SocketAddrV4> {
+    let local = crate::tunnel::redirect(dest)?;
+    let mut sa = [0u8; 16];
+    let mut len = sa.len() as i32;
+    // SAFETY: getsockname writes at most `len` bytes of the socket's address into `sa`.
+    let bound = unsafe { windows::Win32::Networking::WinSock::getsockname(windows::Win32::Networking::WinSock::SOCKET(s), sa.as_mut_ptr().cast(), &mut len) } == 0;
+    let ip = bound.then(|| read_addr(sa.as_ptr())).flatten().map(|a| *a.ip()).filter(|ip| !ip.is_unspecified());
+    Some(ip.map_or(local, |ip| SocketAddrV4::new(ip, local.port())))
+}
+
 fn send_raw(socket: usize, data: &[u8], to: SocketAddrV4) -> i32 {
     // Through the tunnel when it's on (0.5.2's T): to the helper's forwarder.
-    let to = crate::tunnel::redirect(to).unwrap_or(to);
+    let to = tunnel_target(socket, to).unwrap_or(to);
     let sa = sockaddr(to);
     unsafe { SendToHook.call(socket, data.as_ptr(), data.len() as i32, 0, sa.as_ptr(), sa.len() as i32) }
 }
@@ -528,6 +547,11 @@ fn bind_server_socket(s: usize, namelen: i32, addr: SocketAddrV4) -> Option<i32>
 }
 
 fn bind(s: usize, name: *const u8, namelen: i32) -> i32 {
+    // An address the game binds to is this PC's (the tunnel's forwarders take datagrams only
+    // from those).
+    if let Some(addr) = read_addr(name) {
+        crate::tunnel::own_address(*addr.ip());
+    }
     if let Some(res) = read_addr(name).and_then(|addr| bind_server_socket(s, namelen, addr)) {
         return res;
     }
@@ -635,7 +659,7 @@ fn forget_registration(st: &mut State) {
 fn sendto(s: usize, buf: *const u8, len: i32, flags: i32, to: *const u8, tolen: i32) -> i32 {
     // The tunnel (0.5.2's T): what any of the game's sockets sends to one of the server's UDP
     // services goes to that service's forwarder on 127.0.0.1, which carries it over HTTPS.
-    if let Some(local) = read_addr(to).and_then(crate::tunnel::redirect) {
+    if let Some(local) = read_addr(to).and_then(|d| tunnel_target(s, d)) {
         let sa = sockaddr(local);
         return unsafe { SendToHook.call(s, buf, len, flags, sa.as_ptr(), sa.len() as i32) };
     }
@@ -1027,7 +1051,11 @@ fn worker(host: String, port: u16) {
                     info!("NAT: the NAT helper is {server}");
                     let mut st = state();
                     st.server = Some(server);
-                    st.second = Some(SocketAddrV4::new(*server.ip(), port.wrapping_add(1)));
+                    // Not through the tunnel (it carries the helper's own port only), nor
+                    // needed: a tunnelled player is relayed whatever their NAT.
+                    if !crate::tunnel::on() {
+                        st.second = Some(SocketAddrV4::new(*server.ip(), port.wrapping_add(1)));
+                    }
                 }
                 None => {
                     warn!("NAT: can't resolve {host}");
@@ -1170,6 +1198,65 @@ fn socket_gone() -> bool {
     e == WSAENOTSOCK || e == WSANOTINITIALISED
 }
 
+/// The tunnel and the game's overlapped socket (its sign-in, Quazal): what it sends to one of the
+/// server's services goes to that service's forwarder, as `sendto`'s hook does for Storm.
+#[allow(clippy::too_many_arguments)]
+fn wsa_send_to(s: usize, bufs: *const c_void, count: u32, sent: *mut u32, flags: u32, to: *const u8, tolen: i32, ov: *mut c_void, done: *const c_void) -> i32 {
+    if let Some(local) = read_addr(to).and_then(|d| tunnel_target(s, d)) {
+        let sa = sockaddr(local);
+        return unsafe { WsaSendToHook.call(s, bufs, count, sent, flags, sa.as_ptr(), sa.len() as i32, ov, done) };
+    }
+    unsafe { WsaSendToHook.call(s, bufs, count, sent, flags, to, tolen, ov, done) }
+}
+
+/// Where each overlapped receive writes its sender (OVERLAPPED -> the sender and its length), so
+/// a reply from a forwarder can be shown as from the server's service when the receive ends.
+static PENDING_FROM: Mutex<Vec<(usize, usize, usize)>> = Mutex::new(Vec::new());
+
+/// A forwarder's address at `from` made the server's service's, if it's one.
+fn from_forwarder_in_place(from: *mut u8, fromlen: *mut i32) {
+    if !from.is_null() && !fromlen.is_null() {
+        if let Some(server) = read_addr(from).and_then(crate::tunnel::from_forwarder) {
+            write_addr(server, from, fromlen);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn wsa_recv_from(s: usize, bufs: *mut c_void, count: u32, got: *mut u32, flags: *mut u32, from: *mut u8, fromlen: *mut i32, ov: *mut c_void, done: *const c_void) -> i32 {
+    let tunnel = crate::tunnel::on() && !from.is_null() && !fromlen.is_null();
+    if tunnel && !ov.is_null() {
+        let mut p = PENDING_FROM.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        p.retain(|(o, _, _)| *o != ov as usize);
+        p.push((ov as usize, from as usize, fromlen as usize));
+        if p.len() > 64 {
+            p.remove(0);
+        }
+    }
+    let r = unsafe { WsaRecvFromHook.call(s, bufs, count, got, flags, from, fromlen, ov, done) };
+    // Done at once: the sender is there now.
+    if tunnel && r == 0 {
+        from_forwarder_in_place(from, fromlen);
+    }
+    r
+}
+
+fn wsa_overlapped_result(s: usize, ov: *mut c_void, bytes: *mut u32, wait: i32, flags: *mut u32) -> i32 {
+    let r = unsafe { WsaOverlappedResultHook.call(s, ov, bytes, wait, flags) };
+    if r != 0 && !ov.is_null() && crate::tunnel::on() {
+        let found = PENDING_FROM
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .find(|(o, _, _)| *o == ov as usize)
+            .map(|(_, f, l)| (*f, *l));
+        if let Some((from, fromlen)) = found {
+            from_forwarder_in_place(from as *mut u8, fromlen as *mut i32);
+        }
+    }
+    r
+}
+
 pub unsafe fn init_hooks(config: &Config, addr: &Addresses) {
     LOG_PACKETS.store(config.enable_all_hooks || config.enable_hooks.contains(&Hook::StormPackets), Ordering::Relaxed);
     let mode = config.networking.nat;
@@ -1184,6 +1271,13 @@ pub unsafe fn init_hooks(config: &Config, addr: &Addresses) {
         super::hook!(CloseSocketHook, GetProcAddress(lib, s!("closesocket")), closesocket);
         super::hook!(SendToHook, GetProcAddress(lib, s!("sendto")), sendto);
         super::hook!(RecvFromHook, GetProcAddress(lib, s!("recvfrom")), recvfrom);
+        // Only the tunnel needs the overlapped calls (the game's sign-in socket); without it
+        // they're left alone.
+        if crate::tunnel::on() {
+            super::hook!(WsaSendToHook, GetProcAddress(lib, s!("WSASendTo")), wsa_send_to);
+            super::hook!(WsaRecvFromHook, GetProcAddress(lib, s!("WSARecvFrom")), wsa_recv_from);
+            super::hook!(WsaOverlappedResultHook, GetProcAddress(lib, s!("WSAGetOverlappedResult")), wsa_overlapped_result);
+        }
     }
 
     if mode == NatMode::Off {
@@ -1227,6 +1321,9 @@ pub unsafe fn init_hooks(config: &Config, addr: &Addresses) {
 
 pub unsafe fn deinit_hooks() {
     let _ = EchoSendHook.disable();
+    let _ = WsaOverlappedResultHook.disable();
+    let _ = WsaRecvFromHook.disable();
+    let _ = WsaSendToHook.disable();
     let _ = RecvFromHook.disable();
     let _ = SendToHook.disable();
     let _ = CloseSocketHook.disable();

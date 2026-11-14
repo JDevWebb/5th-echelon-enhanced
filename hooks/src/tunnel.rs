@@ -28,6 +28,9 @@ use tokio_tungstenite::tungstenite::Message as Ws;
 use tracing::info;
 use tracing::warn;
 
+/// How long the server keeps a dropped tunnel's place (dedicated_server's tunnel.rs).
+const RESUME_WINDOW: Duration = Duration::from_secs(30);
+
 /// The server's services and their forwarders: (the server's address, the forwarder's).
 static MAP: RwLock<Vec<(u8, SocketAddrV4, SocketAddrV4)>> = RwLock::new(Vec::new());
 
@@ -37,9 +40,36 @@ pub fn redirect(dest: SocketAddrV4) -> Option<SocketAddrV4> {
     MAP.read().ok()?.iter().find(|(_, server, _)| *server == dest).map(|(_, _, local)| *local)
 }
 
-/// The server's address a datagram from forwarder `src` stands for, if `src` is one.
+/// The server's address a datagram from forwarder `src` stands for, if `src` is one: its port,
+/// from one of this PC's own addresses. A forwarder listens on every address, and its replies
+/// to a game socket bound to the PC's LAN address come from that address, not 127.0.0.1
+/// (Linux drops a datagram from 127.0.0.1 to another address as a martian; the gamebox,
+/// 2026-11-15).
 pub fn from_forwarder(src: SocketAddrV4) -> Option<SocketAddrV4> {
-    MAP.read().ok()?.iter().find(|(_, _, local)| *local == src).map(|(_, server, _)| *server)
+    if !own(*src.ip()) {
+        return None;
+    }
+    MAP.read().ok()?.iter().find(|(_, _, local)| local.port() == src.port()).map(|(_, server, _)| *server)
+}
+
+/// The addresses the game's sockets were bound to (the PC's own), besides loopback.
+static OWN: RwLock<Vec<std::net::Ipv4Addr>> = RwLock::new(Vec::new());
+
+/// The game bound a socket to `ip`: one of this PC's addresses.
+pub fn own_address(ip: std::net::Ipv4Addr) {
+    if ip.is_unspecified() || ip.is_loopback() {
+        return;
+    }
+    if let Ok(mut own) = OWN.write() {
+        if !own.contains(&ip) {
+            own.push(ip);
+        }
+    }
+}
+
+/// Whether `ip` is this PC's: loopback, or an address the game bound a socket to.
+fn own(ip: std::net::Ipv4Addr) -> bool {
+    ip.is_loopback() || OWN.read().is_ok_and(|o| o.contains(&ip))
 }
 
 /// Whether the game's traffic goes through the tunnel this run.
@@ -60,11 +90,14 @@ pub fn start(target: hooks_config::Tunnel) {
     };
     let mut forwarders = Vec::new();
     for (service, port) in [(tunnel::LOGIN, target.login), (tunnel::SECURE, target.secure), (tunnel::HELPER, target.helper)] {
-        let Ok(socket) = UdpSocket::bind("127.0.0.1:0") else {
+        // On every address, so it can answer a game socket bound to the LAN address from that
+        // address ([`from_forwarder`]); only datagrams from this PC's own addresses are taken.
+        let Ok(socket) = UdpSocket::bind("0.0.0.0:0") else {
             warn!("Tunnel: no local socket; the game's traffic goes as usual");
             return;
         };
-        let Ok(std::net::SocketAddr::V4(local)) = socket.local_addr() else { return };
+        let Ok(bound) = socket.local_addr() else { return };
+        let local = SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, bound.port());
         forwarders.push((service, SocketAddrV4::new(server, port), local, Arc::new(socket)));
     }
     if let Ok(mut map) = MAP.write() {
@@ -94,6 +127,10 @@ async fn run(url: String, forwarders: Vec<Forwarder>) {
         std::thread::spawn(move || {
             let mut buf = [0u8; 2048];
             while let Ok((n, from)) = socket.recv_from(&mut buf) {
+                // Only the game on this PC: never another machine that found the port.
+                if !matches!(from, std::net::SocketAddr::V4(v4) if own(*v4.ip())) {
+                    continue;
+                }
                 if let Ok(mut g) = GAME.lock() {
                     g[usize::from(service)] = Some(from);
                 }
@@ -102,6 +139,8 @@ async fn run(url: String, forwarders: Vec<Forwarder>) {
         });
     }
     let mut wait = Duration::from_secs(1);
+    // When an open tunnel last dropped: within the server's 30 s to resume it, every second.
+    let mut dropped_at: Option<std::time::Instant> = None;
     loop {
         // The proof needs the NAT ticket, from signing in.
         let proof = loop {
@@ -144,8 +183,16 @@ async fn run(url: String, forwarders: Vec<Forwarder>) {
                     }
                 }
                 warn!("Tunnel: closed; opening it again");
+                dropped_at = Some(std::time::Instant::now());
             }
             Err(e) => warn!("Tunnel: couldn't open ({e}); trying again in {} s", wait.as_secs()),
+        }
+        // The game gives up on a silent player after about 10 s (the gamebox, 2026-11-15: an 8 s
+        // drop with the doubling wait reopened after 15 s, and the match was lost). While the
+        // server keeps the player's place, try every second; then wait longer each time.
+        if dropped_at.is_some_and(|t| t.elapsed() < RESUME_WINDOW) {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            continue;
         }
         tokio::time::sleep(wait).await;
         wait = (wait * 2).min(Duration::from_secs(30));
@@ -164,4 +211,26 @@ fn connector() -> Option<tokio_tungstenite::Connector> {
         .with_root_certificates(roots)
         .with_no_client_auth();
     Some(tokio_tungstenite::Connector::Rustls(Arc::new(config)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_forwarders_reply_is_known_by_its_port_from_this_pcs_own_addresses() {
+        let server = SocketAddrV4::new(std::net::Ipv4Addr::new(45, 77, 50, 224), 21128);
+        *MAP.write().unwrap() = vec![(tunnel::HELPER, server, SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 50000))];
+        let lan = std::net::Ipv4Addr::new(192, 168, 1, 20);
+        assert_eq!(redirect(server), Some(SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 50000)));
+        assert_eq!(from_forwarder(SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 50000)), Some(server));
+        assert_eq!(from_forwarder(SocketAddrV4::new(lan, 50000)), None, "not one of this PC's addresses yet");
+        own_address(lan);
+        assert_eq!(from_forwarder(SocketAddrV4::new(lan, 50000)), Some(server), "the game bound a socket to it");
+        assert_eq!(from_forwarder(SocketAddrV4::new(lan, 50001)), None, "another port");
+        assert_eq!(from_forwarder(SocketAddrV4::new(std::net::Ipv4Addr::new(192, 168, 1, 30), 50000)), None, "another machine");
+        own_address(std::net::Ipv4Addr::UNSPECIFIED);
+        assert!(!own(std::net::Ipv4Addr::UNSPECIFIED));
+        MAP.write().unwrap().clear();
+    }
 }
