@@ -165,6 +165,39 @@ pub fn navigating() -> bool {
     ABORT.load(Ordering::Relaxed) == 0 && (NAVIGATING.load(Ordering::Relaxed) || NAV_BUSY.load(Ordering::Relaxed))
 }
 
+/// How long the player's input stays held back after the quick start is done: presses made
+/// while it navigated (Enter or A to skip the intro videos it already skips) came through the
+/// moment it let go and went on in the game's menus, whose first entries are Quick match and
+/// then Classic, and while hosting a press opens "Leave the current match?" on Leave: Play SvM
+/// searched Classic, hosted, left and searched again for as long as they kept pressing (Butts
+/// and Cloud, 13 Nov; the gamebox, 14 Nov, DX9 and DX11 alike).
+pub const SETTLE: Duration = Duration::from_secs(3);
+
+/// When the navigation was last seen under way (milliseconds since the Unix epoch, 0 never).
+static LAST_NAVIGATING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// The player's mouse, keys and controller are kept from the game: while the quick start
+/// navigates, and for [`SETTLE`] after it's done (not after the player stopped it with Esc).
+pub fn holding_input() -> bool {
+    let now = now_ms();
+    if navigating() {
+        LAST_NAVIGATING.store(now, Ordering::Relaxed);
+        return true;
+    }
+    settling(LAST_NAVIGATING.load(Ordering::Relaxed), now, aborted())
+}
+
+/// Whether the hold goes on at `now`, the navigation last seen under way at `last` (0: never).
+fn settling(last: u64, now: u64, aborted: bool) -> bool {
+    last != 0 && !aborted && now.saturating_sub(last) < u64::try_from(SETTLE.as_millis()).unwrap_or(u64::MAX)
+}
+
 /// The player stopped the navigation with Esc.
 pub fn aborted() -> bool {
     ABORT.load(Ordering::Relaxed) != 0
@@ -854,5 +887,19 @@ fn watch() {
             PRESS_SENT.load(Ordering::Relaxed),
             ONLINE_ASKED.load(Ordering::Relaxed)
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_stays_held_a_moment_after_the_navigation_unless_stopped() {
+        let settle = u64::try_from(SETTLE.as_millis()).unwrap();
+        assert!(!settling(0, 10_000, false), "never navigated: nothing held");
+        assert!(settling(10_000, 10_000 + settle - 1, false));
+        assert!(!settling(10_000, 10_000 + settle, false), "after the moment: the player's");
+        assert!(!settling(10_000, 10_001, true), "stopped with Esc: the player's at once");
     }
 }

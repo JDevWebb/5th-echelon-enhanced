@@ -192,6 +192,14 @@ fn get_state(slot: u32, state: *mut State) -> u32 {
     // SAFETY: the caller's state, filled just now.
     let st = unsafe { &mut *state };
     let held = st.pad.buttons;
+    // While the quick start holds the player's input (and its moment after), the game sees the
+    // controller at rest, and a button still down then stays hidden until it's let go: A
+    // pressed to skip the videos picked Quick match, then Classic, once it let go.
+    if crate::quickstart::holding_input() {
+        SWALLOWED.fetch_or(held, Ordering::Relaxed);
+        st.pad = Gamepad::default();
+        return r;
+    }
     let swallowed = SWALLOWED.fetch_and(held, Ordering::Relaxed) & held;
     st.pad = for_game(st.pad, BLOCKED.load(Ordering::Relaxed), swallowed);
     r

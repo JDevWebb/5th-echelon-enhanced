@@ -242,9 +242,9 @@ fn set_cursor_pos(x: i32, y: i32) -> BOOL {
 }
 
 /// The game doesn't get the player's mouse and keys: the panel is open, or the quick start is
-/// taking the game through its menus.
+/// taking the game through its menus or has just finished ([`crate::quickstart::holding_input`]).
 pub(crate) fn held_back() -> bool {
-    OPEN.load(Ordering::SeqCst) || crate::quickstart::navigating() || esc_after_abort()
+    OPEN.load(Ordering::SeqCst) || crate::quickstart::holding_input() || esc_after_abort()
 }
 
 /// The Esc that stopped the quick start: 0 not seen yet, 1 still held, 2 let go (done).
