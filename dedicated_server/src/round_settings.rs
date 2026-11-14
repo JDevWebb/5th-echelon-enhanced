@@ -109,9 +109,59 @@ pub fn guest_said(guest: u32, host: u32, under_way: bool, settings: &HashMap<Str
     }))
 }
 
+/// R2: what the game's own custom-match menus offer, per game mode (Blacklist.umd's
+/// `[SVMSettingsCollection]` and the like; every mode's default is one of them): the time
+/// limits in minutes, and for Spies vs Mercs the hack times its speed choice maps to
+/// (`CaptureRateMapping_Slow/Normal/Fast/Instant`, seconds).
+fn menu_time_limits(game_mode: u32) -> Option<&'static [u32]> {
+    match game_mode {
+        7 | 8 | 10 => Some(&[3, 8, 10, 15, 20]), // SvM Blacklist, SvM Classic; Extraction (CTI)
+        6 | 9 => Some(&[5, 10, 15, 20, 30]),     // Team Deathmatch; Uplink Control (Frontline)
+        _ => None,
+    }
+}
+const SVM_HACK_TIMES: [f32; 4] = [150.0, 100.0, 60.0, 1.0];
+
+/// R2: the host's rules no menu of the game offers for `game_mode`: a time limit not in its
+/// list, a Spies vs Mercs hack time none of its speeds give. Each as "name value (offered)".
+/// Values the menus offer are the host's choice and say nothing. Rules this can't read (score
+/// and player limits, rounds, lives) aren't judged.
+pub fn outside_menu(game_mode: u32, settings: &HashMap<String, f32>) -> Vec<String> {
+    let mut out = Vec::new();
+    if let (Some(limits), Some(secs)) = (menu_time_limits(game_mode), settings.get("m_iTimeLimit")) {
+        if !limits.iter().any(|m| (*m as f32 * 60.0 - secs).abs() < 0.5) {
+            let offered: Vec<String> = limits.iter().map(u32::to_string).collect();
+            out.push(format!("time limit {secs} s (the menu offers {} min)", offered.join(", ")));
+        }
+    }
+    if matches!(game_mode, 7 | 8) {
+        if let Some(hack) = settings.get("m_fTimeToCompleteHack") {
+            if !SVM_HACK_TIMES.iter().any(|t| (t - hack).abs() < 0.05) {
+                out.push(format!("hack time {hack} s (the menu's speeds give 150, 100, 60 or 1 s)"));
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R2: the stock rules and every menu choice are fine; a value no menu offers is named.
+    #[test]
+    fn rules_outside_the_menus_choices_are_named() {
+        let s = |pairs: &[(&str, f32)]| pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect::<HashMap<_, _>>();
+        // Each mode's defaults (Blacklist.umd): SvM 600 s and 100 s to hack, CTI 480 s, TDM 600 s.
+        assert!(outside_menu(7, &s(&[("m_iTimeLimit", 600.0), ("m_fTimeToCompleteHack", 100.0)])).is_empty());
+        assert!(outside_menu(10, &s(&[("m_iTimeLimit", 480.0)])).is_empty());
+        assert!(outside_menu(6, &s(&[("m_iTimeLimit", 1800.0)])).is_empty(), "TDM offers 30 min");
+        assert!(outside_menu(8, &s(&[("m_fTimeToCompleteHack", 1.0)])).is_empty(), "Instant");
+        let out = outside_menu(7, &s(&[("m_iTimeLimit", 1800.0), ("m_fTimeToCompleteHack", 5.0)]));
+        assert_eq!(out.len(), 2, "SvM offers no 30 min, nor a 5 s hack: {out:?}");
+        assert!(out[0].starts_with("time limit 1800 s (the menu offers 3, 8, 10, 15, 20 min)"));
+        assert!(outside_menu(4, &s(&[("m_iTimeLimit", 99999.0)])).is_empty(), "co-op isn't judged");
+    }
 
     /// R4: a guest whose game reads other rules than its host's is noted once a round.
     #[test]

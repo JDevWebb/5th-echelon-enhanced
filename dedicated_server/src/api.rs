@@ -1894,15 +1894,10 @@ impl Misc for MyMisc {
             return Err(Status::resource_exhausted("Too many requests; slow down"));
         }
         let r = request.into_inner();
-        let rooms: Vec<u32> = self
-            .storage
-            .find_host_sessions_async(user_id)
-            .await
-            .map_err(internal)?
-            .iter()
-            .filter(|s| is_match_room(s))
-            .map(|s| s.session_id)
-            .collect();
+        let hosted: Vec<_> = self.storage.find_host_sessions_async(user_id).await.map_err(internal)?.into_iter().filter(|s| is_match_room(s)).collect();
+        let rooms: Vec<u32> = hosted.iter().map(|s| s.session_id).collect();
+        // The match's game mode (attribute 102), for R2's menu ranges.
+        let game_mode = hosted.iter().find_map(|s| crate::game_session::attribute_value(&s.attributes, 102));
         crate::match_started::host_says(&rooms, r.under_way);
         // Its state, settings and sides, for the launcher's Matches tab.
         crate::lobbies::said(&rooms, &r.state, &r.settings, &r.team);
@@ -1970,6 +1965,22 @@ impl Misc for MyMisc {
                 let mut detail = detail;
                 detail["rooms"] = serde_json::json!(rooms);
                 crate::session_events::note(crate::session_events::Who::Id(user_id), "round_settings", detail);
+                // R2: rules no menu of the game offers for this mode (noted with each round's
+                // rules: as it starts, and as they change).
+                let outside = game_mode.map(|m| crate::round_settings::outside_menu(m, &r.settings)).unwrap_or_default();
+                if !outside.is_empty() {
+                    warn!(self.logger, "Fair play: {user_id} hosts with rules no menu offers: {}", outside.join(", "));
+                    crate::session_events::note(
+                        crate::session_events::Who::Id(user_id),
+                        "fair_play",
+                        serde_json::json!({
+                            "check": "rules",
+                            "detail": format!("their match's rules aren't any the game's menus offer: {}", outside.join(", ")),
+                            "value": outside.len(),
+                            "wine": false,
+                        }),
+                    );
+                }
             }
         }
         // Its player's number in the session, and everyone's in its room back (peer_names.rs).
