@@ -1612,6 +1612,35 @@ impl Storage {
         Ok(affected > 0)
     }
 
+    /// Drops the invitations waiting for `receiver`, but the one into `keep` (the room they just
+    /// joined). An invitation nobody accepted answered the player's next quick match searches
+    /// for five minutes (query 8, `game_session_ex`): one asking for a new match, or one already
+    /// in another room, was put in the inviter's room after all, or sent to a room it no longer
+    /// meant to join (na1, 13 Nov 2026: 119 of 129 such answers ended in no join). How many.
+    pub async fn drop_invites_to_async(&self, receiver: u32, keep: Option<u32>) -> Result<u64> {
+        Ok(sqlx::query("DELETE FROM invites WHERE receiver = ? AND consumed_at IS NULL AND (? IS NULL OR session_id IS NOT ?)")
+            .bind(receiver)
+            .bind(keep)
+            .bind(keep)
+            .execute(&self.pool)
+            .await?
+            .rows_affected())
+    }
+
+    pub fn drop_invites_to(&self, receiver: u32, keep: Option<u32>) -> Result<u64> {
+        run(self.drop_invites_to_async(receiver, keep))?
+    }
+
+    /// Drops the invitation waiting for `receiver` into `session_id` (a join into it that a
+    /// retry can't mend). How many.
+    pub fn drop_invite_into(&self, receiver: u32, session_id: u32) -> Result<u64> {
+        Ok(run(sqlx::query("DELETE FROM invites WHERE receiver = ? AND session_id = ? AND consumed_at IS NULL")
+            .bind(receiver)
+            .bind(session_id)
+            .execute(&self.pool))??
+        .rows_affected())
+    }
+
     /// Records an invitation into a game session for every recipient.
     ///
     /// Inviting the same player twice refreshes the pending invitation rather than adding a
@@ -2757,6 +2786,42 @@ pub(crate) mod tests {
         assert!(!storage.was_member(party, stranger).unwrap(), "never in it");
         drop(storage);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn invitations_go_when_the_player_joins_elsewhere_or_the_join_cant_work() {
+        let (storage, _dir) = temp_storage("drop-invites");
+        for (name, ubi) in [("Tea", "TEA"), ("Other", "OTHER"), ("Player", "PLAYER")] {
+            storage.register_user(name, "pw", Some(ubi)).unwrap();
+        }
+        let id = |n: &str| storage.find_user_id_by_name(n).unwrap().unwrap();
+        let (tea, other, player) = (id("Tea"), id("Other"), id("Player"));
+        let room = |host| {
+            let r = storage.create_game_session(host, 1, "113 => 0;103 => 2165463540;3 => 4;4 => 4".into()).unwrap();
+            storage.add_participants(1, r, vec![host], vec![]).unwrap();
+            r
+        };
+        let (teas, others) = (room(tea), room(other));
+        let invite = |from, into| run(storage.add_invite_async(from, player, Some(1), Some(into))).unwrap().unwrap();
+        let pending = || storage.find_pending_invited_session(player, 1, &[]).unwrap().map(|s| s.session_id);
+
+        // Joined another room: the invitations into others go, not the one into that room.
+        invite(tea, teas);
+        invite(other, others);
+        assert_eq!(storage.drop_invites_to(player, Some(others)).unwrap(), 1);
+        assert_eq!(pending(), Some(others), "the room they joined keeps its invitation");
+
+        // Asked for a new match: all of them go.
+        invite(tea, teas);
+        assert_eq!(storage.drop_invites_to(player, None).unwrap(), 2);
+        assert_eq!(pending(), None);
+
+        // A join into one that can't work: only that one goes.
+        invite(tea, teas);
+        invite(other, others);
+        assert_eq!(storage.drop_invite_into(player, teas).unwrap(), 1);
+        assert_eq!(pending(), Some(others));
+        assert_eq!(storage.drop_invite_into(player, teas).unwrap(), 0);
     }
 
     #[test]

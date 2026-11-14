@@ -804,7 +804,13 @@ impl Friends for MyFriends {
         if !crate::search_steer::new_match(me) {
             return Err(Status::resource_exhausted("Too many players asked at once; try again in a minute"));
         }
-        info!(self.logger, "NewMatch: {me}'s searches find nothing until they host a match");
+        // Nor does an invitation they haven't taken lead their search into its room.
+        let dropped = self.storage.drop_invites_to_async(me, None).await.map_err(internal)?;
+        info!(
+            self.logger,
+            "NewMatch: {me}'s searches find nothing until they host a match{}",
+            if dropped > 0 { format!(" ({dropped} invitation(s) waiting for them dropped)") } else { String::new() }
+        );
         Ok(Response::new(friends::NewMatchResponse {
             seconds: u32::try_from(crate::search_steer::FOR.as_secs()).unwrap_or(u32::MAX),
         }))

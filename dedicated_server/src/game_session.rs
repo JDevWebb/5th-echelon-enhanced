@@ -849,6 +849,18 @@ impl GameSessionProtocolServerImpl {
         self.storage.is_invite_only_session(session_id).unwrap_or(false)
     }
 
+    /// `user_id` got into `room`: the invitations still waiting for them into other rooms go,
+    /// or their next quick match search is answered with one of those rooms (na1, 13 Nov 2026:
+    /// a party member's invitation sent as they joined a match failed them into it a minute
+    /// later).
+    fn drop_other_invites(&self, logger: &Logger, user_id: u32, room: u32) {
+        match self.storage.drop_invites_to(user_id, Some(room)) {
+            Ok(0) => {}
+            Ok(n) => info!(logger, "User {user_id} is in session {room}: {n} invitation(s) into other rooms dropped"),
+            Err(e) => warn!(logger, "Couldn't drop {user_id}'s other invitations: {e}"),
+        }
+    }
+
     /// The player's game is online (it opened or joined a room): it should be registered with
     /// the NAT helper, and is noticed when it isn't.
     fn went_online(&self, user_id: u32) {
@@ -1458,6 +1470,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                 logger,
                 "User {user_id} joined session {} through an invitation (via AddParticipants)", request.game_session_key.session_id
             );
+            self.drop_other_invites(logger, user_id, request.game_session_key.session_id);
         }
         for &target in &targets {
             let there = members.as_ref().is_some_and(|(creator, participants)| *creator == target || participants.contains(&target));
@@ -2517,6 +2530,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         }
         if admitted {
             self.note_match_players(logger, key.session_id, [user_id]);
+            self.drop_other_invites(logger, user_id, key.session_id);
         }
         self.went_online(user_id);
         Ok(JoinSessionResponse)
@@ -2807,6 +2821,15 @@ pub(crate) fn note_failed_join(storage: &Storage, logger: &Logger, user_id: u32,
             &crate::reports::data_shown(m.theirs),
         );
         crate::reports::tell(user_id, title, text, noted.filter(|_| problem.explained()));
+    }
+    // An invitation into a room the game can't get into again (locked), or one the game wasn't
+    // even joining (it named another room), goes: kept, it answers the player's next searches
+    // with that room once more (na1, 13 Nov 2026: one room failed four times in a row). A
+    // join that merely failed keeps it: through the relay (J2) its retry may get in.
+    if !join.own && (code == crate::reports::LOCKED_SESSION || join.reported_room.is_some_and(|r| r != 0 && r != join.room)) {
+        if let Ok(n @ 1..) = storage.drop_invite_into(user_id, join.room) {
+            info!(logger, "{user_id}'s invitation into session {} dropped: its join can't work ({n})", join.room);
+        }
     }
     crate::session_events::note(crate::session_events::Who::Id(user_id), "join_failed", join.detail(code));
     // Direct players whose joins keep failing go through the relay from now on (J2).

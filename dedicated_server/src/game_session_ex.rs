@@ -66,8 +66,12 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
         // property 103 = 0, which no ordinary query matches. So it never found the room it
         // had just been invited into. When an invitation is pending, answer with exactly that
         // room and skip the attribute comparison below.
+        // Not while the player asked for a new match (search_steer.rs): an invitation that came
+        // after the ask (the same host inviting again) took them into its room all the same
+        // (na1, 13 Nov 2026). One they accept goes the friend-search way
+        // (SearchSessionsWithParticipants), which this doesn't touch.
         let session_type = request.game_session_query.type_id;
-        let invited_session = if request.game_session_query.query_id == 8 {
+        let invited_session = if request.game_session_query.query_id == 8 && !crate::search_steer::wants_new(user_id) {
             rmc_err!(
                 self.storage.find_pending_invited_session(user_id, session_type, &[]),
                 logger,
