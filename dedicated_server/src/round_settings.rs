@@ -113,25 +113,44 @@ pub fn guest_said(guest: u32, host: u32, under_way: bool, settings: &HashMap<Str
 /// `[SVMSettingsCollection]` and the like; every mode's default is one of them): the time
 /// limits in minutes, and for Spies vs Mercs the hack times its speed choice maps to
 /// (`CaptureRateMapping_Slow/Normal/Fast/Instant`, seconds).
+///
+/// Judged for Spies vs Mercs only (Blacklist and Classic): a live SvM Blacklist match read its
+/// time limit 600 s, hack time 100 s and score limit 3, the menu's defaults (the gamebox,
+/// 13 Nov). The other modes' lists are written down in the 0.5.2 plan, not judged until a live
+/// match of each confirms the game reads them so: the one other-mode match seen read a score
+/// limit of 40 (na1, 13 Nov), which no menu offers.
 fn menu_time_limits(game_mode: u32) -> Option<&'static [u32]> {
     match game_mode {
-        7 | 8 | 10 => Some(&[3, 8, 10, 15, 20]), // SvM Blacklist, SvM Classic; Extraction (CTI)
-        6 | 9 => Some(&[5, 10, 15, 20, 30]),     // Team Deathmatch; Uplink Control (Frontline)
+        7 | 8 => Some(&[3, 8, 10, 15, 20]), // SvM Blacklist, SvM Classic
         _ => None,
     }
 }
 const SVM_HACK_TIMES: [f32; 4] = [150.0, 100.0, 60.0, 1.0];
+/// The score limits each mode's menu offers (its default among them).
+fn menu_score_limits(game_mode: u32) -> Option<&'static [u32]> {
+    match game_mode {
+        7 | 8 => Some(&[1, 2, 3]), // SvM
+        _ => None,
+    }
+}
 
 /// R2: the host's rules no menu of the game offers for `game_mode`: a time limit not in its
-/// list, a Spies vs Mercs hack time none of its speeds give. Each as "name value (offered)".
-/// Values the menus offer are the host's choice and say nothing. Rules this can't read (score
-/// and player limits, rounds, lives) aren't judged.
+/// list, a score limit not in its list, a Spies vs Mercs hack time none of its speeds give.
+/// Each as "name value (offered)". Values the menus offer are the host's choice and say
+/// nothing. Rules not judged here: the player limit (R3, warn only), rounds and lives (their
+/// menu choices aren't in these lists).
 pub fn outside_menu(game_mode: u32, settings: &HashMap<String, f32>) -> Vec<String> {
     let mut out = Vec::new();
     if let (Some(limits), Some(secs)) = (menu_time_limits(game_mode), settings.get("m_iTimeLimit")) {
         if !limits.iter().any(|m| (*m as f32 * 60.0 - secs).abs() < 0.5) {
             let offered: Vec<String> = limits.iter().map(u32::to_string).collect();
             out.push(format!("time limit {secs} s (the menu offers {} min)", offered.join(", ")));
+        }
+    }
+    if let (Some(limits), Some(score)) = (menu_score_limits(game_mode), settings.get("m_iScoreLimit")) {
+        if !limits.iter().any(|l| (*l as f32 - score).abs() < 0.5) {
+            let offered: Vec<String> = limits.iter().map(u32::to_string).collect();
+            out.push(format!("score limit {score} (the menu offers {})", offered.join(", ")));
         }
     }
     if matches!(game_mode, 7 | 8) {
@@ -155,12 +174,15 @@ mod tests {
         // Each mode's defaults (Blacklist.umd): SvM 600 s and 100 s to hack, CTI 480 s, TDM 600 s.
         assert!(outside_menu(7, &s(&[("m_iTimeLimit", 600.0), ("m_fTimeToCompleteHack", 100.0)])).is_empty());
         assert!(outside_menu(10, &s(&[("m_iTimeLimit", 480.0)])).is_empty());
-        assert!(outside_menu(6, &s(&[("m_iTimeLimit", 1800.0)])).is_empty(), "TDM offers 30 min");
+        assert!(outside_menu(6, &s(&[("m_iScoreLimit", 40.0)])).is_empty(), "other modes aren't judged yet");
         assert!(outside_menu(8, &s(&[("m_fTimeToCompleteHack", 1.0)])).is_empty(), "Instant");
         let out = outside_menu(7, &s(&[("m_iTimeLimit", 1800.0), ("m_fTimeToCompleteHack", 5.0)]));
         assert_eq!(out.len(), 2, "SvM offers no 30 min, nor a 5 s hack: {out:?}");
         assert!(out[0].starts_with("time limit 1800 s (the menu offers 3, 8, 10, 15, 20 min)"));
         assert!(outside_menu(4, &s(&[("m_iTimeLimit", 99999.0)])).is_empty(), "co-op isn't judged");
+        // Score limits: SvM's default is offered; 99 hacks isn't.
+        assert!(outside_menu(8, &s(&[("m_iScoreLimit", 3.0)])).is_empty());
+        assert_eq!(outside_menu(7, &s(&[("m_iScoreLimit", 99.0)])), vec!["score limit 99 (the menu offers 1, 2, 3)".to_string()]);
     }
 
     /// R4: a guest whose game reads other rules than its host's is noted once a round.
