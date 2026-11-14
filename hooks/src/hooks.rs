@@ -705,6 +705,10 @@ where
         error!("Hook {} failed: {:?}", name, err);
     } else {
         info!("Hook {} enabled with address {:?}", name, target.to_ptr());
+        // The jump the detour wrote is this add-on's change, not someone else's (code_check):
+        // its quick start's SmiStep hook was reported as "bytes changed" on Windows (Glacio1,
+        // flyofsky, Breeze54, 13 Nov: their one change was at its address).
+        crate::code_check::ours(target.to_ptr() as usize, 8);
     }
 }
 

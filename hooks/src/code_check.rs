@@ -103,8 +103,28 @@ fn who_changed(at: usize, now: &[u8], mine: (usize, usize)) -> Option<String> {
             }
             return Some(format!("unknown ({file})"));
         }
+        // Into memory no module owns: code a tool put there as the game ran (a runtime patcher
+        // such as a widescreen fix, a trainer, a Cheat Engine script), not a mod loaded as a DLL.
+        // Only for a run that starts with the jump (an inline hook's shape) into readable memory:
+        // an E8/E9 byte elsewhere in changed bytes is as likely data.
+        if i == 0 && crate::dataversion::read_u32(to).is_some() {
+            return Some(String::from("a jump to memory no module owns"));
+        }
     }
     None
+}
+
+/// A short fingerprint of a whole set of changes (their offsets, in order): the same tool makes
+/// the same set, so players running it show the same one even when their lists are cut short
+/// (the server keeps a few hundred characters of a report).
+fn fingerprint(offsets: impl Iterator<Item = usize>) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for off in offsets {
+        for b in (off as u32).to_le_bytes() {
+            hash = (hash ^ u32::from(b)).wrapping_mul(0x0100_0193);
+        }
+    }
+    hash
 }
 
 /// Runs of differing bytes between `before` and `now` (offsets, merged when close).
@@ -223,9 +243,10 @@ fn tell(found: &[(usize, String)], when: &str, wine: bool) {
     }
     let said: Vec<String> = found.iter().take(MOST_SAID).map(|(off, who)| format!("+{off:#x} ({who})")).collect();
     let detail = format!(
-        "{} change{} to the game's code {when} not made by 5th Echelon or Fusion Fix: {}{}",
+        "{} change{} (set {:08x}) to the game's code {when} not made by 5th Echelon or Fusion Fix: {}{}",
         found.len(),
         if found.len() == 1 { "" } else { "s" },
+        fingerprint(found.iter().map(|(off, _)| *off)),
         said.join(", "),
         if found.len() > MOST_SAID { ", ..." } else { "" }
     );
@@ -237,6 +258,14 @@ fn tell(found: &[(usize, String)], when: &str, wine: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_same_set_of_changes_has_the_same_fingerprint() {
+        let a = fingerprint([0x2bcbe, 0x59b20, 0x5a3a0].into_iter());
+        assert_eq!(a, fingerprint([0x2bcbe, 0x59b20, 0x5a3a0].into_iter()));
+        assert_ne!(a, fingerprint([0x2bcbe, 0x59b20].into_iter()));
+        assert_ne!(a, fingerprint([0x59b20, 0x2bcbe, 0x5a3a0].into_iter()));
+    }
 
     #[test]
     fn changed_bytes_are_runs_merged_when_close() {
