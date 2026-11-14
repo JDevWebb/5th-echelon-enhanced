@@ -2868,7 +2868,11 @@ fn move_to_relay(storage: &Storage, logger: &Logger, user: u32) {
     }
     crate::nat_helper::force_relay(&name, "failed_joins");
     let remote = crate::relays::relay_remote(&name);
-    info!(logger, "{name}'s joins kept failing as a direct player: relayed from now on{}", if remote { " (their relay told)" } else { "" });
+    info!(
+        logger,
+        "{name}'s joins kept failing as a direct player: relayed from now on{}",
+        if remote { " (their relay told)" } else { "" }
+    );
     crate::reports::tell(user, crate::join_fallback::MOVED_TITLE.into(), crate::join_fallback::MOVED_TEXT.into(), None);
 }
 

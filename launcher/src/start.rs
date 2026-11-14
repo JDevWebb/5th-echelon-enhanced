@@ -49,7 +49,11 @@ pub fn start(game: &mut Game, notices: &mut Notices, mode: PlayMode, name_not_al
             // UDP blocked (or the player chose it): through the server's tunnel over HTTPS, to
             // the server's own helper (0.5.2's T). Checked at every start.
             // A relay that answered the launcher's UDP pings: UDP works, nothing to check.
-            let tunnel = if relay.is_some() && !Prefs::tunnel_always() { None } else { crate::tunnel::for_start(&profile.server) };
+            let tunnel = if relay.is_some() && !Prefs::tunnel_always() {
+                None
+            } else {
+                crate::tunnel::for_start(&profile.server)
+            };
             if tunnel.is_some() {
                 notices.info(crate::tunnel::NOTICE);
             }

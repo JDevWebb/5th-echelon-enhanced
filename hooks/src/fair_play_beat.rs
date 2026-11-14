@@ -24,7 +24,9 @@ pub fn start() {
     let wine = hooks_config::running_under_wine();
     let spawned = std::thread::Builder::new().name("fe-fair-play-beat".into()).spawn(move || {
         std::thread::sleep(SETTLE);
-        let own = crate::code_check::module_at(start as usize).and_then(|(base, ..)| unsafe { crate::code_check::text_of(base) }).map(|((text, size, ..), ..)| (text, size));
+        let own = crate::code_check::module_at(start as usize)
+            .and_then(|(base, ..)| unsafe { crate::code_check::text_of(base) })
+            .map(|((text, size, ..), ..)| (text, size));
         let copy = |(text, size): (usize, usize)| unsafe { std::slice::from_raw_parts(text as *const u8, size) }.to_vec();
         let original = own.map(copy);
         if original.is_none() {

@@ -95,7 +95,10 @@ mod tests {
         let set = |pairs: &[(&str, u32)]| pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect::<HashMap<_, _>>();
         assert!(w.guest_said(2, 1, &set(&[("AR_SC3000", 7)])).is_none(), "the host said nothing yet");
         w.host_said(1, &set(&[("AR_SC3000", 7), ("SMG_MP5", 9)]));
-        assert!(w.guest_said(2, 1, &set(&[("AR_SC3000", 7), ("SMG_MP5", 9), ("Only_Mine", 3)])).is_none(), "the same, and one the host doesn't load");
+        assert!(
+            w.guest_said(2, 1, &set(&[("AR_SC3000", 7), ("SMG_MP5", 9), ("Only_Mine", 3)])).is_none(),
+            "the same, and one the host doesn't load"
+        );
         let d = w.guest_said(3, 1, &set(&[("AR_SC3000", 8), ("SMG_MP5", 9)])).unwrap();
         assert_eq!((d["check"].as_str(), d["value"].as_u64()), (Some("weapon"), Some(1)));
         assert!(d["detail"].as_str().unwrap().contains("AR_SC3000"));

@@ -945,11 +945,13 @@ fn describe(e: &Event) -> String {
             "The relay {} sees this player on another network than this server does (carrier-grade NAT?): its address for them wasn't used",
             e.detail["relay"].as_str().unwrap_or("?")
         ),
-        "tunnel" => if e.detail["open"] == true {
-            "Playing through the HTTPS tunnel (their network blocks the game's UDP)".into()
-        } else {
-            "The HTTPS tunnel closed".into()
-        },
+        "tunnel" => {
+            if e.detail["open"] == true {
+                "Playing through the HTTPS tunnel (their network blocks the game's UDP)".into()
+            } else {
+                "The HTTPS tunnel closed".into()
+            }
+        }
         "nat" => {
             // Why (0.5.2's J5), from servers that say.
             let why = match e.str("why") {

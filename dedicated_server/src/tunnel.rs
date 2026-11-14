@@ -138,7 +138,10 @@ struct Rate {
 
 impl Rate {
     fn new() -> Self {
-        Self { at: Instant::now(), allowance: BYTES_PER_SEC * 2.0 }
+        Self {
+            at: Instant::now(),
+            allowance: BYTES_PER_SEC * 2.0,
+        }
     }
 
     fn take(&mut self, bytes: usize) -> bool {
@@ -219,7 +222,11 @@ async fn handle(logger: &Logger, stream: tokio::net::TcpStream, peer: SocketAddr
         o.by_port.insert(port, ip);
         id
     };
-    info!(logger, "Tunnel: {name} from {ip} (their UDP is blocked); on 127.0.0.1:{port}{}", if was_resumed { ", resumed" } else { "" });
+    info!(
+        logger,
+        "Tunnel: {name} from {ip} (their UDP is blocked); on 127.0.0.1:{port}{}",
+        if was_resumed { ", resumed" } else { "" }
+    );
     crate::session_events::note(crate::session_events::Who::Name(name.clone()), "tunnel", serde_json::json!({ "open": true }));
     let mut rate = Rate::new();
     let mut ping = tokio::time::interval(PING_EVERY);
@@ -287,7 +294,11 @@ mod tests {
         let local: SocketAddr = "127.0.0.1:5000".parse().unwrap();
         let outside: SocketAddr = "198.51.100.4:5000".parse().unwrap();
         assert_eq!(real_address(local, Some("203.0.113.9")), "203.0.113.9".parse::<IpAddr>().unwrap());
-        assert_eq!(real_address(local, Some("10.0.0.1, 203.0.113.9")), "203.0.113.9".parse::<IpAddr>().unwrap(), "Caddy's, the last");
+        assert_eq!(
+            real_address(local, Some("10.0.0.1, 203.0.113.9")),
+            "203.0.113.9".parse::<IpAddr>().unwrap(),
+            "Caddy's, the last"
+        );
         assert_eq!(real_address(outside, Some("203.0.113.9")), outside.ip(), "never believed from outside");
         assert_eq!(real_address(local, None), local.ip());
     }
@@ -309,7 +320,11 @@ mod tests {
 
     #[test]
     fn each_service_has_its_port_and_back() {
-        let s = Services { login: 21126, secure: 21127, helper: 21128 };
+        let s = Services {
+            login: 21126,
+            secure: 21127,
+            helper: 21128,
+        };
         assert_eq!(s.port(tunnel::SECURE), Some(21127));
         assert_eq!(s.port(tunnel::AUTH), None);
         assert_eq!(s.service(21128), Some(tunnel::HELPER));
@@ -337,7 +352,9 @@ mod tests {
             let r = handle(&logger, stream, peer, services).await;
             assert!(r.is_err());
         });
-        let (mut ws, _) = tokio_tungstenite::client_async(format!("ws://{at}/tunnel"), tokio::net::TcpStream::connect(at).await.unwrap()).await.unwrap();
+        let (mut ws, _) = tokio_tungstenite::client_async(format!("ws://{at}/tunnel"), tokio::net::TcpStream::connect(at).await.unwrap())
+            .await
+            .unwrap();
         ws.send(Ws::Binary(tunnel::frame(tunnel::AUTH, b"not a probe").into())).await.unwrap();
         // The server ends it.
         let next = tokio::time::timeout(Duration::from_secs(5), ws.next()).await.unwrap();
@@ -376,7 +393,17 @@ mod tests {
         let name = "TunnelTester";
         let ticket = crate::nat_helper::ticket_for(name, Some(&key.public_key())).unwrap();
         let (nonce, cookie) = (7u32, [0u8; 16]);
-        let mut probe = nat_proto::Message::Probe { flags: 0, nonce, mapping: None, name: name.into(), ticket, cookie, rtt_ms: None, reach: None }.encode();
+        let mut probe = nat_proto::Message::Probe {
+            flags: 0,
+            nonce,
+            mapping: None,
+            name: name.into(),
+            ticket,
+            cookie,
+            rtt_ms: None,
+            reach: None,
+        }
+        .encode();
         nat_proto::add_key(&mut probe, &key.public_key(), &key.sign_bytes(&nat_proto::probe_message(nonce, &cookie, name)));
         let request = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(format!("ws://{at}/tunnel")).unwrap();
         let mut request = request;

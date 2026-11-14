@@ -73,7 +73,11 @@ pub fn note_activity(busy: bool, now: i64) {
 /// The heartbeat's part.
 pub fn state() -> State {
     let t = tracked();
-    State { pending_since: pending_since(), idle_since: t.idle_since, draining: t.draining.is_some() }
+    State {
+        pending_since: pending_since(),
+        idle_since: t.idle_since,
+        draining: t.draining.is_some(),
+    }
 }
 
 /// Whether it's draining for a reboot: new players are refused ([`DRAINING_MESSAGE`]).

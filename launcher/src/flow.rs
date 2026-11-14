@@ -1202,7 +1202,11 @@ mod tests {
         let community = setup::directory::COMMUNITY;
         let one = [listing("scbl.jdevwebb.net", &["ca1.scbl.jdevwebb.net", "na1.scbl.jdevwebb.net"])];
         assert_eq!(super::community_move("eu1.scbl.jdevwebb.net", community, &one).as_deref(), Some("scbl.jdevwebb.net"));
-        assert_eq!(super::community_move("EU1.scbl.jdevwebb.net ", "https://scbl.jdevwebb.net", &one).as_deref(), Some("scbl.jdevwebb.net"), "the network's old name");
+        assert_eq!(
+            super::community_move("EU1.scbl.jdevwebb.net ", "https://scbl.jdevwebb.net", &one).as_deref(),
+            Some("scbl.jdevwebb.net"),
+            "the network's old name"
+        );
         assert_eq!(super::community_move("play.scbl.jdevwebb.net", community, &one).as_deref(), Some("scbl.jdevwebb.net"));
         assert_eq!(super::community_move("na1.scbl.jdevwebb.net", community, &one), None, "listed: listed_elsewhere's");
         assert_eq!(super::community_move("eu1.example.net", community, &one), None, "not the community's");

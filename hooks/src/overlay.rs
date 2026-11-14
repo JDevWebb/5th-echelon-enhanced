@@ -1028,7 +1028,12 @@ impl MyRenderLoop {
             return;
         }
         let Some((heading, text)) = self.maintenance_warning() else {
-            let Some((heading, text)) = self.data.server.as_ref().and_then(|s| crate::community::notice_to_show(&s.notices, std::time::Instant::now())) else {
+            let Some((heading, text)) = self
+                .data
+                .server
+                .as_ref()
+                .and_then(|s| crate::community::notice_to_show(&s.notices, std::time::Instant::now()))
+            else {
                 return;
             };
             self.toast(ui, "##fe-notice", None, || {

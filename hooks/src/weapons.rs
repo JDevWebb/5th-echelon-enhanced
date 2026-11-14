@@ -82,7 +82,11 @@ fn found() -> Option<&'static Found> {
                     let prop = crate::round_state::named(pack(*names.get(stat)?, 0))
                         .into_iter()
                         .find(|p| read_u32(p + 0x18).is_some_and(|outer| owners.contains(&outer)))?;
-                    let mask = stat.starts_with("m_b").then(|| read_u32(prop + crate::round_state::BOOL_MASK_AT)).flatten().filter(|m| m.count_ones() == 1);
+                    let mask = stat
+                        .starts_with("m_b")
+                        .then(|| read_u32(prop + crate::round_state::BOOL_MASK_AT))
+                        .flatten()
+                        .filter(|m| m.count_ones() == 1);
                     if stat.starts_with("m_b") && mask.is_none() {
                         return None;
                     }
@@ -114,7 +118,11 @@ fn found() -> Option<&'static Found> {
                 return None;
             }
             tracing::info!("Weapons: {} of {} stats found on the archetypes", offsets.len(), STATS.len());
-            Some(Found { class: read_u32(class + 0x20)?, offsets, firing })
+            Some(Found {
+                class: read_u32(class + 0x20)?,
+                offsets,
+                firing,
+            })
         })
         .as_ref()
 }
@@ -234,5 +242,8 @@ pub fn test_firing_words() {
     });
     let total: u32 = values.values().sum();
     let on: Vec<String> = bits.iter().enumerate().filter(|(_, n)| **n > 0).map(|(b, n)| format!("{b}:{n}")).collect();
-    tracing::info!("Weapons: test: {total} live weapons at {offset}; bits on (bit:weapons) {}; values {values:x?}", on.join(" "));
+    tracing::info!(
+        "Weapons: test: {total} live weapons at {offset}; bits on (bit:weapons) {}; values {values:x?}",
+        on.join(" ")
+    );
 }

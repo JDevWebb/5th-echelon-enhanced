@@ -3292,7 +3292,13 @@ async fn a_players_page_shows_what_their_game_reported() {
     let r = admin_router(&t);
     let a = t.join("server-a").await;
     let now = identity::now();
-    t.call("POST", "/v1/players", Some(&a), Some(json!({ "full": true, "players": [player(1189, "Butts", Some("ab12"))] }))).await;
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&a),
+        Some(json!({ "full": true, "players": [player(1189, "Butts", Some("ab12"))] })),
+    )
+    .await;
     sqlx::query("INSERT INTO names (name_key, name, global_id, claimed_at) VALUES ('osprey', 'Osprey', 'ab12', ?)")
         .bind(now)
         .execute(&t.c.pool)
@@ -4311,10 +4317,23 @@ async fn a_closed_window_and_its_testers_reach_the_server() {
     let t = start("maintenance-closed").await;
     let r = admin_router(&t);
     let a = t.join("server-a").await;
-    t.call("POST", "/v1/players", Some(&a), Some(json!({ "full": true, "players": [player(1006, "NexusX", None), player(1007, "Exo", None)] }))).await;
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&a),
+        Some(json!({ "full": true, "players": [player(1006, "NexusX", None), player(1007, "Exo", None)] })),
+    )
+    .await;
     let now = identity::now();
     let cookie = admin_cookie(&t, "admin1", 60).await;
-    let (status, v) = admin_call(&r, "POST", "/api/maintenance", &cookie, Some(json!({ "servers": ["server-a"], "start": now, "end": now + 3600 }))).await;
+    let (status, v) = admin_call(
+        &r,
+        "POST",
+        "/api/maintenance",
+        &cookie,
+        Some(json!({ "servers": ["server-a"], "start": now, "end": now + 3600 })),
+    )
+    .await;
     assert_eq!((status, v["windows"][0]["closed"].as_bool()), (StatusCode::OK, Some(true)), "closed by default: {v}");
     let (status, _) = admin_call(
         &r,
@@ -4325,13 +4344,18 @@ async fn a_closed_window_and_its_testers_reach_the_server() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(admin_call(&r, "POST", "/api/players/server-a/1/tester", &cookie, Some(json!({ "on": true }))).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(
+        admin_call(&r, "POST", "/api/players/server-a/1/tester", &cookie, Some(json!({ "on": true }))).await.0,
+        StatusCode::NOT_FOUND
+    );
     let (status, v) = admin_call(&r, "POST", "/api/players/server-a/1006/tester", &cookie, Some(json!({ "on": true }))).await;
     assert_eq!((status, v["tester"].as_bool()), (StatusCode::OK, Some(true)), "{v}");
     let (_, v) = admin_call(&r, "GET", "/api/players/server-a/1006", &cookie, None).await;
     assert_eq!(v["tester"].as_bool(), Some(true));
 
-    let (status, v) = t.call("POST", "/v1/heartbeat", Some(&a), Some(json!({ "name": "server-a", "host": "server-a", "listed": true }))).await;
+    let (status, v) = t
+        .call("POST", "/v1/heartbeat", Some(&a), Some(json!({ "name": "server-a", "host": "server-a", "listed": true })))
+        .await;
     assert_eq!(status, StatusCode::OK, "{v}");
     assert_eq!(v["maintenance_testers"], json!([1006]), "{v}");
     let windows = v["maintenance"].as_array().unwrap();
@@ -4340,7 +4364,14 @@ async fn a_closed_window_and_its_testers_reach_the_server() {
     assert_eq!((windows[1]["closed"].as_bool(), windows[1]["network"].as_bool()), (Some(false), Some(true)));
 
     // A closed network window is every server's in the directory (launchers block Play by it).
-    let (status, _) = admin_call(&r, "POST", "/api/maintenance", &cookie, Some(json!({ "network": true, "start": now + 10_000, "end": now + 11_000 }))).await;
+    let (status, _) = admin_call(
+        &r,
+        "POST",
+        "/api/maintenance",
+        &cookie,
+        Some(json!({ "network": true, "start": now + 10_000, "end": now + 11_000 })),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     let (_, dir) = t.call("GET", "/v1/servers", None, None).await;
     let a_windows = dir["servers"][0]["maintenance"].as_array().unwrap();
@@ -4349,7 +4380,9 @@ async fn a_closed_window_and_its_testers_reach_the_server() {
 
     // No longer a tester.
     admin_call(&r, "POST", "/api/players/server-a/1006/tester", &cookie, Some(json!({ "on": false }))).await;
-    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&a), Some(json!({ "name": "server-a", "host": "server-a", "listed": true }))).await;
+    let (_, v) = t
+        .call("POST", "/v1/heartbeat", Some(&a), Some(json!({ "name": "server-a", "host": "server-a", "listed": true })))
+        .await;
     assert_eq!(v["maintenance_testers"], json!([]));
 }
 
@@ -4379,11 +4412,16 @@ async fn a_pending_reboot_is_answered_only_when_it_hurts_nobody() {
     let hours = format!("{}-{}", hour, (hour + 1) % 24);
     let (status, _) = admin_call(&r, "POST", "/api/servers/server-a/reboot", &cookie, Some(json!({ "quiet_hours": hours }))).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(admin_call(&r, "POST", "/api/servers/server-a/reboot", &cookie, Some(json!({ "quiet_hours": "nonsense" }))).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        admin_call(&r, "POST", "/api/servers/server-a/reboot", &cookie, Some(json!({ "quiet_hours": "nonsense" })))
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
     let (_, v) = t.call("POST", "/v1/heartbeat", Some(&a), Some(beat(pending.clone()))).await;
     assert_eq!(v["reboot"]["why"], "quiet", "{v}");
     // Someone on it: not now.
-    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&a), Some(beat(json!({ "pending_since": now - 600 }))) ).await;
+    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&a), Some(beat(json!({ "pending_since": now - 600 })))).await;
     assert!(v.get("reboot").is_none(), "{v}");
     // Other hours: not now, unless an admin says any hour, or a window is booked.
     let other = format!("{}-{}", (hour + 3) % 24, (hour + 4) % 24);
@@ -4395,7 +4433,14 @@ async fn a_pending_reboot_is_answered_only_when_it_hurts_nobody() {
     let (_, v) = t.call("POST", "/v1/heartbeat", Some(&a), Some(beat(pending.clone()))).await;
     assert_eq!(v["reboot"]["why"], "asked", "{v}");
     admin_call(&r, "POST", "/api/servers/server-a/reboot", &cookie, Some(json!({ "any_hour": false }))).await;
-    admin_call(&r, "POST", "/api/maintenance", &cookie, Some(json!({ "servers": ["server-a"], "start": now, "end": now + 600, "closed": false }))).await;
+    admin_call(
+        &r,
+        "POST",
+        "/api/maintenance",
+        &cookie,
+        Some(json!({ "servers": ["server-a"], "start": now, "end": now + 600, "closed": false })),
+    )
+    .await;
     let (_, v) = t.call("POST", "/v1/heartbeat", Some(&a), Some(beat(json!({ "pending_since": now - 600 })))).await;
     assert_eq!(v["reboot"]["why"], "window", "players were told: even with someone on it");
     // The Servers page's view.
@@ -5943,7 +5988,14 @@ async fn urgent_notices_reach_every_launcher_until_ended() {
     let (_, dir) = t.call("GET", "/v1/servers", None, None).await;
     assert!(dir.get("notices").is_none(), "none live: {dir}");
 
-    let (status, v) = admin_call(&r, "POST", "/api/notices", &cookie, Some(json!({ "text": " We're looking into connection problems ", "kind": "issue" }))).await;
+    let (status, v) = admin_call(
+        &r,
+        "POST",
+        "/api/notices",
+        &cookie,
+        Some(json!({ "text": " We're looking into connection problems ", "kind": "issue" })),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{v}");
     let id = v["id"].as_i64().unwrap();
     let (_, dir) = t.call("GET", "/v1/servers", None, None).await;
@@ -5952,11 +6004,20 @@ async fn urgent_notices_reach_every_launcher_until_ended() {
     let version = dir["notices"][0]["version"].as_i64().unwrap();
     // Servers hear it in their heartbeat answer, for their games' overlay.
     let a = t.join("server-a").await;
-    let (status, hb) = t.call("POST", "/v1/heartbeat", Some(&a), Some(json!({ "name": "server-a", "host": "server-a", "listed": true }))).await;
+    let (status, hb) = t
+        .call("POST", "/v1/heartbeat", Some(&a), Some(json!({ "name": "server-a", "host": "server-a", "listed": true })))
+        .await;
     assert_eq!((status, hb["notices"][0]["id"].as_i64()), (StatusCode::OK, Some(id)), "{hb}");
 
     // Edited: a new version, so launchers that closed it show it again.
-    let (status, _) = admin_call(&r, "PUT", &format!("/api/notices/{id}"), &cookie, Some(json!({ "text": "Fixed: matches connect again", "kind": "fixed", "hours": 6 }))).await;
+    let (status, _) = admin_call(
+        &r,
+        "PUT",
+        &format!("/api/notices/{id}"),
+        &cookie,
+        Some(json!({ "text": "Fixed: matches connect again", "kind": "fixed", "hours": 6 })),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     let (_, dir) = t.call("GET", "/v1/servers", None, None).await;
     assert_eq!((dir["notices"][0]["kind"].as_str(), dir["notices"].as_array().unwrap().len()), (Some("fixed"), 1));
@@ -5965,9 +6026,19 @@ async fn urgent_notices_reach_every_launcher_until_ended() {
 
     // Three live at most.
     for n in 0..2 {
-        assert_eq!(admin_call(&r, "POST", "/api/notices", &cookie, Some(json!({ "text": format!("news {n}"), "kind": "info" }))).await.0, StatusCode::OK);
+        assert_eq!(
+            admin_call(&r, "POST", "/api/notices", &cookie, Some(json!({ "text": format!("news {n}"), "kind": "info" })))
+                .await
+                .0,
+            StatusCode::OK
+        );
     }
-    assert_eq!(admin_call(&r, "POST", "/api/notices", &cookie, Some(json!({ "text": "one too many", "kind": "info" }))).await.0, StatusCode::CONFLICT);
+    assert_eq!(
+        admin_call(&r, "POST", "/api/notices", &cookie, Some(json!({ "text": "one too many", "kind": "info" })))
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
 
     // Ended: gone from launchers, still listed for the admins.
     assert_eq!(admin_call(&r, "DELETE", &format!("/api/notices/{id}"), &cookie, None).await.0, StatusCode::OK);
@@ -5980,7 +6051,11 @@ async fn urgent_notices_reach_every_launcher_until_ended() {
     assert_eq!((ended["live"].as_bool(), ended["posted_by"].as_str()), (Some(false), Some("admin1")));
 
     // Its hours up: gone by itself.
-    sqlx::query("UPDATE notices SET ends_at = ? WHERE ended_at IS NULL").bind(identity::now() - 1).execute(&t.c.pool).await.unwrap();
+    sqlx::query("UPDATE notices SET ends_at = ? WHERE ended_at IS NULL")
+        .bind(identity::now() - 1)
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
     let (_, dir) = t.call("GET", "/v1/servers", None, None).await;
     assert!(dir.get("notices").is_none(), "{dir}");
 }

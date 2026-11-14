@@ -90,7 +90,11 @@ fn kept_out_by() -> std::sync::MutexGuard<'static, HashMap<String, (Instant, Str
 /// Why the player's sign-in was refused for maintenance in the last two minutes, if it was
 /// (a tester signs in, and then that server's is cleared).
 pub fn kept_out() -> Option<String> {
-    kept_out_by().values().filter(|(at, _)| at.elapsed() < Duration::from_secs(120)).max_by_key(|(at, _)| *at).map(|(_, why)| why.clone())
+    kept_out_by()
+        .values()
+        .filter(|(at, _)| at.elapsed() < Duration::from_secs(120))
+        .max_by_key(|(at, _)| *at)
+        .map(|(_, why)| why.clone())
 }
 
 /// Holds by server, and by server, account and password (hashed).
@@ -252,7 +256,11 @@ mod tests {
         let status = tonic::Status::unavailable("Closed for maintenance until 21:30 UTC. Only testers can play until then.");
         let f = Failure::of_status(&status);
         assert!(matches!(f, Failure::Closed(_)));
-        assert_eq!(Failure::of_status(&tonic::Status::unavailable("down")), Failure::Connection, "a plain unavailable is a connection failure");
+        assert_eq!(
+            Failure::of_status(&tonic::Status::unavailable("down")),
+            Failure::Connection,
+            "a plain unavailable is a connection failure"
+        );
         record_at(s, "Kiwi", "pw", Some(&f), t);
         assert!(why_not_at(s, "Kiwi", "pw", t + Duration::from_secs(30)).unwrap().starts_with("Closed for maintenance"));
         assert_eq!(why_not_at(s, "Kiwi", "pw", t + Duration::from_secs(61)), None);

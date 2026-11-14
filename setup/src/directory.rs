@@ -649,7 +649,9 @@ mod tests {
         assert!(list[1].maintenance.is_empty() && list[2].maintenance.is_empty());
         assert_eq!(parse_network_maintenance(json).map(|w| w.note), Some("New coordinator".into()));
         assert_eq!(parse_network_maintenance(r#"{"servers":[]}"#), None);
-        let n = parse_notices(r#"{"servers":[],"notices":[{"id":4,"text":"We're on it\n","kind":"issue","posted":10,"version":12},{"id":5,"text":" ","kind":"info","posted":1},{"id":6,"text":"Hotfix tonight","kind":"odd","posted":2}]}"#);
+        let n = parse_notices(
+            r#"{"servers":[],"notices":[{"id":4,"text":"We're on it\n","kind":"issue","posted":10,"version":12},{"id":5,"text":" ","kind":"info","posted":1},{"id":6,"text":"Hotfix tonight","kind":"odd","posted":2}]}"#,
+        );
         assert_eq!(n.len(), 2, "an empty one is left out: {n:?}");
         assert_eq!((n[0].text.as_str(), n[0].kind, n[0].key().as_str()), ("We're on it", "issue", "4:12"));
         assert_eq!((n[1].kind, n[1].version), ("info", 2), "an unknown kind is news; no version: its post time");

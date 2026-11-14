@@ -809,7 +809,11 @@ impl Friends for MyFriends {
         info!(
             self.logger,
             "NewMatch: {me}'s searches find nothing until they host a match{}",
-            if dropped > 0 { format!(" ({dropped} invitation(s) waiting for them dropped)") } else { String::new() }
+            if dropped > 0 {
+                format!(" ({dropped} invitation(s) waiting for them dropped)")
+            } else {
+                String::new()
+            }
         );
         Ok(Response::new(friends::NewMatchResponse {
             seconds: u32::try_from(crate::search_steer::FOR.as_secs()).unwrap_or(u32::MAX),
@@ -1894,7 +1898,14 @@ impl Misc for MyMisc {
             return Err(Status::resource_exhausted("Too many requests; slow down"));
         }
         let r = request.into_inner();
-        let hosted: Vec<_> = self.storage.find_host_sessions_async(user_id).await.map_err(internal)?.into_iter().filter(|s| is_match_room(s)).collect();
+        let hosted: Vec<_> = self
+            .storage
+            .find_host_sessions_async(user_id)
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .filter(|s| is_match_room(s))
+            .collect();
         let rooms: Vec<u32> = hosted.iter().map(|s| s.session_id).collect();
         // The match's game mode (attribute 102), for R2's menu ranges.
         let game_mode = hosted.iter().find_map(|s| crate::game_session::attribute_value(&s.attributes, 102));
@@ -1945,7 +1956,10 @@ impl Misc for MyMisc {
             } else if let Ok(Some(host)) = self.storage.match_host_of_async(user_id).await {
                 let noted = crate::weapon_check::weapons().guest_said(user_id, host, &r.weapons);
                 if let Some(detail) = noted {
-                    warn!(self.logger, "Fair play: {user_id}'s game has other weapon stats than its host {host}'s: {}", detail["detail"]);
+                    warn!(
+                        self.logger,
+                        "Fair play: {user_id}'s game has other weapon stats than its host {host}'s: {}", detail["detail"]
+                    );
                     crate::session_events::note(crate::session_events::Who::Id(user_id), "fair_play", detail);
                 }
             }

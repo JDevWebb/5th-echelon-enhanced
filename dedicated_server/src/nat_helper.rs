@@ -122,12 +122,12 @@ pub fn ticket_for(name: &str, key: Option<&nat_proto::SessionKey>) -> Option<nat
 /// must be. The name it proves.
 pub fn tunnel_auth(data: &[u8]) -> Option<String> {
     let keys = KEYS.get()?;
-    let Message::Probe { nonce, name, ticket, cookie, .. } = Message::decode(data)? else { return None };
+    let Message::Probe { nonce, name, ticket, cookie, .. } = Message::decode(data)? else {
+        return None;
+    };
     let (key, signature) = nat_proto::key_of(data)?;
-    (!name.is_empty()
-        && ticket_valid(keys, &name, &ticket, today(), Some(&key))
-        && identity::verify_bytes(&key, &nat_proto::probe_message(nonce, &cookie, &name), &signature))
-    .then_some(name)
+    (!name.is_empty() && ticket_valid(keys, &name, &ticket, today(), Some(&key)) && identity::verify_bytes(&key, &nat_proto::probe_message(nonce, &cookie, &name), &signature))
+        .then_some(name)
 }
 
 /// Sets the helper's keys for a test (as a test of its own does), the same in every test.
@@ -2277,7 +2277,10 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
             if let Message::ProbeReply { flags: rf, .. } = &reply {
                 if rf & reply_flags::PORT_TAKEN != 0 {
                     if crate::clients::worth_saying(&format!("port-taken/{src}")) {
-                        info!(logger, "NAT helper: {name} at {src} says its router forwards that port to it, but another player is live there: told to forward another (said once an hour)");
+                        info!(
+                            logger,
+                            "NAT helper: {name} at {src} says its router forwards that port to it, but another player is live there: told to forward another (said once an hour)"
+                        );
                     }
                     let _ = socket.send_to(&reply.encode(), src);
                     continue;
@@ -2584,7 +2587,10 @@ mod tests {
         assert!(t.advertised_for("HomeTwo", (*at.ip()).into()).is_none());
         let later = now + Duration::from_secs(60);
         let reply = t.probe(at, probe_flags::HAS_MAPPING, 3, Some(at), "HomeTwo", later);
-        assert!(matches!(reply, Message::ProbeReply { flags, .. } if flags & reply_flags::PORT_TAKEN == 0), "the first went quiet: a restart");
+        assert!(
+            matches!(reply, Message::ProbeReply { flags, .. } if flags & reply_flags::PORT_TAKEN == 0),
+            "the first went quiet: a restart"
+        );
     }
 
     /// J1: a direct player's mapping is checked from another address; one whose check comes back
@@ -2595,7 +2601,10 @@ mod tests {
         let mut t = table(RelayMode::Auto);
         let (good, bad) = (a("198.51.100.30:13000"), a("198.51.100.31:13000"));
         assert!(!advertise(&t.probe(good, probe_flags::HAS_MAPPING, 1, Some(good), "Reachable", now)).1);
-        assert!(!advertise(&t.probe(bad, probe_flags::HAS_MAPPING, 1, Some(bad), "Unreachable", now)).1, "direct until the check fails");
+        assert!(
+            !advertise(&t.probe(bad, probe_flags::HAS_MAPPING, 1, Some(bad), "Unreachable", now)).1,
+            "direct until the check fails"
+        );
         let checks = t.take_reach_out();
         assert_eq!(checks.iter().map(|(to, _)| *to).collect::<Vec<_>>(), vec![good, bad], "one each, to the mapped address");
         assert!(t.take_reach_out().is_empty());
@@ -2604,7 +2613,10 @@ mod tests {
         t.note_reach("Unreachable", Some(12345), now + Duration::from_secs(1));
         let later = now + REACH_WAIT + Duration::from_secs(1);
         assert!(!advertise(&t.probe(good, probe_flags::HAS_MAPPING, 2, Some(good), "Reachable", later)).1, "proven: direct");
-        assert!(advertise(&t.probe(bad, probe_flags::HAS_MAPPING, 2, Some(bad), "Unreachable", later)).1, "nothing came back: relayed");
+        assert!(
+            advertise(&t.probe(bad, probe_flags::HAS_MAPPING, 2, Some(bad), "Unreachable", later)).1,
+            "nothing came back: relayed"
+        );
         let why = |t: &Table, name: &str| t.by_name.get(&identity::name_key(name)).and_then(|id| t.peers.get(id)).map(|p| p.why);
         assert_eq!(why(&t, "Unreachable"), Some("unreachable_mapping"));
         assert!(t.take_reach_out().is_empty(), "no new check while one is out or proven");

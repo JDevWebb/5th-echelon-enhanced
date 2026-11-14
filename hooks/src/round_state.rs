@@ -174,8 +174,12 @@ const SETTINGS: [&str; 34] = [
 /// script's declarations (Blacklist.umd's package order).
 pub(crate) fn class_bools(class: &str) -> Vec<(u16, u32, Option<String>)> {
     let names = name_indices(&["Class", "BoolProperty", class_name_static(class)]);
-    let Some(owner) = classes_named(&names, class_name_static(class)).first().copied() else { return Vec::new() };
-    let Some(bool_class) = names.get("BoolProperty").map(|i| pack(*i, 0)) else { return Vec::new() };
+    let Some(owner) = classes_named(&names, class_name_static(class)).first().copied() else {
+        return Vec::new();
+    };
+    let Some(bool_class) = names.get("BoolProperty").map(|i| pack(*i, 0)) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     each_object(|o| {
         if read_u32(o + 0x18) == Some(owner as u32) && of_class(o, bool_class) {
@@ -602,7 +606,9 @@ fn test_bools(manager: usize) {
             let class = read_u32(p + 0x24).and_then(|c| read_u32(c as usize + 0x20)).and_then(name_text).unwrap_or_default();
             let offset = read::<u16>(p + 0x3a).unwrap_or(0);
             let words: Vec<String> = (0..40).map(|i| format!("{:#x}", read_u32(p + i * 4).unwrap_or(0))).collect();
-            let live = (owner.contains("MatchManager")).then(|| read_u32(manager + usize::from(offset)).map(|w| format!("{w:#010x}"))).flatten();
+            let live = (owner.contains("MatchManager"))
+                .then(|| read_u32(manager + usize::from(offset)).map(|w| format!("{w:#010x}")))
+                .flatten();
             info!("Bools: test: {name} on {owner} ({class}) at {offset}: +0x00.. {words:?}; the manager's word {live:?}");
         }
     }
@@ -647,7 +653,10 @@ fn test_setting(found: &Found, object: usize, adversarial: bool) {
         let _ = std::fs::remove_file(&file);
         for class in ["Pawn", "EPawn", "CharacterControl"] {
             let list = class_bools(class);
-            let shown: Vec<String> = list.iter().map(|(o, m, n)| format!("{o}:{m:#x}{}", n.as_deref().map(|n| format!("={n}")).unwrap_or_default())).collect();
+            let shown: Vec<String> = list
+                .iter()
+                .map(|(o, m, n)| format!("{o}:{m:#x}{}", n.as_deref().map(|n| format!("={n}")).unwrap_or_default()))
+                .collect();
             info!("Class bools: test: {class}: {} bools: {}", list.len(), shown.join(" "));
         }
         return;

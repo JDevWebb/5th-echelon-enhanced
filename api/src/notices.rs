@@ -165,7 +165,10 @@ mod tests {
     fn a_search_says_when_every_match_is_under_way() {
         let (title, text) = under_way_notice(1);
         assert_eq!(title, "The only match is under way");
-        assert_eq!(text, "It can't be joined until its round ends: pick it in the overlay's Matches tab to go in when it does, or host and wait for others.");
+        assert_eq!(
+            text,
+            "It can't be joined until its round ends: pick it in the overlay's Matches tab to go in when it does, or host and wait for others."
+        );
         assert_eq!(under_way_notice(3).0, "All 3 matches are under way");
     }
 

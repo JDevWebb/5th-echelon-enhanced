@@ -1618,13 +1618,15 @@ impl Storage {
     /// in another room, was put in the inviter's room after all, or sent to a room it no longer
     /// meant to join (na1, 13 Nov 2026: 119 of 129 such answers ended in no join). How many.
     pub async fn drop_invites_to_async(&self, receiver: u32, keep: Option<u32>) -> Result<u64> {
-        Ok(sqlx::query("DELETE FROM invites WHERE receiver = ? AND consumed_at IS NULL AND (? IS NULL OR session_id IS NOT ?)")
-            .bind(receiver)
-            .bind(keep)
-            .bind(keep)
-            .execute(&self.pool)
-            .await?
-            .rows_affected())
+        Ok(
+            sqlx::query("DELETE FROM invites WHERE receiver = ? AND consumed_at IS NULL AND (? IS NULL OR session_id IS NOT ?)")
+                .bind(receiver)
+                .bind(keep)
+                .bind(keep)
+                .execute(&self.pool)
+                .await?
+                .rows_affected(),
+        )
     }
 
     pub fn drop_invites_to(&self, receiver: u32, keep: Option<u32>) -> Result<u64> {

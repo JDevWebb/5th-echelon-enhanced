@@ -54,7 +54,14 @@ mod tests {
     use super::*;
 
     fn ports(tunnel: bool) -> setup::server_info::Ports {
-        setup::server_info::Ports { api: 80, login: 21126, nat: Some(21128), api_tls: Some(443), secure: Some(21127), tunnel }
+        setup::server_info::Ports {
+            api: 80,
+            login: 21126,
+            nat: Some(21128),
+            api_tls: Some(443),
+            secure: Some(21127),
+            tunnel,
+        }
     }
 
     #[test]

@@ -54,7 +54,11 @@ static GATE: std::sync::LazyLock<Gate> = std::sync::LazyLock::new(|| {
 
 impl Gate {
     pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
-        Self { kept: Mutex::new(None), was_closed: Mutex::new(false), path: path.into() }
+        Self {
+            kept: Mutex::new(None),
+            was_closed: Mutex::new(false),
+            path: path.into(),
+        }
     }
 
     fn kept(&self) -> std::sync::MutexGuard<'_, Option<Kept>> {
@@ -170,7 +174,11 @@ fn utc_time(t: i64) -> String {
         let mp = (5 * doy + 2) / 153;
         let d = doy - (153 * mp + 2) / 5 + 1;
         let m = if mp < 10 { mp + 3 } else { mp - 9 };
-        format!("{} {d} {}", ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][(m - 1) as usize], time)
+        format!(
+            "{} {d} {}",
+            ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][(m - 1) as usize],
+            time
+        )
     }
 }
 
@@ -216,7 +224,15 @@ mod tests {
 
     #[test]
     fn the_end_is_said_in_utc() {
-        let w = Window { start: 0, end: 86_400 * 3 + 21 * 3600 + 30 * 60, note: String::new(), closed: true };
-        assert_eq!(message(&w), "Closed for maintenance until Jan 4 21:30 UTC. Only testers can play until then; Support in the launcher still works.");
+        let w = Window {
+            start: 0,
+            end: 86_400 * 3 + 21 * 3600 + 30 * 60,
+            note: String::new(),
+            closed: true,
+        };
+        assert_eq!(
+            message(&w),
+            "Closed for maintenance until Jan 4 21:30 UTC. Only testers can play until then; Support in the launcher still works."
+        );
     }
 }

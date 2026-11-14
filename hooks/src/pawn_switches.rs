@@ -26,11 +26,22 @@ use crate::round_state as rs;
 
 /// The switches: (class, how many bools it declares, (index among them, name)).
 const SWITCHES: [(&str, usize, &[(usize, &str)]); 3] = [
-    ("Pawn", 26, &[(2, "m_bInvisible"), (3, "m_bStateInvisible"), (4, "m_bStateUnhittable"), (25, "m_bBlockDamage")]),
+    (
+        "Pawn",
+        26,
+        &[(2, "m_bInvisible"), (3, "m_bStateInvisible"), (4, "m_bStateUnhittable"), (25, "m_bBlockDamage")],
+    ),
     (
         "EPawn",
         85,
-        &[(0, "m_bInvincible"), (1, "m_bOverrideHealthTuning"), (3, "m_bGodMode"), (4, "m_bGodModeOverride"), (5, "m_bGhostMode"), (45, "bDamageInsensitive")],
+        &[
+            (0, "m_bInvincible"),
+            (1, "m_bOverrideHealthTuning"),
+            (3, "m_bGodMode"),
+            (4, "m_bGodModeOverride"),
+            (5, "m_bGhostMode"),
+            (45, "bDamageInsensitive"),
+        ],
     ),
     ("CharacterControl", 39, &[(30, "m_bUnlimitedInventory")]),
 ];
@@ -58,7 +69,14 @@ fn placed(bools: &[(u16, u32)], declared: usize, wanted: &[(usize, &'static str)
     }
     wanted
         .iter()
-        .filter_map(|(i, name)| bools.get(*i).map(|(offset, mask)| Place { name, on_character, offset: *offset, mask: *mask }))
+        .filter_map(|(i, name)| {
+            bools.get(*i).map(|(offset, mask)| Place {
+                name,
+                on_character,
+                offset: *offset,
+                mask: *mask,
+            })
+        })
         .collect()
 }
 
@@ -68,7 +86,10 @@ fn look_up() -> Vec<Place> {
         let bools: Vec<(u16, u32)> = rs::class_bools(class).into_iter().map(|(o, m, _)| (o, m)).collect();
         let found = placed(&bools, declared, wanted, class != "CharacterControl");
         if found.is_empty() {
-            info!("Character switches: {class} has {} bools, not the {declared} expected: its switches aren't read", bools.len());
+            info!(
+                "Character switches: {class} has {} bools, not the {declared} expected: its switches aren't read",
+                bools.len()
+            );
         }
         out.extend(found);
     }
@@ -145,7 +166,11 @@ impl pawns::Watcher for PawnSwitches {
             let names = rs::name_indices(&["Class", "EPawn", "InitialHealth"]);
             self.initial_health = rs::class_named(&names, "EPawn").and_then(|c| rs::offset_in(&names, "InitialHealth", c));
             info!("Character switches: starting health at {:?}", self.initial_health);
-            info!("Character switches: {} of 11 found: {:?}", places.len(), places.iter().map(|p| (p.name, p.offset, p.mask)).collect::<Vec<_>>());
+            info!(
+                "Character switches: {} of 11 found: {:?}",
+                places.len(),
+                places.iter().map(|p| (p.name, p.offset, p.mask)).collect::<Vec<_>>()
+            );
             self.places = Some(places);
         }
         let Some(places) = self.places.as_ref().filter(|p| !p.is_empty()) else { return };
@@ -211,7 +236,9 @@ impl pawns::Watcher for PawnSwitches {
 /// character, `health999` its health.
 #[cfg(feature = "test-commands")]
 fn test_command(places: &[Place], own: &pawns::Sample) {
-    let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else { return };
+    let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else {
+        return;
+    };
     let Ok(text) = std::fs::read_to_string(&file) else { return };
     match text.trim() {
         "godmode" => {

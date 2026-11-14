@@ -346,7 +346,10 @@ mod tests {
         assert_eq!((req[0], req[1]), (2, 1), "version 2, MAP");
         assert_eq!(&req[4..8], &3600u32.to_be_bytes());
         assert_eq!(&req[8..24], &local.to_ipv6_mapped().octets());
-        assert_eq!((req[36], u16::from_be_bytes([req[40], req[41]]), u16::from_be_bytes([req[42], req[43]])), (17, 13000, 13000));
+        assert_eq!(
+            (req[36], u16::from_be_bytes([req[40], req[41]]), u16::from_be_bytes([req[42], req[43]])),
+            (17, 13000, 13000)
+        );
         let mut answer = req.clone();
         answer[1] = 0x81;
         answer[3] = 0;

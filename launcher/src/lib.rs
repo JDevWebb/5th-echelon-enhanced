@@ -6,9 +6,9 @@
 #![cfg_attr(not(feature = "gui"), allow(dead_code, unused_imports))]
 
 pub mod activity;
-pub mod autostart;
 #[cfg(feature = "gui")]
 mod app;
+pub mod autostart;
 pub mod chat;
 pub mod checks;
 pub mod connect;
@@ -38,9 +38,9 @@ mod shots;
 pub mod start;
 pub mod support;
 pub mod task;
-pub mod tunnel;
 #[cfg(feature = "gui")]
 mod theme;
+pub mod tunnel;
 pub mod update_notice;
 pub mod updater;
 pub mod version;

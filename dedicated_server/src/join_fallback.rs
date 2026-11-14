@@ -64,7 +64,13 @@ impl Joins {
         let mut moves = Vec::new();
 
         // The joiner: two hosts they failed with, each joined by someone else.
-        let failed_hosts: HashSet<u32> = self.failed.iter().filter(|(_, j, _)| *j == joiner).filter_map(|&(_, _, r)| host(r)).filter(|h| *h != joiner).collect();
+        let failed_hosts: HashSet<u32> = self
+            .failed
+            .iter()
+            .filter(|(_, j, _)| *j == joiner)
+            .filter_map(|&(_, _, r)| host(r))
+            .filter(|h| *h != joiner)
+            .collect();
         let others_got_in = |h: u32, host: &mut dyn FnMut(u32) -> Option<u32>| self.worked.iter().any(|&(_, j, r)| j != joiner && host(r) == Some(h));
         let proven: Vec<u32> = failed_hosts.iter().copied().filter(|h| others_got_in(*h, &mut host)).collect();
         if proven.len() >= 2 && !self.moved.contains(&joiner) {
@@ -72,8 +78,12 @@ impl Joins {
         }
 
         // The host: two players failed to join them, each of whom got in elsewhere.
-        let failed_joiners: HashSet<u32> =
-            self.failed.iter().filter(|&&(_, j, r)| j != this_host && host(r) == Some(this_host)).map(|&(_, j, _)| j).collect();
+        let failed_joiners: HashSet<u32> = self
+            .failed
+            .iter()
+            .filter(|&&(_, j, r)| j != this_host && host(r) == Some(this_host))
+            .map(|&(_, j, _)| j)
+            .collect();
         let joined_elsewhere = |j: u32, host: &mut dyn FnMut(u32) -> Option<u32>| self.worked.iter().any(|&(_, w, r)| w == j && host(r).is_some_and(|h| h != this_host));
         let proven: Vec<u32> = failed_joiners.iter().copied().filter(|j| joined_elsewhere(*j, &mut host)).collect();
         if proven.len() >= 2 && !self.moved.contains(&this_host) && !moves.contains(&this_host) {
@@ -97,7 +107,8 @@ pub fn joins() -> std::sync::MutexGuard<'static, Joins> {
 
 /// What the overlay tells a player moved to the relay.
 pub const MOVED_TITLE: &str = "Your games now go through the server";
-pub const MOVED_TEXT: &str = "Your joins kept failing, so your games now go through the server. If this keeps happening, choose Always through the server in the launcher's Settings › Network.";
+pub const MOVED_TEXT: &str =
+    "Your joins kept failing, so your games now go through the server. If this keeps happening, choose Always through the server in the launcher's Settings › Network.";
 
 #[cfg(test)]
 mod tests {

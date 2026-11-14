@@ -49,10 +49,12 @@ pub fn on() -> bool {
 
 /// Starts the tunnel to `target` (the launcher's `networking.tunnel`).
 pub fn start(target: hooks_config::Tunnel) {
-    let Some(server) = (target.host.as_str(), 443).to_socket_addrs().ok().and_then(|mut a| a.find_map(|a| match a {
-        std::net::SocketAddr::V4(v4) => Some(*v4.ip()),
-        std::net::SocketAddr::V6(_) => None,
-    })) else {
+    let Some(server) = (target.host.as_str(), 443).to_socket_addrs().ok().and_then(|mut a| {
+        a.find_map(|a| match a {
+            std::net::SocketAddr::V4(v4) => Some(*v4.ip()),
+            std::net::SocketAddr::V6(_) => None,
+        })
+    }) else {
         warn!("Tunnel: {} didn't resolve; the game's traffic goes as usual", target.host);
         return;
     };
@@ -153,7 +155,9 @@ async fn run(url: String, forwarders: Vec<Forwarder>) {
 /// TLS with the usual web roots (the server's certificate is a public one, Caddy's), on ring as
 /// the rest of the add-on's TLS is.
 fn connector() -> Option<tokio_tungstenite::Connector> {
-    let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+    let roots = rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
     let config = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
         .with_safe_default_protocol_versions()
         .ok()?

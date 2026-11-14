@@ -2314,13 +2314,7 @@ struct RebootSettings {
     any_hour: Option<bool>,
 }
 
-async fn reboot_settings(
-    State(c): State<Shared>,
-    Extension(client): Extension<Client>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-    Json(req): Json<RebootSettings>,
-) -> Response {
+async fn reboot_settings(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Path(id): Path<String>, Json(req): Json<RebootSettings>) -> Response {
     let s = match c.full(&headers, &client).await {
         Ok(s) => s,
         Err(r) => return r,
@@ -2328,7 +2322,15 @@ async fn reboot_settings(
     let now = identity::now();
     if let Some(hours) = &req.quiet_hours {
         match c.set_quiet_hours(&id, Some(hours)).await {
-            Ok(true) => c.audit(&s.username, Some(&client), "set a server's quiet hours", &format!("{id}: {}", if hours.trim().is_empty() { "learned" } else { hours.trim() })).await,
+            Ok(true) => {
+                c.audit(
+                    &s.username,
+                    Some(&client),
+                    "set a server's quiet hours",
+                    &format!("{id}: {}", if hours.trim().is_empty() { "learned" } else { hours.trim() }),
+                )
+                .await
+            }
             Ok(false) => return fail(StatusCode::BAD_REQUEST, "quiet hours are from-to in UTC hours, like 4-7 (or empty to learn them)"),
             Err(e) => return internal(e),
         }
@@ -2337,7 +2339,13 @@ async fn reboot_settings(
         if let Err(e) = c.set_reboot_any_hour(&id, on, now).await {
             return internal(e);
         }
-        c.audit(&s.username, Some(&client), if on { "reboot when empty, any hour" } else { "reboot only in quiet hours" }, &id).await;
+        c.audit(
+            &s.username,
+            Some(&client),
+            if on { "reboot when empty, any hour" } else { "reboot only in quiet hours" },
+            &id,
+        )
+        .await;
     }
     ok(json!({ "ok": true }))
 }

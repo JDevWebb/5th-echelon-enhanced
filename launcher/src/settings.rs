@@ -1418,7 +1418,10 @@ pub fn allow_game_through_firewall(game_dir: &std::path::Path) -> Result<(), Str
     let script = allow_script(game_dir).ok_or("The game's programs weren't found in its folder.")?;
     // The script goes to the elevated PowerShell encoded (UTF-16LE, base64): no quoting to get
     // wrong between the two shells. -PassThru gives its exit code.
-    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, script.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>());
+    let encoded = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        script.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>(),
+    );
     let outer = format!(
         "try {{ $p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{encoded}'; exit $p.ExitCode }} catch {{ exit 1223 }}"
     );
@@ -1527,7 +1530,13 @@ pub fn vpn_adapters(adapters: &[(String, std::net::IpAddr)]) -> Vec<String> {
                 },
                 std::net::IpAddr::V6(_) => None,
             };
-            by_name.or(by_range).map(|vpn| if name.to_lowercase().contains(&vpn.to_lowercase()) { name.clone() } else { format!("{vpn} ({name})") })
+            by_name.or(by_range).map(|vpn| {
+                if name.to_lowercase().contains(&vpn.to_lowercase()) {
+                    name.clone()
+                } else {
+                    format!("{vpn} ({name})")
+                }
+            })
         })
         .collect()
 }
@@ -1668,8 +1677,9 @@ mod tests {
 
 #[cfg(test)]
 mod vpn_tests {
-    use super::firewall_says;
     use setup::diagnose::Status;
+
+    use super::firewall_says;
 
     /// J3: the game's inbound firewall rules, as PowerShell lists them.
     #[test]
@@ -1681,7 +1691,10 @@ mod vpn_tests {
         assert_eq!(status, Status::Warn);
         assert!(why.unwrap().contains("blocks Blacklist_game.exe"));
         let single_off = r#"{"p":"C:\\Games\\Blacklist_DX11_game.exe","e":"False","a":"Allow"}"#;
-        assert!(firewall_says(Some(single_off)).1.unwrap().starts_with("no rule lets the game in"), "a lone rule, switched off");
+        assert!(
+            firewall_says(Some(single_off)).1.unwrap().starts_with("no rule lets the game in"),
+            "a lone rule, switched off"
+        );
         assert!(firewall_says(Some("")).1.unwrap().starts_with("no rule"), "none at all");
         assert_eq!(firewall_says(None).0, Status::Warn);
     }
@@ -1695,7 +1708,10 @@ mod vpn_tests {
         std::fs::write(dir.join("Blacklist_DX11_game.exe"), b"").unwrap();
         let script = super::allow_script(&dir).unwrap();
         assert!(script.contains("o''brien"), "a quote in the path is doubled: {script}");
-        assert!(script.contains("Blacklist_DX11_game.exe'") && !script.contains("Blacklist_game.exe'"), "only what's there: {script}");
+        assert!(
+            script.contains("Blacklist_DX11_game.exe'") && !script.contains("Blacklist_game.exe'"),
+            "only what's there: {script}"
+        );
         assert!(script.contains("New-NetFirewallRule") && script.contains("Disable-NetFirewallRule") && !script.contains("Remove-NetFirewallRule -Action"));
         std::fs::write(dir.join("Blacklist_game.exe"), b"").unwrap();
         assert!(super::allow_script(&dir).unwrap().contains("Blacklist_game.exe'"));

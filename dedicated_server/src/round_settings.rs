@@ -182,7 +182,10 @@ mod tests {
         assert!(outside_menu(4, &s(&[("m_iTimeLimit", 99999.0)])).is_empty(), "co-op isn't judged");
         // Score limits: SvM's default is offered; 99 hacks isn't.
         assert!(outside_menu(8, &s(&[("m_iScoreLimit", 3.0)])).is_empty());
-        assert_eq!(outside_menu(7, &s(&[("m_iScoreLimit", 99.0)])), vec!["score limit 99 (the menu offers 1, 2, 3)".to_string()]);
+        assert_eq!(
+            outside_menu(7, &s(&[("m_iScoreLimit", 99.0)])),
+            vec!["score limit 99 (the menu offers 1, 2, 3)".to_string()]
+        );
     }
 
     /// R4: a guest whose game reads other rules than its host's is noted once a round.

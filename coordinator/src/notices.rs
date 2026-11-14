@@ -86,7 +86,14 @@ impl Coordinator {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(id, text, kind, posted, edited, ends)| Notice { id, text, kind, posted, version: edited.unwrap_or(posted), ends })
+            .map(|(id, text, kind, posted, edited, ends)| Notice {
+                id,
+                text,
+                kind,
+                posted,
+                version: edited.unwrap_or(posted),
+                ends,
+            })
             .collect())
     }
 
@@ -167,7 +174,11 @@ mod tests {
 
     #[test]
     fn a_notice_is_one_short_line_of_a_known_kind() {
-        let p = |text: &str, kind: &str, hours| Post { text: text.into(), kind: kind.into(), hours };
+        let p = |text: &str, kind: &str, hours| Post {
+            text: text.into(),
+            kind: kind.into(),
+            hours,
+        };
         assert!(p("A hotfix is coming tonight", "info", None).check().is_ok());
         assert!(p("Looking into it", "issue", Some(6)).check().is_ok());
         assert!(p("  ", "info", None).check().is_err());

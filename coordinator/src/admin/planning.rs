@@ -141,7 +141,8 @@ async fn post_notice(State(c): State<Shared>, Extension(client): Extension<Clien
     }
     match c.post_notice(&p, &s.username, identity::now()).await {
         Ok(Some(id)) => {
-            c.audit(&s.username, Some(&client), "notice: posted", &format!("{id} ({}): {}", p.kind, p.text.trim())).await;
+            c.audit(&s.username, Some(&client), "notice: posted", &format!("{id} ({}): {}", p.kind, p.text.trim()))
+                .await;
             c.publish(Event::Notices);
             ok(json!({ "id": id }))
         }
@@ -160,7 +161,8 @@ async fn edit_notice(State(c): State<Shared>, Extension(client): Extension<Clien
     }
     match c.edit_notice(id, &p, identity::now()).await {
         Ok(true) => {
-            c.audit(&s.username, Some(&client), "notice: edited", &format!("{id} ({}): {}", p.kind, p.text.trim())).await;
+            c.audit(&s.username, Some(&client), "notice: edited", &format!("{id} ({}): {}", p.kind, p.text.trim()))
+                .await;
             c.publish(Event::Notices);
             ok(json!({ "ok": true }))
         }

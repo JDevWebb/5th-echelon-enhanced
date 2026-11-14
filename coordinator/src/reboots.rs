@@ -192,7 +192,11 @@ impl Coordinator {
         if text.is_some_and(|t| parse_hours(t).is_none()) {
             return Ok(false);
         }
-        sqlx::query("UPDATE servers SET quiet_hours = ? WHERE id = ?").bind(text).bind(server).execute(&self.pool).await?;
+        sqlx::query("UPDATE servers SET quiet_hours = ? WHERE id = ?")
+            .bind(text)
+            .bind(server)
+            .execute(&self.pool)
+            .await?;
         Ok(true)
     }
 
@@ -214,7 +218,11 @@ impl Coordinator {
             .fetch_optional(&self.pool)
             .await?
             .flatten();
-        let set: Option<String> = sqlx::query_scalar("SELECT quiet_hours FROM servers WHERE id = ?").bind(server).fetch_optional(&self.pool).await?.flatten();
+        let set: Option<String> = sqlx::query_scalar("SELECT quiet_hours FROM servers WHERE id = ?")
+            .bind(server)
+            .fetch_optional(&self.pool)
+            .await?
+            .flatten();
         Ok(serde_json::json!({
             "pending_since": state.pending_since,
             "overdue": state.pending_since.is_some_and(|t| now - t > OVERDUE),
@@ -238,7 +246,11 @@ mod tests {
     fn a_reboot_waits_for_a_window_or_an_empty_quiet_hour() {
         let quiet = parse_hours("4-7").unwrap();
         let at = |h: i64| DAY0 + h * 3600;
-        let pending = State { pending_since: Some(DAY0 - 3600), idle_since: Some(at(5) - 900), draining: false };
+        let pending = State {
+            pending_since: Some(DAY0 - 3600),
+            idle_since: Some(at(5) - 900),
+            draining: false,
+        };
         assert_eq!(why(&State { pending_since: None, ..pending }, at(5), true, &quiet, true), None, "nothing pending");
         assert_eq!(why(&pending, at(5), false, &quiet, false), Some("quiet"));
         assert_eq!(why(&pending, at(12), false, &quiet, false), None, "empty, but a busy hour");
@@ -247,14 +259,21 @@ mod tests {
         let busy = State { idle_since: None, ..pending };
         assert_eq!(why(&busy, at(5), false, &quiet, false), None, "someone on it");
         assert_eq!(why(&busy, at(12), true, &quiet, false), Some("window"), "a booked window: players were told");
-        let just = State { idle_since: Some(at(5) - 300), ..pending };
+        let just = State {
+            idle_since: Some(at(5) - 300),
+            ..pending
+        };
         assert_eq!(why(&just, at(5), false, &quiet, false), None, "empty for only 5 minutes");
     }
 
     #[test]
     fn quiet_hours_are_learned_from_play_and_read_from_an_admin() {
         // Busy 16:00-23:00, a little at 02:00; nothing else.
-        let sessions = vec![(DAY0 + 16 * 3600, DAY0 + 23 * 3600), (DAY0 + 16 * 3600, DAY0 + 23 * 3600), (DAY0 + 2 * 3600, DAY0 + 2 * 3600 + 600)];
+        let sessions = vec![
+            (DAY0 + 16 * 3600, DAY0 + 23 * 3600),
+            (DAY0 + 16 * 3600, DAY0 + 23 * 3600),
+            (DAY0 + 2 * 3600, DAY0 + 2 * 3600 + 600),
+        ];
         let hours = by_hour(&sessions, DAY0, DAY0 + 86_400);
         assert!((hours[16] - 7200.0).abs() < 1e-6 && (hours[2] - 600.0).abs() < 1e-6);
         let quiet = quiet_from(&hours);

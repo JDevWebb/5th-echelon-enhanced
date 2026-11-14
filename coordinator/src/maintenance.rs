@@ -281,19 +281,18 @@ impl Coordinator {
                     return Ok(None);
                 }
             }
-            let id: i64 = sqlx::query_scalar(
-                "INSERT INTO maintenance (server_id, starts, ends, note, created_by, created_at, kind, closed) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
-            )
-                .bind(server)
-                .bind(b.start)
-                .bind(b.end)
-                .bind(b.note.trim())
-                .bind(by)
-                .bind(now)
-                .bind(&b.kind)
-                .bind(b.closed)
-                .fetch_one(&mut *tx)
-                .await?;
+            let id: i64 =
+                sqlx::query_scalar("INSERT INTO maintenance (server_id, starts, ends, note, created_by, created_at, kind, closed) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id")
+                    .bind(server)
+                    .bind(b.start)
+                    .bind(b.end)
+                    .bind(b.note.trim())
+                    .bind(by)
+                    .bind(now)
+                    .bind(&b.kind)
+                    .bind(b.closed)
+                    .fetch_one(&mut *tx)
+                    .await?;
             ids.push(id);
         }
         tx.commit().await?;

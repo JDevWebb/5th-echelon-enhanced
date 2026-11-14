@@ -669,7 +669,14 @@ mod tests {
     #[test]
     fn a_closed_window_blocks_play_only_once_refused() {
         let clock = nz();
-        let mine = listing("eu1", "Frankfurt, Germany", vec![Window { closed: true, ..window(START, END, "Moving to a faster machine") }]);
+        let mine = listing(
+            "eu1",
+            "Frankfurt, Germany",
+            vec![Window {
+                closed: true,
+                ..window(START, END, "Moving to a faster machine")
+            }],
+        );
         let n = closed_notice(&mine, &mine.maintenance[0], START + 600, &clock, None);
         assert_eq!(n.heading, "Maintenance: testers only");
         assert!(n.blocks_play.is_none());
