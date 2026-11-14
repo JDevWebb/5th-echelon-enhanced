@@ -312,6 +312,14 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
                 }
             }
         }
+        // Found nothing because what it would have found is under way (a round can't be joined
+        // once started): the game only says it's searching, so the player hears why from us.
+        if sessions.is_empty() && started > 0 && !steered && detail.get("other_data").is_none() && detail.get("other_mode").is_none() {
+            if let Some(noted) = crate::reports::search_under_way(user_id, started) {
+                let (title, text) = server_api::notices::under_way_notice(started);
+                crate::reports::tell(user_id, title, text, Some(noted));
+            }
+        }
         // The rooms it answered with, to follow a search to the join or refusal after it.
         detail["rooms"] = sessions.iter().take(10).map(|s| s.session_id).collect::<Vec<_>>().into();
         // And each one's estimated round trip to the searcher (with far rooms on), by room:

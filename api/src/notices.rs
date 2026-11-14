@@ -142,9 +142,32 @@ pub fn other_mode_notice(mine: &str, theirs: &str, rooms: usize) -> (String, Str
     )
 }
 
+/// The overlay's notice for a matchmaking search that found nothing because the `rooms` matches
+/// it would have found are under way: a round can't be joined once it's started, and the game
+/// only says it's searching (Iceman, 13 Nov: everyone online was in one match mid-round).
+pub fn under_way_notice(rooms: usize) -> (String, String) {
+    let (title, which) = if rooms == 1 {
+        ("The only match is under way".to_string(), "It can't be joined until its round ends")
+    } else {
+        (format!("All {rooms} matches are under way"), "They can't be joined until their rounds end")
+    };
+    (
+        title,
+        format!("{which}: pick it in the overlay's Matches tab to go in when it does, or host and wait for others."),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_search_says_when_every_match_is_under_way() {
+        let (title, text) = under_way_notice(1);
+        assert_eq!(title, "The only match is under way");
+        assert_eq!(text, "It can't be joined until its round ends: pick it in the overlay's Matches tab to go in when it does, or host and wait for others.");
+        assert_eq!(under_way_notice(3).0, "All 3 matches are under way");
+    }
 
     #[test]
     fn a_search_says_what_else_is_open() {

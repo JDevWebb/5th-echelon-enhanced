@@ -342,6 +342,22 @@ pub fn search_other_mode(user: u32, mine: u32, theirs: u32, rooms: usize) -> Opt
     ))
 }
 
+/// A search of `user`'s found nothing but `rooms` matches under way, noted (and so told) once a
+/// minute at most, as [`search_other_mode`].
+pub fn search_under_way(user: u32, rooms: usize) -> Option<u64> {
+    let now = identity::now();
+    {
+        let all = events().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let lately = all
+            .get(&user)
+            .is_some_and(|l| l.iter().rev().any(|e| e.kind == "search_under_way" && now - e.at < SEARCH_NOTED_FOR));
+        if lately {
+            return None;
+        }
+    }
+    Some(note(user, "search_under_way", format!("{rooms} matches under way, none open"), None))
+}
+
 /// The NAT helper registered `name`, relayed or not.
 pub fn nat_registered(name: &str, relayed: bool) {
     let mut all = relayed_names().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
