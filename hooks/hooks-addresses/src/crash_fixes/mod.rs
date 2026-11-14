@@ -4,6 +4,7 @@
 //! runs them on an executable on disk, to see that every fix finds its place in a build without
 //! starting the game. Nothing here writes anything.
 
+pub mod async_linker;
 pub mod disruption;
 pub mod gear_list;
 pub mod load_order;

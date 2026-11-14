@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use hooks_addresses::chat_relay;
+use hooks_addresses::crash_fixes::async_linker;
 use hooks_addresses::crash_fixes::disruption;
 use hooks_addresses::crash_fixes::gear_list;
 use hooks_addresses::crash_fixes::load_order;
@@ -123,6 +124,10 @@ fn check(path: &Path) -> bool {
     report(
         "load-order-fix",
         load_order::locate(&img).map(|s| format!("reads {:#010x}, {:#010x}, end {:#010x}", s.first, s.second, s.done)),
+    );
+    report(
+        "async-linker-fix",
+        async_linker::locate(&img).map(|s| format!("linker read {:#010x}, out of time {:#010x}", s.site, s.stop)),
     );
     report(
         "migration-fix",

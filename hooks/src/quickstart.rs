@@ -735,6 +735,7 @@ unsafe fn test_command(mm: usize) {
         || text.trim() == "offsets"
         || text.trim() == "poke"
         || text.trim() == "end-round"
+        || text.trim().starts_with("no-linker")
         || text.trim().starts_with("pad ")
     {
         return;

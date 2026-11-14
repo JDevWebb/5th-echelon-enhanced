@@ -812,6 +812,7 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
             "gear-list-fix",
             "disruption-fix",
             "load-order-fix",
+            "async-linker-fix",
             "migration-fix",
         ]);
         if crate::texture_upload_fix::expected() {
@@ -839,6 +840,7 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
             crate::umd_read_fix::serve_reads_off_the_sequence();
         }
         crate::load_order_fix::guard_load_order();
+        crate::async_linker_fix::guard_async_linker();
         crate::migration_fix::end_stuck_migrations();
     }
 
