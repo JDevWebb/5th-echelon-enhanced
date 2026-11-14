@@ -34,6 +34,7 @@ use windows::Win32::UI::WindowsAndMessaging::MB_OK;
 mod addresses;
 mod api;
 mod autoclimb;
+mod bink;
 mod chat;
 mod chat_relay;
 mod code_cave;

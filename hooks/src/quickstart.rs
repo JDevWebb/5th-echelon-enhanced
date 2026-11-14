@@ -313,6 +313,7 @@ pub unsafe fn install(lobby: QuickStartLobby) {
     }
 
     // 2.-4. Hooks.
+    crate::bink::init();
     crate::hooks::hook!(SceneStartTickHook, Some(e.scenestart_tick), scene_start_tick);
     if let Some(at) = e.smi_step {
         crate::hooks::hook!(SmiStepHook, Some(at), smi_step);
@@ -566,6 +567,15 @@ fn online_result(this: *mut c_void, result: i32) {
     }
 }
 
+/// The title's "music", stopped as the quick start chooses the lobby: the soundtrack of the
+/// title's background video, which a normal start's travel to the hub ends ([`crate::bink`]).
+fn stop_title_video() {
+    let paused = crate::bink::pause_title_background();
+    if !paused.is_empty() {
+        info!("quickstart: +{} ms the title's background paused ({paused:?})", ms());
+    }
+}
+
 /// The online menu's tick (main thread): once the wanted entry stands in the list, focus it and
 /// call the menu's own "select".
 fn matchmaking_tick(this: *mut c_void, dt: f32) {
@@ -621,6 +631,7 @@ unsafe fn navigate(mm: usize) {
             let Some((col, ..)) = list else { return };
             if let Goal::Lobby { coop } = goal {
                 MODE_CHOSEN.store(true, Ordering::Relaxed);
+                stop_title_video();
                 if let Some(asked) = take_matchmaking_request() {
                     nav.then_matchmaking(coop, asked.playlist);
                 }
