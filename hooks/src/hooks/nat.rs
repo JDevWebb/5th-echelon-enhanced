@@ -1048,7 +1048,7 @@ fn ready_address(st: &State) -> Option<SocketAddrV4> {
     // only): nothing to wait for.
     let detect_done = st.second.is_none() || st.second_observed.is_some() || st.symmetric || st.first_reply_at.is_some_and(|t| t.elapsed() > DETECT_WAIT);
     // The forward still being checked (J1): the address may yet be the relay's. The game keeps
-    // the first address it's given, so it waits (the server gives up on the check after 8 s).
+    // the first address it's given, so it waits (the server gives up on the check after 3 s).
     if r.reach_pending && !r.relayed && st.reach_pending_since.is_none_or(|t| t.elapsed() < REACH_HOLD) {
         return None;
     }
@@ -1084,8 +1084,8 @@ fn tell_game(engine: *mut c_void, parse: usize, address: SocketAddrV4) {
 /// hasn't registered the game; one held that long is handed over as it was.
 const SERVER_ECHO_HOLD: Duration = Duration::from_secs(15);
 /// How long the game's address waits for the server's check of the router's forward (J1): the
-/// server gives up on it after 8 s and relays the player; past this the address goes as it is.
-const REACH_HOLD: Duration = Duration::from_secs(12);
+/// server gives up on it after 3 s and relays the player; past this the address goes as it is.
+const REACH_HOLD: Duration = Duration::from_secs(6);
 
 /// The server's last answer to the game's address ask held back ([`server_echo_held`]): the
 /// packet, its sender, and when.
@@ -1200,7 +1200,10 @@ fn echo_send(engine: *mut c_void) {
         st.echo_requests += 1;
         // Held while the helper may still answer: NAT set up and on (Auto or Relay; not Off, nor
         // a game whose server has no helper), and not the game's last asks.
-        let hold = matches!(st.mode, Some(NatMode::Auto | NatMode::Relay)) && st.echo_requests <= ECHO_ASKS_HELD;
+        // And while the server checks the router's forward (J1): the game takes its address only
+        // as an answer to an ask, and stops asking after a few seconds (the Surface, 16 Nov 2026).
+        let checking = st.reply.is_some_and(|r| r.reach_pending && !r.relayed) && st.reach_pending_since.is_some_and(|t| t.elapsed() < REACH_HOLD);
+        let hold = matches!(st.mode, Some(NatMode::Auto | NatMode::Relay)) && (st.echo_requests <= ECHO_ASKS_HELD || checking);
         (ready_address(&st), st.echo_requests == 1, hold)
     };
     if first {

@@ -40,8 +40,12 @@ const EXPIRY: Duration = Duration::from_secs(90);
 /// A registration heard from within this (a keepalive is every 20 s) is a live game: another
 /// name probing from its address and port is another PC, not this one restarted (J7).
 const LIVE_AT_ADDRESS: Duration = Duration::from_secs(25);
-/// A reach check not back in this long fails: the player is relayed (J1).
-const REACH_WAIT: Duration = Duration::from_secs(8);
+/// A reach check not back in this long fails: the player is relayed (J1). Short: the game waits
+/// for its address meanwhile and asks only for a few seconds (the Surface, 16 Nov 2026), and the
+/// check is one trip there and the nonce back with the next probe, sent at once.
+const REACH_WAIT: Duration = Duration::from_secs(3);
+/// Copies of each reach check sent: a lost one would relay a reachable player.
+const REACH_COPIES: usize = 3;
 /// A check not back is sent again after this (and so at most this often per player).
 const REACH_RESEND: Duration = Duration::from_secs(60);
 /// A proven mapping is checked again after this (a router that drops its forward mid-evening).
@@ -773,7 +777,9 @@ impl Table {
                     let nonce = rand::random::<u32>() | 1;
                     peer.reach = Some((nonce, now));
                     if self.reach_out.len() < 1000 {
-                        self.reach_out.push((m, nonce));
+                        for _ in 0..REACH_COPIES {
+                            self.reach_out.push((m, nonce));
+                        }
                     }
                 }
             }
@@ -2764,7 +2770,11 @@ mod tests {
         assert!(!advertise(&first).1, "direct until the check fails");
         assert!(pending(&first));
         let checks = t.take_reach_out();
-        assert_eq!(checks.iter().map(|(to, _)| *to).collect::<Vec<_>>(), vec![good, bad], "one each, to the mapped address");
+        let mut to: Vec<_> = checks.iter().map(|(to, _)| *to).collect();
+        to.dedup();
+        assert_eq!(to, vec![good, bad], "to the mapped address");
+        assert_eq!(checks.len(), 2 * REACH_COPIES, "each sent a few times, for a lost one");
+        let checks = [checks[0], checks[REACH_COPIES]];
         assert!(t.take_reach_out().is_empty());
         // The good one's game got the check and sends its nonce back.
         t.note_reach("Reachable", Some(checks[0].1), now + Duration::from_secs(1));
