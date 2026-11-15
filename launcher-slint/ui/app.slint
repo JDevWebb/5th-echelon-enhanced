@@ -39,9 +39,10 @@ export component AppWindow inherits Window {
     init => {
         Layout.width = root.width;
         Layout.height = root.height;
+        root.rail-compact = root.height < 720px;
     }
     changed width => { Layout.width = root.width; root.resized(); }
-    changed height => { Layout.height = root.height; root.resized(); }
+    changed height => { Layout.height = root.height; root.rail-compact = root.height < 720px; root.resized(); }
     // The window's size changed: the launcher's scale follows it (shell.rs, rescale).
     callback resized();
     out property <string> band: Layout.band;
@@ -223,6 +224,11 @@ export component AppWindow inherits Window {
     // F11 (full screen), Ctrl + / Ctrl − / Ctrl 0 (the launcher's size).
     callback shortcut(string);
 
+    // A short window: the side menu's entries closer. Set when the height changes, not bound to
+    // it: the menu's spacing is part of what the window asks for its height, and a binding went
+    // round that in a loop (Slint deprecates binding loops; they may panic later on).
+    property <bool> rail-compact;
+
     forward-focus: keys;
     keys := FocusScope {
         key-pressed(e) => {
@@ -268,7 +274,7 @@ export component AppWindow inherits Window {
                 current: root.screen == "setup" ? "play" : root.screen == "host" ? "servers" : root.screen;
                 unread: root.chat-unread;
                 support-unread: root.support-unread;
-                compact: root.height < 720px;
+                compact: root.rail-compact;
                 community: root.info.community;
                 requests: root.info.requests;
                 release: root.release;

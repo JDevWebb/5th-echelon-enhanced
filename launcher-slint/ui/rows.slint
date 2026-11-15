@@ -703,7 +703,7 @@ export component RowList inherits Rectangle {
     property <bool> two: root.side.length > 0;
     // Another page (its title): back to the top.
     in property <string> page;
-    changed page => { sv.viewport-y = 0; }
+    changed page => { sv.content-y = 0; }
     callback toggled(string, bool);
     callback chosen(string, int);
     callback slid(string, float);
