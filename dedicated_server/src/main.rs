@@ -352,7 +352,7 @@ fn handle_user_packet(logger: &Logger, packet: QPacket, client: SocketAddr, sock
     // and then with what was seen.
     let reply = match nat_helper::advertised_for_echo(client) {
         Some(advertise) => SocketAddr::V4(advertise),
-        None if nat_helper::relay_ip().is_some() && echo_waiting(client) => return,
+        None if nat_helper::relay_ip().is_some() && (echo_waiting(client) || nat_helper::reach_pending_at(client)) => return,
         None => client,
     };
     let mut response = packet.payload;

@@ -1245,9 +1245,17 @@ impl Table {
     /// this game only if it registered after the echo first asked (the game asks the moment
     /// its socket opens, before its hook registers), and no other port there asked for an echo
     /// around then (another game). Else nothing: the echo is answered as for an unknown player.
+    /// Whether the game at `src` waits for the check of its router's forward (J1): its address
+    /// echo isn't answered meanwhile, however long the echo has waited.
+    pub fn reach_pending_at(&self, src: SocketAddrV4, now: Instant) -> bool {
+        self.by_real.get(&src).and_then(|id| self.peers.get(id)).is_some_and(|p| reach_pending(p, now))
+    }
+
     pub fn advertised_for_echo(&mut self, src: SocketAddrV4, now: Instant) -> Option<SocketAddrV4> {
         let first_asked = self.echo_heard(src, now);
-        let settled = |p: &Peer| p.relayed || now.duration_since(p.settled_since) >= SETTLE;
+        // Not while the router's forward is still checked (J1): the address may yet be the
+        // relay's, and the game keeps the first one it's given.
+        let settled = |p: &Peer| p.relayed || (now.duration_since(p.settled_since) >= SETTLE && !reach_pending(p, now));
         if let Some(id) = self.by_real.get(&src).or_else(|| self.by_alias.get(&src)) {
             let p = self.peers.get(id)?;
             return settled(p).then_some(p.advertise);
@@ -1401,6 +1409,13 @@ fn remote_path(guest: &str, host: &str) -> Option<(Path, Vec<Option<String>>)> {
 }
 
 static TABLE: OnceLock<Arc<Mutex<Table>>> = OnceLock::new();
+
+/// A direct player whose router's forward is being checked (J1): the check out, not back, and
+/// not given up on (the verdict comes with their next probe after [`REACH_WAIT`]; a second more
+/// for it).
+fn reach_pending(p: &Peer, now: Instant) -> bool {
+    !p.relayed && p.reach_ok.is_none() && p.reach.is_some_and(|(_, sent)| now.saturating_duration_since(sent) <= REACH_WAIT + Duration::from_secs(2))
+}
 
 /// The server's storage, for a player's station URLs when the helper moves them ([`readdress`]).
 static STORAGE: OnceLock<Arc<crate::storage::Storage>> = OnceLock::new();
@@ -1557,6 +1572,12 @@ pub fn advertised_for(name: &str, ip: IpAddr) -> Option<SocketAddrV4> {
 
 /// The address the NAT helper checked for the game whose address echo came from `src` (its
 /// public one, or the relay's), when it runs and knows that game ([`Table::advertised_for_echo`]).
+/// Whether the game at `src` waits for the check of its router's forward (J1).
+pub fn reach_pending_at(src: SocketAddr) -> bool {
+    let Some(src) = v4(src) else { return false };
+    TABLE.get().and_then(|t| t.lock().ok()).is_some_and(|t| t.reach_pending_at(src, Instant::now()))
+}
+
 pub fn advertised_for_echo(src: SocketAddr) -> Option<SocketAddrV4> {
     let src = v4(src)?;
     TABLE.get()?.lock().ok()?.advertised_for_echo(src, Instant::now())
@@ -2753,6 +2774,10 @@ mod tests {
         assert!(!advertise(&soon).1 && !pending(&soon), "proven at once: direct, and the game may have it");
         let waiting = t.probe(bad, probe_flags::HAS_MAPPING, 5, Some(bad), "Unreachable", now + Duration::from_secs(2));
         assert!(!advertise(&waiting).1 && pending(&waiting), "not back yet: still waiting");
+        // The game's own address echo isn't answered meanwhile, past the usual settling too.
+        assert_eq!(t.advertised_for_echo(bad, now + SETTLE + Duration::from_secs(1)), None, "the check isn't back");
+        assert!(t.reach_pending_at(bad, now + SETTLE + Duration::from_secs(1)));
+        assert_eq!(t.advertised_for_echo(good, now + SETTLE + Duration::from_secs(1)), Some(good), "proven: its own address");
         assert!(!advertise(&t.probe(good, probe_flags::HAS_MAPPING, 2, Some(good), "Reachable", later)).1, "proven: direct");
         assert!(
             advertise(&t.probe(bad, probe_flags::HAS_MAPPING, 2, Some(bad), "Unreachable", later)).1,
@@ -2760,6 +2785,8 @@ mod tests {
         );
         let why = |t: &Table, name: &str| t.by_name.get(&identity::name_key(name)).and_then(|id| t.peers.get(id)).map(|p| p.why);
         assert_eq!(why(&t, "Unreachable"), Some("unreachable_mapping"));
+        assert!(!t.reach_pending_at(bad, later));
+        assert!(t.advertised_for_echo(bad, later).is_some_and(|a| a != bad), "relayed: the echo says the relay's address");
         assert!(t.take_reach_out().is_empty(), "no new check while one is out or proven");
     }
 
@@ -3169,7 +3196,10 @@ mod tests {
         // First a direct registration (a router mapping): not final until it has stood a while.
         let (direct, _) = advertise(&t.probe(src, probe_flags::HAS_MAPPING, 1, Some(src), "Solo", now));
         assert_eq!(t.advertised_for_echo(src, now), None, "the player may still move to the relay");
-        assert_eq!(t.advertised_for_echo(src, now + SETTLE), Some(direct));
+        assert_eq!(t.advertised_for_echo(src, now + SETTLE), None, "its forward's check isn't back (J1)");
+        let (_, nonce) = t.take_reach_out()[0];
+        t.note_reach("Solo", Some(nonce), now + Duration::from_millis(500));
+        assert_eq!(t.advertised_for_echo(src, now + SETTLE), Some(direct), "the check came back, and it stood a while");
         // Then its hook asks for the relay: final at once.
         let (relay, relayed) = advertise(&t.probe(src, nat_proto::probe_flags::WANT_RELAY, 2, None, "Solo", now));
         assert!(relayed);
