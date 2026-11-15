@@ -185,6 +185,15 @@ fn game_sign_in_status(result: Result<(), String>, account_ok: bool) -> (setup::
     }
 }
 
+/// What "How players reach this PC" says when the game's port is held.
+const PORT_HELD: &str = "Not tested: another program holds the game's match port (see below)";
+
+/// Whether a test's error is the game's port being held by another program (Windows' 10048,
+/// WSAEADDRINUSE; elsewhere "address in use").
+fn port_in_use(e: &str) -> bool {
+    e.contains("10048") || e.to_ascii_lowercase().contains("address in use") || e.contains("AddrInUse")
+}
+
 pub fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>, nat_mode: hooks_config::NatMode, game_dir: &std::path::Path) -> TestResults {
     use crate::network;
     let rt = crate::services::rt();
@@ -269,6 +278,10 @@ pub fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>, n
                 }
             }
         }
+        // The game's port held by another program (or the game): it can't be tested, and the
+        // port's own line below says why (a raw "only one usage of each socket address" read as
+        // a failure of its own: the Surface, 16 Nov 2026).
+        Err(e) if port_in_use(&e) => (Status::Warn, Some(PORT_HELD.into())),
         Err(e) => (Status::Fail, Some(e)),
     };
     let direct = match (nat_mode, direct) {
@@ -579,6 +592,15 @@ mod vpn_tests {
     }
 
     /// The firewall line reads the rules of this folder's game only, not another install's.
+    #[test]
+    fn a_held_port_isnt_a_failure_of_the_reach_test() {
+        assert!(super::port_in_use(
+            "I/O error: Only one usage of each socket address (protocol/network address/port) is normally permitted. (os error 10048)"
+        ));
+        assert!(super::port_in_use("Address in use (os error 98)"));
+        assert!(!super::port_in_use("no answer in time"));
+    }
+
     #[test]
     fn a_refused_game_sign_in_after_the_accounts_is_the_server_answering() {
         let denied = || Err::<(), String>("RMC error: AccessDenied".into());
