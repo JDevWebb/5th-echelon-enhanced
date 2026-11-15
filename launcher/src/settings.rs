@@ -1230,6 +1230,23 @@ fn connection_test(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui
     }
 }
 
+/// The game service's answer to the test's sign-in. The server lets a name sign in there only
+/// after its game client signed in to the API in the last day (the launcher's sign-in doesn't
+/// vouch for the game: servers since 0.3.156), so a player who hasn't played today is refused
+/// with the right password: with the account's sign-in fine just before, that's the server
+/// answering as it should, not a failure (the Surface, 16 Nov 2026).
+fn game_sign_in_status(result: Result<(), String>, account_ok: bool) -> (setup::diagnose::Status, Option<String>) {
+    use setup::diagnose::Status;
+    match result {
+        Ok(()) => (Status::Ok, None),
+        Err(e) if account_ok && e.contains("AccessDenied") => (
+            Status::Ok,
+            Some("The server answers; it lets the game itself sign in once the game has started and checked in".into()),
+        ),
+        Err(e) => (Status::Fail, Some(e)),
+    }
+}
+
 pub fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>, nat_mode: hooks_config::NatMode, game_dir: &std::path::Path) -> TestResults {
     use crate::network;
     let rt = crate::services::rt();
@@ -1253,11 +1270,11 @@ pub fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>, n
     let mut results: TestResults = Vec::new();
     let mut add = |name, (status, note): (Status, Option<String>)| results.push((name, status, note));
     add("Config server (port 80)", pass_fail(run(Box::pin(network::test_cfg_server(&profile.server)))));
-    add("API and account", pass_fail(run(Box::pin(network::test_login(api.clone(), user, pass)))));
-    add(
-        "Game service sign-in",
-        pass_fail(run(Box::pin(network::test_quazal_login(&profile.server, profile.login_port(), user, pass)))),
-    );
+    let api_ok = run(Box::pin(network::test_login(api.clone(), user, pass)));
+    let account_ok = api_ok.is_ok();
+    add("API and account", pass_fail(api_ok));
+    let quazal = run(Box::pin(network::test_quazal_login(&profile.server, profile.login_port(), user, pass)));
+    add("Game service sign-in", game_sign_in_status(quazal, account_ok));
     // Only a router that forwards UDP 13000 (or no router) lets the server's packet in
     // unasked. If it doesn't, ask the router for the mapping the game asks for while it
     // runs (UPnP, then NAT-PMP), try again, and take the mapping away. The outcome is
@@ -1703,7 +1720,7 @@ mod tests {
 mod vpn_tests {
     use setup::diagnose::Status;
 
-    use super::firewall_says;
+    use super::{firewall_says, game_sign_in_status};
 
     /// J3: the game's inbound firewall rules, as PowerShell lists them.
     #[test]
@@ -1743,6 +1760,15 @@ mod vpn_tests {
     }
 
     /// The firewall line reads the rules of this folder's game only, not another install's.
+    #[test]
+    fn a_refused_game_sign_in_after_the_accounts_is_the_server_answering() {
+        let denied = || Err::<(), String>("RMC error: AccessDenied".into());
+        assert_eq!(game_sign_in_status(denied(), true).0, Status::Ok, "the game hasn't checked in today");
+        assert_eq!(game_sign_in_status(denied(), false).0, Status::Fail, "the account's sign-in failed too");
+        assert_eq!(game_sign_in_status(Err("no answer in time".into()), true).0, Status::Fail);
+        assert_eq!(game_sign_in_status(Ok(()), true), (Status::Ok, None));
+    }
+
     #[test]
     fn the_firewall_line_reads_this_copys_rules_only() {
         let dir = std::env::temp_dir().join(format!("fe-rules-test-{}-o'neil", std::process::id()));
