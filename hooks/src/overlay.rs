@@ -639,6 +639,8 @@ fn describe_error(err: &crate::api::Error) -> (&'static str, String) {
             "Waiting to sign in again",
             String::from("The server had too many sign-ins from this game; it tries again in a few minutes."),
         ),
+        // A maintenance window that keeps all but testers out (0.5.2): it said "sign in again".
+        crate::api::Error::Refused(why) if why.starts_with("Closed for maintenance") => ("Closed for maintenance", why.clone()),
         crate::api::Error::Refused(why) => ("The server refused this game", why.clone()),
         _ => ("Lost the 5th Echelon server", format!("Reconnecting now. Invites are paused until it's back. {fix}")),
     }

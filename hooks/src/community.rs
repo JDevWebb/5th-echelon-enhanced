@@ -192,8 +192,10 @@ pub fn maintenance_warning(windows: &[Maintenance], now: i64) -> Option<(String,
         (
             format!("Closing for maintenance in {when}"),
             format!(
-                "Only testers can play for {}{note}: you'll be signed out when it starts. Finish your match before then.",
-                length(w.end - w.start)
+                "Only testers can play for {}{}. You'll be signed out when it starts: finish your match before then.",
+                length(w.end - w.start),
+                // In brackets: after a colon it ran into the line's own (the Surface, 16 Nov 2026).
+                if w.note.is_empty() { String::new() } else { format!(" ({})", w.note) }
             ),
         )
     } else if w.update {

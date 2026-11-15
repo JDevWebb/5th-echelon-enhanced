@@ -205,10 +205,11 @@ where
     match call().await {
         Err(e) if is_signed_out(&e) => {
             info!("Signed out by the server");
-            if relogin_after(used).await {
-                call().await
-            } else {
-                Err(e)
+            match relogin_after(used).await {
+                Ok(()) => call().await,
+                // Closed for maintenance (0.5.2): the server's words, not "sign in again".
+                Err(Some(closed)) => Err(closed),
+                Err(None) => Err(e),
             }
         }
         result => result,
@@ -822,28 +823,40 @@ pub fn set_build(path: &std::path::Path) {
 #[instrument]
 pub async fn relogin() -> bool {
     let used = TOKEN.lock().unwrap_or_else(PoisonError::into_inner).clone();
-    relogin_after(used).await
+    relogin_after(used).await.is_ok()
 }
 
 /// Signs in again, unless another call already did since `used` (the token a refused call
 /// went out with): then that token is the one to use. The token in use stays until a new one
 /// replaces it; clearing it first sent the game's other calls out without one ("Missing
 /// authorization" on eu1, seconds after each sign-in).
-async fn relogin_after(used: Option<MetadataValue<Ascii>>) -> bool {
+async fn relogin_after(used: Option<MetadataValue<Ascii>>) -> Result<(), Option<Error>> {
     let _one = RELOGIN.lock().await;
     let now = TOKEN.lock().unwrap_or_else(PoisonError::into_inner).clone();
     if now.is_some() && now != used {
-        return true;
+        return Ok(());
     }
     let Some((username, password)) = CREDS.lock().unwrap_or_else(PoisonError::into_inner).clone() else {
-        return false;
+        return Err(None);
     };
     info!("Signing in again");
-    let ok = login_async(&username, &password).await.is_ok();
-    if !ok {
-        let _ = TOKEN.lock().unwrap_or_else(PoisonError::into_inner).take();
+    match login_async(&username, &password).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = TOKEN.lock().unwrap_or_else(PoisonError::into_inner).take();
+            Err(closed_for_maintenance(&e).map(Error::Refused))
+        }
     }
-    ok
+}
+
+/// The server's refusal while a maintenance window keeps all but testers out (0.5.2), in its
+/// words ("Closed for maintenance until 21:00 UTC. Only testers can play until then...").
+fn closed_for_maintenance(e: &Error) -> Option<String> {
+    match e {
+        Error::GRPCStatus(s) if s.code() == tonic::Code::Unavailable && s.message().starts_with("Closed for maintenance") => Some(s.message().to_string()),
+        Error::Refused(why) if why.starts_with("Closed for maintenance") => Some(why.clone()),
+        _ => None,
+    }
 }
 
 /// Chat on the player's server (docs/chat.md): whether it's open to them, and what they may do.
