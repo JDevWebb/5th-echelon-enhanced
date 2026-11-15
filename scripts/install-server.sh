@@ -2877,6 +2877,19 @@ APT
   fi
   say "Reboots for system updates: timed by the server (empty, in its quiet hours, or in a booked window)"
 fi
+# Nor do they restart the 5th Echelon services: after a library update, Ubuntu's needrestart
+# restarted the server and coordinator straight away, dropping every game on it (de1, 14 Nov
+# 2026 06:05 UTC; a test server mid-match, 15 Nov). They take the new libraries at their next
+# restart instead: an update, or a reboot the server times as above.
+if [ "$use_systemd" -eq 1 ] && [ -d /etc/needrestart ]; then
+  mkdir -p /etc/needrestart/conf.d
+  cat > /etc/needrestart/conf.d/50-5th-echelon.conf <<'NR'
+# Written by install-server.sh: the 5th Echelon services are never restarted by needrestart
+# (every game on the server would drop); they restart with their updates, or the server's reboot.
+$nrconf{override_rc}{qr(^5th-echelon)} = 0;
+NR
+  say "Library updates: the 5th Echelon services aren't restarted by them (they wait for an update or reboot)"
+fi
 if [ "$use_systemd" -eq 1 ]; then install_backups; fi
 
 # A standby restores another server's encrypted backups: it needs the key that opens them,
