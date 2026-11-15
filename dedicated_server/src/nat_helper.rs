@@ -41,9 +41,9 @@ const EXPIRY: Duration = Duration::from_secs(90);
 /// name probing from its address and port is another PC, not this one restarted (J7).
 const LIVE_AT_ADDRESS: Duration = Duration::from_secs(25);
 /// A reach check not back in this long fails: the player is relayed (J1). Short: the game waits
-/// for its address meanwhile and asks only for a few seconds (the Surface, 16 Nov 2026), and the
-/// check is one trip there and the nonce back with the next probe, sent at once.
-const REACH_WAIT: Duration = Duration::from_secs(3);
+/// for its address meanwhile and stops asking between 2.25 and 3.5 s (the Surface, 16 Nov 2026),
+/// and the check is one trip there and the nonce back with the next probe, sent at once.
+const REACH_WAIT: Duration = Duration::from_millis(1200);
 /// Copies of each reach check sent: a lost one would relay a reachable player.
 const REACH_COPIES: usize = 3;
 /// A check not back is sent again after this (and so at most this often per player).
@@ -2782,7 +2782,7 @@ mod tests {
         let later = now + REACH_WAIT + Duration::from_secs(1);
         let soon = t.probe(good, probe_flags::HAS_MAPPING, 5, Some(good), "Reachable", now + Duration::from_secs(1));
         assert!(!advertise(&soon).1 && !pending(&soon), "proven at once: direct, and the game may have it");
-        let waiting = t.probe(bad, probe_flags::HAS_MAPPING, 5, Some(bad), "Unreachable", now + Duration::from_secs(2));
+        let waiting = t.probe(bad, probe_flags::HAS_MAPPING, 5, Some(bad), "Unreachable", now + Duration::from_millis(1100));
         assert!(!advertise(&waiting).1 && pending(&waiting), "not back yet: still waiting");
         // The game's own address echo isn't answered meanwhile, past the usual settling too.
         assert_eq!(t.advertised_for_echo(bad, now + SETTLE + Duration::from_secs(1)), None, "the check isn't back");

@@ -1048,7 +1048,7 @@ fn ready_address(st: &State) -> Option<SocketAddrV4> {
     // only): nothing to wait for.
     let detect_done = st.second.is_none() || st.second_observed.is_some() || st.symmetric || st.first_reply_at.is_some_and(|t| t.elapsed() > DETECT_WAIT);
     // The forward still being checked (J1): the address may yet be the relay's. The game keeps
-    // the first address it's given, so it waits (the server gives up on the check after 3 s).
+    // the first address it's given, so it waits (the server gives up on the check after 1.2 s).
     if r.reach_pending && !r.relayed && st.reach_pending_since.is_none_or(|t| t.elapsed() < REACH_HOLD) {
         return None;
     }
@@ -1084,7 +1084,7 @@ fn tell_game(engine: *mut c_void, parse: usize, address: SocketAddrV4) {
 /// hasn't registered the game; one held that long is handed over as it was.
 const SERVER_ECHO_HOLD: Duration = Duration::from_secs(15);
 /// How long the game's address waits for the server's check of the router's forward (J1): the
-/// server gives up on it after 3 s and relays the player; past this the address goes as it is.
+/// server gives up on it after 1.2 s and relays the player; past this the address goes as it is.
 const REACH_HOLD: Duration = Duration::from_secs(6);
 
 /// The server's last answer to the game's address ask held back ([`server_echo_held`]): the
@@ -1364,7 +1364,7 @@ fn worker(host: String, port: u16) {
             // Quickly while the server checks the forward (J1): its verdict comes with an answer.
             let interval = match st.reply {
                 Some(r) if !r.reach_pending => KEEPALIVE,
-                Some(_) => Duration::from_secs(1),
+                Some(_) => Duration::from_millis(250),
                 None => PROBE_INTERVAL,
             };
             if st.last_probe.is_some_and(|t| t.elapsed() < interval) {
