@@ -1720,7 +1720,8 @@ mod tests {
 mod vpn_tests {
     use setup::diagnose::Status;
 
-    use super::{firewall_says, game_sign_in_status};
+    use super::firewall_says;
+    use super::game_sign_in_status;
 
     /// J3: the game's inbound firewall rules, as PowerShell lists them.
     #[test]

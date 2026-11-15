@@ -122,6 +122,9 @@ struct Reply {
     observed: SocketAddrV4,
     advertise: SocketAddrV4,
     relayed: bool,
+    /// The server still checks that the router's forward lets others in (J1): the address
+    /// may turn into a relay address, so the game isn't given it yet.
+    reach_pending: bool,
     relay_ip: Ipv4Addr,
     relay_ports: (u16, u16),
 }
@@ -150,6 +153,8 @@ struct State {
     /// The last reach check that got through to the Storm socket (J1): its nonce goes back to
     /// the helper in each probe, proof the port mapping lets others in.
     reach_seen: Option<u32>,
+    /// When the server first said it checks the router's forward (J1, [`Reply::reach_pending`]).
+    reach_pending_since: Option<Instant>,
     /// The ticket for our name, from signing in (zeros: none yet).
     ticket: nat_proto::Ticket,
     /// The last cookie the server gave us, echoed in the next probe.
@@ -211,6 +216,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     echo_fallback_at: None,
     server_echo_held_said: false,
     reach_seen: None,
+    reach_pending_since: None,
     ticket: [0; 16],
     cookie: [0; 16],
     tag: [0; 8],
@@ -698,6 +704,7 @@ fn drop_storm_socket(s: usize) {
 /// Back to before the helper first answered: the next socket registers from scratch.
 fn forget_registration(st: &mut State) {
     st.reply = None;
+    st.reach_pending_since = None;
     st.first_reply_at = None;
     st.second_observed = None;
     st.symmetric = false;
@@ -976,10 +983,17 @@ fn on_reply(from_second: bool, observed: SocketAddrV4, advertise: SocketAddrV4, 
         observed,
         advertise,
         relayed: flags & reply_flags::RELAYED != 0,
+        reach_pending: flags & reply_flags::REACH_PENDING != 0,
         relay_ip,
         relay_ports,
     };
-    let changed = st.reply.is_none_or(|r| r.advertise != reply.advertise || r.relayed != reply.relayed);
+    if reply.reach_pending && st.reach_pending_since.is_none() {
+        info!("NAT: the server checks that the router's forward lets others in; the game's address waits for it");
+        st.reach_pending_since = Some(Instant::now());
+    }
+    let changed = st
+        .reply
+        .is_none_or(|r| r.advertise != reply.advertise || r.relayed != reply.relayed || r.reach_pending != reply.reach_pending);
     if st.first_reply_at.is_none() {
         st.first_reply_at = Some(Instant::now());
     }
@@ -1010,6 +1024,11 @@ fn ready_address(st: &State) -> Option<SocketAddrV4> {
     // No second port to hear from (through the tunnel, which carries the helper's own port
     // only): nothing to wait for.
     let detect_done = st.second.is_none() || st.second_observed.is_some() || st.symmetric || st.first_reply_at.is_some_and(|t| t.elapsed() > DETECT_WAIT);
+    // The forward still being checked (J1): the address may yet be the relay's. The game keeps
+    // the first address it's given, so it waits (the server gives up on the check after 8 s).
+    if r.reach_pending && !r.relayed && st.reach_pending_since.is_none_or(|t| t.elapsed() < REACH_HOLD) {
+        return None;
+    }
     // A symmetric NAT waits for the relay address.
     if st.symmetric && !r.relayed && st.mode != Some(NatMode::Off) && st.last_probe.is_none_or(|t| t.elapsed() < Duration::from_secs(3)) {
         return None;
@@ -1040,7 +1059,10 @@ fn tell_game(engine: *mut c_void, parse: usize, address: SocketAddrV4) {
 
 /// How long the server's own answer to the game's address ask is held back while the helper
 /// hasn't registered the game; one held that long is handed over as it was.
-const SERVER_ECHO_HOLD: Duration = Duration::from_secs(10);
+const SERVER_ECHO_HOLD: Duration = Duration::from_secs(15);
+/// How long the game's address waits for the server's check of the router's forward (J1): the
+/// server gives up on it after 8 s and relays the player; past this the address goes as it is.
+const REACH_HOLD: Duration = Duration::from_secs(12);
 
 /// The server's last answer to the game's address ask held back ([`server_echo_held`]): the
 /// packet, its sender, and when.
@@ -1052,7 +1074,7 @@ static HELD_ECHO: Mutex<Option<(Vec<u8>, SocketAddrV4, Instant)>> = Mutex::new(N
 fn held_echo_ready() -> Option<(Vec<u8>, SocketAddrV4)> {
     let mut held = HELD_ECHO.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let (_, _, at) = held.as_ref()?;
-    let advertise = state().reply.map(|r| r.advertise);
+    let advertise = ready_address(&state());
     if advertise.is_none() && at.elapsed() < SERVER_ECHO_HOLD {
         return None;
     }
@@ -1095,7 +1117,7 @@ fn server_echo_held(data: &[u8]) -> bool {
         return false;
     }
     let mut st = state();
-    let hold = st.reply.is_none() && matches!(st.mode, Some(NatMode::Auto | NatMode::Relay)) && st.echo_fallback_at.is_some_and(|t| t.elapsed() < SERVER_ECHO_HOLD);
+    let hold = ready_address(&st).is_none() && matches!(st.mode, Some(NatMode::Auto | NatMode::Relay)) && st.echo_fallback_at.is_some_and(|t| t.elapsed() < SERVER_ECHO_HOLD);
     if hold && !st.server_echo_held_said {
         st.server_echo_held_said = true;
         info!("NAT: the server's own answer to the game's address ask is kept from it until the helper registers this game");
@@ -1287,7 +1309,12 @@ fn worker(host: String, port: u16) {
         }
         let probes = {
             let mut st = state();
-            let interval = if st.reply.is_some() { KEEPALIVE } else { PROBE_INTERVAL };
+            // Quickly while the server checks the forward (J1): its verdict comes with an answer.
+            let interval = match st.reply {
+                Some(r) if !r.reach_pending => KEEPALIVE,
+                Some(_) => Duration::from_secs(1),
+                None => PROBE_INTERVAL,
+            };
             if st.last_probe.is_some_and(|t| t.elapsed() < interval) {
                 continue;
             }
@@ -1599,6 +1626,39 @@ mod tests {
         let mut want = ask.to_vec();
         want.extend_from_slice(b"udp:/address=45.77.236.203;port=40003\0");
         assert_eq!(out, want);
+    }
+
+    /// J1: while the server checks the router's forward, the game isn't given the address (it
+    /// keeps the first one, and a move to the relay after it couldn't be joined).
+    #[test]
+    fn the_address_waits_for_the_check_of_the_forward() {
+        let t0 = Instant::now();
+        let mut st = online(t0);
+        st.second = None;
+        let direct = Reply {
+            observed: "203.0.113.5:13000".parse().unwrap(),
+            advertise: "203.0.113.5:13000".parse().unwrap(),
+            relayed: false,
+            reach_pending: true,
+            relay_ip: Ipv4Addr::new(192, 0, 2, 1),
+            relay_ports: (40000, 40999),
+        };
+        st.reply = Some(direct);
+        st.reach_pending_since = Some(Instant::now());
+        assert_eq!(ready_address(&st), None, "the check isn't back");
+        st.reply = Some(Reply { reach_pending: false, ..direct });
+        assert_eq!(ready_address(&st), Some(direct.advertise), "it came back: direct");
+        let relay = "192.0.2.1:40007".parse().unwrap();
+        st.reply = Some(Reply {
+            advertise: relay,
+            relayed: true,
+            reach_pending: false,
+            ..direct
+        });
+        assert_eq!(ready_address(&st), Some(relay), "it didn't: the relay's");
+        st.reply = Some(direct);
+        st.reach_pending_since = Instant::now().checked_sub(REACH_HOLD);
+        assert_eq!(ready_address(&st), Some(direct.advertise), "no verdict in time: as it is");
     }
 
     #[test]

@@ -778,6 +778,9 @@ impl Table {
                 }
             }
         }
+        // The check not back yet, and not given up on: the client holds the address from its
+        // game until it is (J1).
+        let reach_pending = !relayed && peer.reach_ok.is_none() && peer.reach.is_some_and(|(_, sent)| now.saturating_duration_since(sent) <= REACH_WAIT);
         let tag = peer.tag;
         for a in &peer.aliases {
             self.by_alias.insert(*a, id);
@@ -797,7 +800,13 @@ impl Table {
             nonce,
             observed: src,
             advertise,
-            flags: if relayed { reply_flags::RELAYED } else { 0 },
+            flags: if relayed {
+                reply_flags::RELAYED
+            } else if reach_pending {
+                reply_flags::REACH_PENDING
+            } else {
+                0
+            },
             relay_ip: self.relay_ip,
             relay_ports: self.cfg.relay_ports,
             cookie: [0; 16],
@@ -2675,11 +2684,13 @@ mod tests {
         let now = Instant::now();
         let mut t = table(RelayMode::Auto);
         let (good, bad) = (a("198.51.100.30:13000"), a("198.51.100.31:13000"));
-        assert!(!advertise(&t.probe(good, probe_flags::HAS_MAPPING, 1, Some(good), "Reachable", now)).1);
-        assert!(
-            !advertise(&t.probe(bad, probe_flags::HAS_MAPPING, 1, Some(bad), "Unreachable", now)).1,
-            "direct until the check fails"
-        );
+        let pending = |m: &Message| matches!(m, Message::ProbeReply { flags, .. } if flags & reply_flags::REACH_PENDING != 0);
+        let first = t.probe(good, probe_flags::HAS_MAPPING, 1, Some(good), "Reachable", now);
+        assert!(!advertise(&first).1);
+        assert!(pending(&first), "the game's address waits for the check");
+        let first = t.probe(bad, probe_flags::HAS_MAPPING, 1, Some(bad), "Unreachable", now);
+        assert!(!advertise(&first).1, "direct until the check fails");
+        assert!(pending(&first));
         let checks = t.take_reach_out();
         assert_eq!(checks.iter().map(|(to, _)| *to).collect::<Vec<_>>(), vec![good, bad], "one each, to the mapped address");
         assert!(t.take_reach_out().is_empty());
@@ -2687,6 +2698,10 @@ mod tests {
         t.note_reach("Reachable", Some(checks[0].1), now + Duration::from_secs(1));
         t.note_reach("Unreachable", Some(12345), now + Duration::from_secs(1));
         let later = now + REACH_WAIT + Duration::from_secs(1);
+        let soon = t.probe(good, probe_flags::HAS_MAPPING, 5, Some(good), "Reachable", now + Duration::from_secs(1));
+        assert!(!advertise(&soon).1 && !pending(&soon), "proven at once: direct, and the game may have it");
+        let waiting = t.probe(bad, probe_flags::HAS_MAPPING, 5, Some(bad), "Unreachable", now + Duration::from_secs(2));
+        assert!(!advertise(&waiting).1 && pending(&waiting), "not back yet: still waiting");
         assert!(!advertise(&t.probe(good, probe_flags::HAS_MAPPING, 2, Some(good), "Reachable", later)).1, "proven: direct");
         assert!(
             advertise(&t.probe(bad, probe_flags::HAS_MAPPING, 2, Some(bad), "Unreachable", later)).1,

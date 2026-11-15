@@ -142,6 +142,11 @@ pub mod reply_flags {
     /// probe says the router forwards that port to this PC (two PCs behind one router, the
     /// forward colliding with the other's traffic, 0.5.2's J7). Forward another port.
     pub const PORT_TAKEN: u8 = 2;
+    /// Registered direct, but the router's forward of this PC's port is still being checked
+    /// (0.5.2's J1): `advertise` may still turn into a relay address, so the game isn't given it
+    /// yet. The game keeps the first address it's given; one moved to the relay later couldn't be
+    /// joined (the Surface, 16 Nov 2026). Older clients ignore it.
+    pub const REACH_PENDING: u8 = 4;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
