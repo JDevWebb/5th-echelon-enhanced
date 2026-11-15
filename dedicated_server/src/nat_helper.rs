@@ -1393,27 +1393,30 @@ fn remote_path(guest: &str, host: &str) -> Option<(Path, Vec<Option<String>>)> {
 
 static TABLE: OnceLock<Arc<Mutex<Table>>> = OnceLock::new();
 
-/// The helper's second port: reach checks go from it when no other relay can send them (J1).
-static SECOND_SOCKET: OnceLock<UdpSocket> = OnceLock::new();
+/// Reach checks go from a socket of their own, on a port the system picks (J1). Not the helper's
+/// ports: the game sends to both (its second probe is the NAT type check), and Windows Firewall,
+/// like most routers, lets in what comes from an address and port the game sent to, block rule
+/// or not; a check from the second port got in to a game blocked by one, and one from a fresh
+/// port was dropped (the Surface, 16 Nov 2026).
+static REACH_SOCKET: OnceLock<UdpSocket> = OnceLock::new();
 
 /// Sends the reach check `nonce` to `to` (a player's mapped address, J1): from another relay of
-/// the network when there is one (a stateful firewall lets in anything from an address the PC
-/// already talks to, so this server's own second port proves less), else from the second port.
+/// the network when there is one, else from this server's reach socket.
 fn send_reach(logger: &Logger, to: SocketAddrV4, nonce: u32) {
     if crate::relays::reach_via_another(to, nonce) {
         return;
     }
-    if let Some(socket) = SECOND_SOCKET.get() {
+    if let Some(socket) = REACH_SOCKET.get() {
         if let Err(e) = socket.send_to(&Message::Reach { nonce }.encode(), to) {
             debug!(logger, "NAT helper: reach check to {to} failed: {e}");
         }
     }
 }
 
-/// Sends a reach check another relay asked for (its player's mapped address), from this
-/// helper's port (J1).
+/// Sends a reach check another relay asked for (its player's mapped address), from the reach
+/// socket ([`REACH_SOCKET`]), or this helper's port without one (J1).
 pub fn send_reach_for_another(socket: &UdpSocket, to: SocketAddrV4, nonce: u32) {
-    let _ = socket.send_to(&Message::Reach { nonce }.encode(), to);
+    let _ = REACH_SOCKET.get().unwrap_or(socket).send_to(&Message::Reach { nonce }.encode(), to);
 }
 
 /// Pairs `a` and `b` for the relay ([`Table::introduce`]): the server had one's game probe
@@ -1639,13 +1642,16 @@ pub fn start(logger: &Logger, cfg: NatConfig, relay_ip: Ipv4Addr, may_relay: May
     );
     let mut threads = Vec::new();
 
+    match UdpSocket::bind(std::net::SocketAddr::new(cfg.listen.ip(), 0)) {
+        Ok(reach) => {
+            let _ = REACH_SOCKET.set(reach);
+        }
+        Err(e) => warn!(logger, "NAT helper: no socket for reach checks ({e}); forwarded ports aren't checked"),
+    }
     let mut second = cfg.listen;
     second.set_port(cfg.listen.port().wrapping_add(1));
     match UdpSocket::bind(second) {
         Ok(detect) => {
-            if let Ok(copy) = detect.try_clone() {
-                let _ = SECOND_SOCKET.set(copy);
-            }
             let logger = logger.clone();
             threads.push(std::thread::Builder::new().name("nat-detect".into()).spawn(move || detect_loop(&logger, &detect))?);
         }
