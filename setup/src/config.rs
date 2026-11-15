@@ -218,7 +218,8 @@ impl Config {
         let path = hooks_config::get_config_path(game_dir);
         let mut started_over = None;
         let inner = match fs::read_to_string(&path) {
-            Ok(s) => match toml::from_str::<Config>(&s) {
+            // A byte-order mark (an editor's) is no reason to call the file unreadable.
+            Ok(s) => match toml::from_str::<Config>(s.trim_start_matches('\u{feff}')) {
                 // A folder another tool manages keeps its file as that tool wrote it.
                 Ok(cfg) if cfg.format >= FORMAT || crate::overrides::managed_by(game_dir).is_some() => cfg,
                 Ok(old) => {

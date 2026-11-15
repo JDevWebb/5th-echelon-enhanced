@@ -333,9 +333,11 @@ impl Prefs {
     }
 
     pub fn load() -> Self {
+        // A byte-order mark (Notepad, PowerShell 5's UTF-8) made the whole file unreadable, and
+        // the launcher went on as if it had none (2026-11-15).
         let mut prefs: Self = Self::path()
             .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| toml::from_str(&s).ok())
+            .and_then(|s| toml::from_str(s.trim_start_matches('\u{feff}')).ok())
             .unwrap_or_default();
         // The community network's old name (until 0.4.5), saved by a player who typed it or
         // set it in Settings: its new one, once and for good.
@@ -659,6 +661,14 @@ impl Prefs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_byte_order_mark_doesnt_lose_the_settings() {
+        let text = "\u{feff}game_dir = 'D:\\Games\\Blacklist\\src\\SYSTEM'\ndirectory_set = true\n";
+        let prefs: Prefs = toml::from_str(text.trim_start_matches('\u{feff}')).unwrap();
+        assert_eq!(prefs.game_dir.as_deref(), Some(std::path::Path::new("D:\\Games\\Blacklist\\src\\SYSTEM")));
+        assert!(toml::from_str::<Prefs>(text).is_err(), "as read before: the whole file lost");
+    }
 
     #[test]
     fn the_play_mode_is_kept_and_reaches_the_game() {

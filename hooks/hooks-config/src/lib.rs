@@ -1425,7 +1425,7 @@ fn _get_or_load(path: &Path) -> anyhow::Result<&'static Config> {
     }
     let overrides_path = path.with_file_name(OVERRIDES_FILE);
     let overrides: Option<Overrides> = match fs::read_to_string(&overrides_path) {
-        Ok(content) => Some(toml::from_str(&content).map_err(|e| anyhow::anyhow!("{}: {e}", overrides_path.display()))?),
+        Ok(content) => Some(toml::from_str(content.trim_start_matches('\u{feff}')).map_err(|e| anyhow::anyhow!("{}: {e}", overrides_path.display()))?),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
         Err(err) => return Err(err.into()),
     };
@@ -1441,7 +1441,8 @@ fn _get_or_load(path: &Path) -> anyhow::Result<&'static Config> {
         }
         Err(err) => return Err(err.into()),
     };
-    let mut cfg: Config = toml::from_str(&content)?;
+    // A byte-order mark (an editor's) is no reason to fail.
+    let mut cfg: Config = toml::from_str(content.trim_start_matches('\u{feff}'))?;
     if let Some(overrides) = overrides {
         info!("Applying {}", overrides_path.display());
         overrides.apply(&mut cfg);
