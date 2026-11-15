@@ -793,7 +793,31 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
         retell_address();
     }
     if !is_storm_socket(s) || buf.is_null() || flags & MSG_PEEK != 0 {
+        // The server's answer to the game's address ask, held back on this socket (not the
+        // match socket: where it comes without the tunnel, the Surface, 16 Nov 2026).
+        if !buf.is_null() && flags & MSG_PEEK == 0 {
+            if let Some((answer, sender)) = held_echo_ready(s) {
+                if !from.is_null() && !fromlen.is_null() {
+                    write_addr(sender, from, fromlen);
+                }
+                return hand_over(&answer, buf, len);
+            }
+        }
         let n = unsafe { RecvFromHook.call(s, buf, len, flags, from, fromlen) };
+        if n > 0 && !buf.is_null() && flags & MSG_PEEK == 0 {
+            let data = unsafe { std::slice::from_raw_parts(buf, n as usize) };
+            if is_address_answer(data) {
+                note_answer_socket(s, "recvfrom");
+                if server_echo_held(data) {
+                    if let Some(sender) = (!from.is_null()).then(|| read_addr(from)).flatten() {
+                        hold_echo(data, sender, s);
+                        // Nothing for the game yet, as from a socket with nothing waiting.
+                        unsafe { windows::Win32::Networking::WinSock::WSASetLastError(windows::Win32::Networking::WinSock::WSAEWOULDBLOCK.0) };
+                        return -1;
+                    }
+                }
+            }
+        }
         // The tunnel: a reply from a forwarder is shown as from the server's service.
         if n > 0 && crate::tunnel::on() && !from.is_null() && !fromlen.is_null() {
             if let Some(server) = read_addr(from).and_then(crate::tunnel::from_forwarder) {
@@ -813,7 +837,7 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
     };
     // The server's answer to the game's address ask, held back until the helper registered this
     // game: handed over now with the helper's address in it (or as it was, after a while).
-    if let Some((answer, sender)) = held_echo_ready() {
+    if let Some((answer, sender)) = held_echo_ready(s) {
         write_addr(sender, from_ptr, len_ptr);
         return hand_over(&answer, buf, len);
     }
@@ -835,13 +859,12 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
             write_addr(server, from_ptr, len_ptr);
             sender = Some(server);
         }
+        if is_address_answer(data) {
+            note_answer_socket(s, "recvfrom (match socket)");
+        }
         if server_echo_held(data) {
             if let Some(sender) = sender {
-                // The latest answer, held from the first: the game asks again while it waits,
-                // and a hold started anew by each answer ran 28 s, not 10 (the desktop, 2026-11-15).
-                let mut held = HELD_ECHO.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                let since = held.as_ref().map_or_else(Instant::now, |(_, _, at)| *at);
-                *held = Some((data.to_vec(), sender, since));
+                hold_echo(data, sender, s);
             }
             continue;
         }
@@ -1066,19 +1089,45 @@ const REACH_HOLD: Duration = Duration::from_secs(12);
 
 /// The server's last answer to the game's address ask held back ([`server_echo_held`]): the
 /// packet, its sender, and when.
-static HELD_ECHO: Mutex<Option<(Vec<u8>, SocketAddrV4, Instant)>> = Mutex::new(None);
+static HELD_ECHO: Mutex<Option<(Vec<u8>, SocketAddrV4, Instant, usize)>> = Mutex::new(None);
+
+/// Keeps the server's answer `data` from `sender`, read on socket `s`, from the game for now:
+/// the latest one, held from the first (the game asks again while it waits, and a hold started
+/// anew by each answer ran 28 s, not 10: the desktop, 2026-11-15).
+fn hold_echo(data: &[u8], sender: SocketAddrV4, s: usize) {
+    let mut held = HELD_ECHO.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let since = held.as_ref().map_or_else(Instant::now, |(_, _, at, _)| *at);
+    *held = Some((data.to_vec(), sender, since, s));
+}
+
+/// Whether `data` is the server's answer to the game's address ask.
+fn is_address_answer(data: &[u8]) -> bool {
+    const ANSWER: &[u8] = b"udp:/address=";
+    data.len() < 512 && data.windows(ANSWER.len()).any(|w| w == ANSWER)
+}
+
+/// Says once which socket and call the server's address answer came on (it's held there).
+fn note_answer_socket(s: usize, how: &str) {
+    static SAID: AtomicBool = AtomicBool::new(false);
+    if !SAID.swap(true, Ordering::SeqCst) {
+        info!("NAT: the server's answer to the game's address ask comes on socket {s:#x} ({how})");
+    }
+}
 
 /// The held answer to hand the game now: once the helper registered this game, with its address
 /// written in (the game takes the first address it's given, and only as the answer to its ask:
 /// told later, it kept its own; the gamebox, 2026-11-15); after [`SERVER_ECHO_HOLD`] as it was.
-fn held_echo_ready() -> Option<(Vec<u8>, SocketAddrV4)> {
+fn held_echo_ready(s: usize) -> Option<(Vec<u8>, SocketAddrV4)> {
     let mut held = HELD_ECHO.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (_, _, at) = held.as_ref()?;
+    let (_, _, at, on) = held.as_ref()?;
+    if *on != s {
+        return None;
+    }
     let advertise = ready_address(&state());
     if advertise.is_none() && at.elapsed() < SERVER_ECHO_HOLD {
         return None;
     }
-    let (answer, sender, _) = held.take()?;
+    let (answer, sender, _, _) = held.take()?;
     drop(held);
     let answer = match advertise {
         Some(address) => {
@@ -1486,6 +1535,14 @@ fn wsa_recv_from(s: usize, bufs: *mut c_void, count: u32, got: *mut u32, flags: 
         }
     }
     let r = unsafe { WsaRecvFromHook.call(s, bufs, count, got, flags, from, fromlen, ov, done) };
+    // Where the server's address answer comes, said once (done at once: the data is there).
+    if r == 0 && !bufs.is_null() && count > 0 && !got.is_null() {
+        let wsabuf = unsafe { &*(bufs as *const windows::Win32::Networking::WinSock::WSABUF) };
+        let n = (unsafe { *got } as usize).min(wsabuf.len as usize);
+        if n > 0 && !wsabuf.buf.is_null() && is_address_answer(unsafe { std::slice::from_raw_parts(wsabuf.buf.0, n) }) {
+            note_answer_socket(s, "WSARecvFrom");
+        }
+    }
     // Done at once: the sender is there now.
     if tunnel && r == 0 {
         from_forwarder_in_place(from, fromlen);
