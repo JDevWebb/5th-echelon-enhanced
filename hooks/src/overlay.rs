@@ -955,9 +955,17 @@ impl MyRenderLoop {
     }
 
     /// Starts the start toast's time at the player's first key or click (the game's intro
-    /// skipped, or its title left), or a minute after the game started.
+    /// skipped, or its title left), or a minute after the game started. With the quick start,
+    /// when it's done instead: no key is pressed then (the toast waited for the first, often
+    /// F5), and a minute can pass before the lobby (the toast ended on the title) (2026-11-15).
     fn start_initial_info(&mut self) {
         if self.initial_popup.is_some() {
+            return;
+        }
+        if crate::quickstart::in_use() {
+            if crate::quickstart::done() {
+                self.initial_popup = Some(Instant::now() + INITIAL_POPUP_DURATION);
+            }
             return;
         }
         // SAFETY: GetAsyncKeyState only reads the keyboard's and mouse's state.
@@ -2939,7 +2947,10 @@ impl ImguiRenderLoop for MyRenderLoop {
         // The panel takes the input; while the quick start takes the game through its menus, a
         // click or key would fight it, so the game doesn't get them either (Alt+F4 still quits);
         // nor the Esc that stopped it, until that's let go (overlay_input::stopping_esc).
-        if matches!(self.ui_state, UiState::Show) || crate::overlay_input::held_back() || crate::overlay_input::stopping_esc() {
+        // The quick start's own Enter goes through (quickstart::send_enter).
+        if crate::quickstart::LETTING_KEY_THROUGH.load(Ordering::SeqCst) {
+            hudhook::MessageFilter::empty()
+        } else if matches!(self.ui_state, UiState::Show) || crate::overlay_input::held_back() || crate::overlay_input::stopping_esc() {
             hudhook::MessageFilter::InputAll
         } else {
             hudhook::MessageFilter::empty()
