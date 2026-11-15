@@ -248,12 +248,12 @@ const TUNNEL_AFTER_ASKED: Duration = Duration::from_millis(1000);
 
 /// Whether the helper's silence moves its traffic to the tunnel now: `never_answered` for
 /// `quiet` (since the first probe), or silent `quiet` since its last answer; `game_waiting`: the
-/// game asked for its address and hasn't been given one.
+/// game asked for its address, hasn't been given one, and the helper hasn't registered it.
 fn tunnel_due(quiet: Duration, never_answered: bool, game_waiting: bool) -> bool {
     let after = match (never_answered, game_waiting) {
-        (true, true) => TUNNEL_AFTER_ASKED,
+        (_, true) => TUNNEL_AFTER_ASKED,
         (true, false) => TUNNEL_AFTER_FIRST,
-        (false, _) => TUNNEL_AFTER_LOST,
+        (false, false) => TUNNEL_AFTER_LOST,
     };
     quiet >= after
 }
@@ -830,7 +830,11 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
         }
         if server_echo_held(data) {
             if let Some(sender) = sender {
-                *HELD_ECHO.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((data.to_vec(), sender, Instant::now()));
+                // The latest answer, held from the first: the game asks again while it waits,
+                // and a hold started anew by each answer ran 28 s, not 10 (the desktop, 2026-11-15).
+                let mut held = HELD_ECHO.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let since = held.as_ref().map_or_else(Instant::now, |(_, _, at)| *at);
+                *held = Some((data.to_vec(), sender, since));
             }
             continue;
         }
@@ -1243,8 +1247,17 @@ fn worker(host: String, port: u16) {
         let fallback = {
             let mut st = state();
             let never_answered = st.last_answer.is_none();
-            let game_waiting = st.echo_requests > 0 && st.told_game.is_none();
-            let quiet = st.last_answer.or(st.probing_since).map(|t| t.elapsed());
+            // Not registered: the helper may have answered on its second port only (the NAT
+            // type), which doesn't register this game; the desktop behind the gamebox's router
+            // waited 50 s for the tunnel that way (2026-11-15).
+            let game_waiting = st.echo_requests > 0 && st.told_game.is_none() && st.reply.is_none();
+            // Waiting, from the first probe: answers that don't register it don't count.
+            let since = if game_waiting {
+                st.probing_since.or(st.last_answer)
+            } else {
+                st.last_answer.or(st.probing_since)
+            };
+            let quiet = since.map(|t| t.elapsed());
             match (quiet, st.server) {
                 (Some(quiet), Some(helper))
                     if tunnel_due(quiet, never_answered, game_waiting)
@@ -1572,7 +1585,8 @@ mod tests {
         assert!(tunnel_due(Duration::from_secs(20), true, false));
         assert!(!tunnel_due(Duration::from_millis(900), true, true), "the game waiting for its address: 1 s");
         assert!(tunnel_due(Duration::from_millis(1000), true, true));
-        assert!(!tunnel_due(Duration::from_secs(25), false, true), "a missed keepalive or so: not yet");
+        assert!(tunnel_due(Duration::from_millis(1000), false, true), "answered, not registered, the game waiting: 1 s");
+        assert!(!tunnel_due(Duration::from_secs(25), false, false), "a missed keepalive or so: not yet");
         assert!(tunnel_due(Duration::from_secs(50), false, false), "heard before, silent 50 s");
     }
 
