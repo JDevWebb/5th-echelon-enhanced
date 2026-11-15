@@ -69,8 +69,9 @@ pub struct Activity {
     stages: Vec<String>,
     stage: usize,
     pub state: State,
-    /// When it finished, and how long it shows after.
+    /// When it finished, when the bar first showed it, and how long it shows from then.
     ended: Option<Instant>,
+    shown: Option<Instant>,
     linger: Duration,
 }
 
@@ -86,6 +87,7 @@ impl Activity {
             stage: 0,
             state: State::Working,
             ended: None,
+            shown: None,
             linger: DONE_FOR,
         }
     }
@@ -107,9 +109,11 @@ impl Activity {
         self.ended = Some(now);
     }
 
-    /// Gone from the bar: done and shown long enough.
+    /// Gone from the bar: done and shown long enough, counted from when the bar first showed it
+    /// (one finished while the launcher was busy, as the tunnel's notice while the game starts,
+    /// went before the bar ever had it: the Surface, 16 Nov 2026).
     fn expired(&self, now: Instant) -> bool {
-        self.state == State::Done && self.ended.is_some_and(|at| now.duration_since(at) >= self.linger)
+        self.state == State::Done && self.ended.is_some() && self.shown.is_some_and(|at| now.duration_since(at) >= self.linger)
     }
 
     /// The details to copy: what failed, and the steps before it.
@@ -293,7 +297,10 @@ impl Activities {
     /// Drops what has gone, and answers the activity to show with how many others wait.
     pub fn current(&mut self, now: Instant) -> Option<(Activity, usize)> {
         self.list.retain(|a| !lock(a).expired(now));
-        let shown = self.list.iter().map(|a| lock(a).clone()).enumerate().min_by_key(|(i, a)| (a.rank(), *i))?.1;
+        let (at, shown) = self.list.iter().map(|a| lock(a).clone()).enumerate().min_by_key(|(i, a)| (a.rank(), *i))?;
+        if shown.state == State::Done && shown.shown.is_none() {
+            lock(&self.list[at]).shown = Some(now);
+        }
         Some((shown, self.list.len() - 1))
     }
 }
@@ -345,4 +352,24 @@ fn system_reduced_motion() -> bool {
         .args(["get", "org.gnome.desktop.interface", "enable-animations"])
         .output()
         .is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "false")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A notice made while the launcher was busy (the game starting) is shown when the bar can
+    /// show it, for as long as it would have been, not already gone.
+    #[test]
+    fn a_notice_shows_its_time_from_when_its_shown() {
+        let mut list = Activities::default();
+        list.info("Your connection blocks the game's traffic (UDP), so the game goes through HTTPS instead.");
+        let made = Instant::now();
+        let later = made + Duration::from_secs(10);
+        let (shown, _) = list.current(later).expect("still there, never shown yet");
+        assert!(shown.title.contains("HTTPS"));
+        let linger = shown.linger;
+        assert!(list.current(later + linger - Duration::from_millis(100)).is_some(), "shown for its time");
+        assert!(list.current(later + linger).is_none(), "then gone");
+    }
 }
