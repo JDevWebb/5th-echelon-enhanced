@@ -1108,7 +1108,8 @@ pub fn run() -> Result<(), slint::PlatformError> {
     ui.load_banner();
     ui.check_dialogs(true);
     start_ticker(&ui);
-    // Started with the system (autostart.rs): minimised once the window is up.
+    // Started with the system (autostart.rs): minimised once the window is up, or no window
+    // at all, the launcher's icon in the tray until it's clicked (Windows).
     if launcher::autostart::started_minimised() {
         let weak = window.as_weak();
         slint::Timer::single_shot(std::time::Duration::from_millis(200), move || {
@@ -1117,8 +1118,39 @@ pub fn run() -> Result<(), slint::PlatformError> {
             }
         });
     }
+    let in_tray = launcher::autostart::started_in_tray();
+    #[cfg(target_os = "windows")]
+    if in_tray {
+        let weak = window.as_weak();
+        crate::tray::start(move |asked| {
+            let weak = weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(w) = weak.upgrade() else { return };
+                // Shown first either way: quitting may ask about a report still sending.
+                let _ = w.show();
+                w.window().set_minimized(false);
+                if let crate::tray::Asked::Quit = asked {
+                    w.invoke_close_window();
+                }
+            });
+        });
+    }
+    // Closed by Windows (Alt+F4, the taskbar's Close window) as by the title bar's close.
+    window.window().on_close_requested({
+        let weak = window.as_weak();
+        move || {
+            if let Some(w) = weak.upgrade() {
+                w.invoke_close_window();
+            }
+            slint::CloseRequestResponse::KeepWindowShown
+        }
+    });
 
-    let result = window.run();
+    // Until the launcher quits, not until its window hides: in the tray it has none at first.
+    let result = if in_tray { Ok(()) } else { window.show() }.and_then(|()| slint::run_event_loop_until_quit());
+    let _ = window.hide();
+    #[cfg(target_os = "windows")]
+    crate::tray::stop();
     ui.quit.store(true, Ordering::Relaxed);
     // A server started here stops with the launcher.
     ui.app().state::<crate::host::Host>().stop();
@@ -1323,6 +1355,7 @@ fn wire(w: &AppWindow, ui: &Arc<Ui>) {
             if let Some(w) = weak.upgrade() {
                 let _ = w.hide();
             }
+            let _ = slint::quit_event_loop();
         }
     });
     w.on_cycle_theme({

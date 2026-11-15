@@ -65,7 +65,7 @@ pub const RELEASES: &[Release] = &[
             },
             Item {
                 title: "Start with Windows",
-                text: "Settings › Display › Starting: the launcher starts minimised when you sign in to Windows, so friends and invitations reach you.",
+                text: "Settings › Display › Starting: the launcher starts when you sign in to Windows, so friends and invitations reach you: minimised, or in the tray until you click its icon.",
                 community: false,
             },
         ],

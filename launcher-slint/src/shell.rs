@@ -445,6 +445,8 @@ impl Ui {
             WindowCall::Quit => {
                 let _ = self.window().upgrade_in_event_loop(|w| {
                     let _ = w.hide();
+                    // The event loop runs until it's told to end (ui.rs: in the tray, no window).
+                    let _ = slint::quit_event_loop();
                 });
             }
         }

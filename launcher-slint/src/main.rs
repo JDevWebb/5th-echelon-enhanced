@@ -17,6 +17,8 @@ mod shell;
 mod shots;
 mod support;
 mod tauri;
+#[cfg(target_os = "windows")]
+mod tray;
 mod ui;
 mod update;
 mod whats_new;
@@ -39,6 +41,12 @@ fn main() {
             eprintln!("shots: {e}");
             std::process::exit(1);
         }
+        return;
+    }
+    // Already running in the tray: that launcher shows its window, and this start ends (before
+    // its log: starting one rotates the running launcher's).
+    #[cfg(target_os = "windows")]
+    if !launcher::autostart::started_in_tray() && tray::hand_over_to_running() {
         return;
     }
     launcher::logging::init();

@@ -38,6 +38,9 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # The system's file picker: Windows' own, and on Linux the desktop's through its portal (no GTK).
 [target.'cfg(target_os = "windows")'.dependencies]
 rfd = "0.15"
+# The tray icon (tray.rs), when the launcher starts with Windows in the tray. The version the
+# launcher crate uses, so only one is built.
+windows = { version = "0.54.0", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }

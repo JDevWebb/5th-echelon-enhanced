@@ -153,7 +153,11 @@ impl Screen for SettingsPage {
             }
             "tunnel_always" => launcher::prefs::Prefs::set_tunnel_always(on),
             // The system's own setting (autostart.rs), not the launcher's.
-            "start_with_system" => self.autostart_failed = launcher::autostart::set(on).err(),
+            // Turned on as it last was (or minimised); turned off, gone.
+            "start_with_system" => {
+                let how = launcher::autostart::how().unwrap_or(launcher::autostart::Start::Minimised);
+                self.autostart_failed = launcher::autostart::set(on, how).err();
+            }
             _ if id.starts_with("hook:") => self.set(app, "hook", json!([&id[5..], on])),
             _ => self.set(app, id, Value::Bool(on)),
         }
@@ -177,6 +181,11 @@ impl Screen for SettingsPage {
                 }
             }
             "notify_global" | "notify_lobby" | "notify_direct" => pick(pairs(arr(&v, "toasts")).into_iter().map(|(i, _)| i).collect()).map(Value::String),
+            "start_how" => {
+                let how = [launcher::autostart::Start::Minimised, launcher::autostart::Start::Tray][index.min(1)];
+                self.autostart_failed = launcher::autostart::set(true, how).err();
+                None
+            }
             "theme" => {
                 let theme = [launcher::prefs::Theme::Dark, launcher::prefs::Theme::Light, launcher::prefs::Theme::System][index.min(2)];
                 launcher::prefs::Prefs::set_theme(theme);
@@ -749,15 +758,27 @@ impl SettingsPage {
         ));
         r.card("Starting");
         r.add(note(if cfg!(target_os = "windows") {
-            "Start the launcher when you sign in to Windows, minimised, so friends and invitations reach you. Windows' Startup apps can turn it off too."
+            "Start the launcher when you sign in to Windows, so friends and invitations reach you: minimised, or in the tray (no window until you click its icon). Windows' Startup apps can turn it off too."
         } else {
             "Start the launcher when you sign in, minimised, so friends and invitations reach you."
         }));
+        let how = launcher::autostart::how();
         r.add(switch(
             "start_with_system",
             if cfg!(target_os = "windows") { "Start with Windows" } else { "Start when I sign in" },
-            launcher::autostart::is_on(),
+            how.is_some(),
         ));
+        if let (Some(how), true) = (how, launcher::autostart::TRAY_HERE) {
+            r.add(segments(
+                "start_how",
+                "",
+                &[("minimised".into(), "Minimised".into()), ("tray".into(), "In the tray".into())],
+                match how {
+                    launcher::autostart::Start::Minimised => "minimised",
+                    launcher::autostart::Start::Tray => "tray",
+                },
+            ));
+        }
         if let Some(why) = &self.autostart_failed {
             r.add(warn(format!("Couldn't change it: {why}")));
         }
