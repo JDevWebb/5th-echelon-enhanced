@@ -270,6 +270,7 @@ pub fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>, n
                                     "Direct, router port opened ({public}, {how}), but the server's packet still didn't arrive: a firewall on this PC, or another router in front. Others may not be able to join you; set Internet play to Always through the server"
                                 )),
                             ),
+                            Err(e) if port_in_use(&e) => (Status::Warn, Some(PORT_HELD.into())),
                             Err(e) => (Status::Fail, Some(e)),
                         }
                     };
