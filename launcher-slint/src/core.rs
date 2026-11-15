@@ -1223,10 +1223,12 @@ pub fn notice(core: &Core) -> Option<NoticeView> {
     let first = make(&mut inner);
     let every = first.as_ref().map_or(Duration::from_secs(60), launcher::update_notice::Notice::refresh_every);
     let due = inner.browsed_at.is_none_or(|t| t.elapsed() >= every);
-    let watching = inner.rollout.is_some() || first.is_some();
     let busy = inner.setup_running;
     drop(inner);
-    let notice = if watching && due && !busy {
+    // Every minute, notice or not: read only while one showed, a window booked after the
+    // launcher started was never seen, and Play went ahead into a closed server (the Surface,
+    // 16 Nov 2026). It's the request the urgent notices make each minute anyway.
+    let notice = if due && !busy {
         browse(core);
         make(&mut core.lock())
     } else {
