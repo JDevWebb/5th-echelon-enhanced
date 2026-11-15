@@ -145,6 +145,26 @@ pub fn tunnel_auth(data: &[u8], from: IpAddr) -> Option<String> {
 }
 
 #[cfg(test)]
+mod tunnel_advertise_tests {
+    use super::*;
+
+    /// A game registered through a tunnel (from loopback) whose sign-in comes from its real
+    /// address over UDP is still given its relay address.
+    #[test]
+    fn a_tunnelled_registration_counts_for_its_players_real_address() {
+        let real: IpAddr = "198.51.100.44".parse().unwrap();
+        crate::tunnel::test_tunnel_at(52_999, real);
+        let mut t = Table::new(NatConfig::default(), Ipv4Addr::new(203, 0, 113, 1));
+        let src: SocketAddrV4 = "127.0.0.1:52999".parse().unwrap();
+        t.probe(src, probe_flags::WANT_RELAY, 1, None, "Tunnelled", Instant::now());
+        let advertised = t.advertised_for("Tunnelled", real);
+        assert!(advertised.is_some(), "its real address");
+        assert_eq!(t.advertised_for("Tunnelled", IpAddr::V4(*src.ip())), advertised, "and loopback, as before");
+        assert_eq!(t.advertised_for("Tunnelled", "203.0.113.9".parse().unwrap()), None, "not anyone's");
+    }
+}
+
+#[cfg(test)]
 mod tunnel_auth_tests {
     /// A relay pass for the session key, signed with that key, opens a tunnel for its name (a
     /// game the relay never heard over UDP); the same pass signed with another key, or naming
@@ -1190,10 +1210,15 @@ impl Table {
     }
 
     /// The address `name`'s game should advertise, if it probed from `ip`
-    /// (the address its matchmaking connection comes from).
+    /// (the address its matchmaking connection comes from). A game registered through the
+    /// tunnel probes from loopback: its player's real address counts (the add-on's fallback
+    /// tunnels only the helper's traffic, and its sign-in still comes over UDP from the real
+    /// address; without this its URL went untranslated, and players were sent another
+    /// player's address for it, 2026-11-15).
     pub fn advertised_for(&self, name: &str, ip: IpAddr) -> Option<SocketAddrV4> {
         let p = self.peers.get(self.by_name.get(&identity::name_key(name))?)?;
-        (IpAddr::V4(*p.real.ip()) == ip).then_some(p.advertise)
+        let from = crate::tunnel::source_ip(SocketAddr::V4(p.real));
+        (from == ip || IpAddr::V4(*p.real.ip()) == ip).then_some(p.advertise)
     }
 
     /// The address the game whose Storm socket sent an address echo from `src` should be

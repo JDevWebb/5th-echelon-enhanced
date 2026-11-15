@@ -98,6 +98,12 @@ pub fn real_ip(port: u16) -> Option<IpAddr> {
     open().by_port.get(&port).copied()
 }
 
+/// For tests elsewhere: loopback port `port` is a tunnel's, its player at `ip`.
+#[cfg(test)]
+pub(crate) fn test_tunnel_at(port: u16, ip: IpAddr) {
+    open().by_port.insert(port, ip);
+}
+
 /// The address a datagram from `src` stands for: a tunnel's player's real address when `src` is
 /// a tunnel's loopback socket, else `src`'s own.
 pub fn source_ip(src: SocketAddr) -> IpAddr {
