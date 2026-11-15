@@ -88,23 +88,48 @@ pub fn start(target: hooks_config::Tunnel) {
         warn!("Tunnel: {} didn't resolve; the game's traffic goes as usual", target.host);
         return;
     };
+    let services =
+        [(tunnel::LOGIN, target.login), (tunnel::SECURE, target.secure), (tunnel::HELPER, target.helper)].map(|(service, port)| (service, SocketAddrV4::new(server, port)));
+    if start_with(&target.host, &services) {
+        info!("Tunnel: the game's UDP to {server} goes through https://{}{}", target.host, tunnel::PATH);
+    }
+}
+
+/// Starts a tunnel for the NAT helper's traffic only (its probes and the relayed game traffic)
+/// to `host`, whose helper is `helper`: the add-on's fallback when the helper never hears this
+/// PC over UDP although the game signed in (nat.rs's `TUNNEL_AFTER`). The sign-in and the secure
+/// service, which work, keep their UDP. False when it couldn't start.
+pub fn start_helper(host: &str, helper: SocketAddrV4) -> bool {
+    let started = start_with(host, &[(tunnel::HELPER, helper)]);
+    if started {
+        info!(
+            "Tunnel: the relay's traffic (the NAT helper {helper}) goes through https://{host}{} from now on",
+            tunnel::PATH
+        );
+    }
+    started
+}
+
+/// Starts a tunnel to `host` carrying `services` (each with the server's address the game sends
+/// it to): a forwarder for each, the redirects, and the WebSocket. False when no forwarder
+/// could be made.
+fn start_with(host: &str, services: &[(u8, SocketAddrV4)]) -> bool {
     let mut forwarders = Vec::new();
-    for (service, port) in [(tunnel::LOGIN, target.login), (tunnel::SECURE, target.secure), (tunnel::HELPER, target.helper)] {
+    for &(service, server) in services {
         // On every address, so it can answer a game socket bound to the LAN address from that
         // address ([`from_forwarder`]); only datagrams from this PC's own addresses are taken.
         let Ok(socket) = UdpSocket::bind("0.0.0.0:0") else {
             warn!("Tunnel: no local socket; the game's traffic goes as usual");
-            return;
+            return false;
         };
-        let Ok(bound) = socket.local_addr() else { return };
+        let Ok(bound) = socket.local_addr() else { return false };
         let local = SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, bound.port());
-        forwarders.push((service, SocketAddrV4::new(server, port), local, Arc::new(socket)));
+        forwarders.push((service, server, local, Arc::new(socket)));
     }
     if let Ok(mut map) = MAP.write() {
         *map = forwarders.iter().map(|(service, server, local, _)| (*service, *server, *local)).collect();
     }
-    info!("Tunnel: the game's UDP to {server} goes through https://{}{}", target.host, tunnel::PATH);
-    let url = format!("wss://{}{}", target.host, tunnel::PATH);
+    let url = format!("wss://{host}{}", tunnel::PATH);
     let _ = std::thread::Builder::new().name("fe-tunnel".into()).spawn(move || {
         let Ok(rt) = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build() else {
             warn!("Tunnel: couldn't start");
@@ -112,6 +137,7 @@ pub fn start(target: hooks_config::Tunnel) {
         };
         rt.block_on(run(url, forwarders));
     });
+    true
 }
 
 type Forwarder = (u8, SocketAddrV4, SocketAddrV4, Arc<UdpSocket>);

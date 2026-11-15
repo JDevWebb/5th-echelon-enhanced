@@ -119,15 +119,59 @@ pub fn ticket_for(name: &str, key: Option<&nat_proto::SessionKey>) -> Option<nat
 
 /// A tunnel's first message (0.5.2's T, tunnel.rs): a probe naming the player, with a ticket
 /// for that name and the session key it names, signed with that key, as a probe that registers
-/// must be. The name it proves.
-pub fn tunnel_auth(data: &[u8]) -> Option<String> {
+/// must be; or, at a relay, the player's relay pass for a session key, signed with that key, as
+/// a pass this helper answers with a ticket must be (a game whose UDP to the relay got nowhere
+/// has no ticket from it yet: the add-on's fallback to the tunnel, 2026-11-15). The name it
+/// proves. `from`: the player's real address (the pass checks' limits are by address).
+pub fn tunnel_auth(data: &[u8], from: IpAddr) -> Option<String> {
     let keys = KEYS.get()?;
-    let Message::Probe { nonce, name, ticket, cookie, .. } = Message::decode(data)? else {
-        return None;
-    };
-    let (key, signature) = nat_proto::key_of(data)?;
-    (!name.is_empty() && ticket_valid(keys, &name, &ticket, today(), Some(&key)) && identity::verify_bytes(&key, &nat_proto::probe_message(nonce, &cookie, &name), &signature))
-        .then_some(name)
+    match Message::decode(data)? {
+        Message::Probe { nonce, name, ticket, cookie, .. } => {
+            let (key, signature) = nat_proto::key_of(data)?;
+            (!name.is_empty()
+                && ticket_valid(keys, &name, &ticket, today(), Some(&key))
+                && identity::verify_bytes(&key, &nat_proto::probe_message(nonce, &cookie, &name), &signature))
+            .then_some(name)
+        }
+        Message::TicketPresent { nonce, name, day, signature } => {
+            let (key, session_signature) = nat_proto::key_of(data)?;
+            (!name.is_empty()
+                && crate::relay_pass::valid(&name, day, &signature, from, Some(&key), false)
+                && identity::verify_bytes(&key, &nat_proto::present_message(nonce, &name, day), &session_signature))
+            .then_some(name)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tunnel_auth_tests {
+    /// A relay pass for the session key, signed with that key, opens a tunnel for its name (a
+    /// game the relay never heard over UDP); the same pass signed with another key, or naming
+    /// someone else, doesn't.
+    #[test]
+    fn a_relay_pass_proves_a_tunnel() {
+        super::test_keys();
+        let key = identity::Identity::generate();
+        let name = "PassTester";
+        let (day, signature) = crate::relay_pass::test_pass(name, Some(&key.public_key()));
+        let present = |name: &str, signer: &identity::Identity| {
+            let nonce = 9u32;
+            let mut data = nat_proto::Message::TicketPresent {
+                nonce,
+                name: name.into(),
+                day,
+                signature,
+            }
+            .encode();
+            nat_proto::add_key(&mut data, &key.public_key(), &signer.sign_bytes(&nat_proto::present_message(nonce, name, day)));
+            data
+        };
+        let from: std::net::IpAddr = "198.51.100.9".parse().unwrap();
+        assert_eq!(super::tunnel_auth(&present(name, &key), from).as_deref(), Some(name));
+        assert_eq!(super::tunnel_auth(&present(name, &identity::Identity::generate()), from), None, "signed with another key");
+        assert_eq!(super::tunnel_auth(&present("SomeoneElse", &key), from), None, "the pass names someone else");
+    }
 }
 
 /// Sets the helper's keys for a test (as a test of its own does), the same in every test.

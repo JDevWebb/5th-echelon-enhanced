@@ -154,6 +154,17 @@ fn may_check_at(window: &AtomicU64, max: u64, second: u64) -> bool {
     }
 }
 
+/// For tests elsewhere: trusts the key `[7; 32]` signs with (as this module's own tests do), and
+/// signs `name`'s pass for today with it.
+#[cfg(test)]
+pub(crate) fn test_pass(name: &str, key: Option<&nat_proto::SessionKey>) -> (u32, [u8; 64]) {
+    let matchmaking = identity::Identity::from_secret(&[7; 32]);
+    let _ = ACCEPTED.set(vec![matchmaking.global_id()]);
+    let day = today();
+    let signature = identity::base32_decode(&matchmaking.sign(&message(name, day, key))).unwrap().try_into().unwrap();
+    (day, signature)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

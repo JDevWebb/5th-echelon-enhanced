@@ -155,6 +155,10 @@ struct State {
     /// admins see these lines: a game the relay stops knowing can't be joined).
     last_answer: Option<Instant>,
     silence_said: bool,
+    /// When the first probe since the Storm socket was bound went (silence before any answer).
+    probing_since: Option<Instant>,
+    /// The helper's traffic was moved to the tunnel ([`TUNNEL_AFTER_FIRST`]); once a session.
+    tunnel_fallback_tried: bool,
     /// Whether sending the probes failed (said once until they go again).
     send_failing: bool,
     /// The round trip to the server (see [`round_trip`]), and when it was last measured.
@@ -204,6 +208,8 @@ static STATE: Mutex<State> = Mutex::new(State {
     sent: [0; 4],
     last_answer: None,
     silence_said: false,
+    probing_since: None,
+    tunnel_fallback_tried: false,
     send_failing: false,
     rtt_ms: None,
     rtt_at: None,
@@ -217,6 +223,21 @@ static STATE: Mutex<State> = Mutex::new(State {
 /// The helper not answering this long (three keepalives) is worth a line: it forgets a game
 /// after 90 s without a probe.
 const SILENCE: Duration = Duration::from_secs(60);
+/// The helper never heard this game this long after its first probe, or stopped hearing it this
+/// long after an answer (two and a half keepalives): its traffic goes through the server's
+/// tunnel over HTTPS from then on ([`crate::tunnel::start_helper`]), if the server has one. The
+/// game signed in over UDP, so that works; what doesn't is the helper's port. A Windows PC
+/// whose router forwarded 13000 to it while another PC behind the router already went out from
+/// public 13000 got nothing through to the helper, with that forward, another, or none
+/// (2026-11-15).
+const TUNNEL_AFTER_FIRST: Duration = Duration::from_secs(20);
+const TUNNEL_AFTER_LOST: Duration = Duration::from_secs(50);
+
+/// Whether the helper's silence moves its traffic to the tunnel now: `never_answered` for
+/// `quiet` (since the first probe), or silent `quiet` since its last answer.
+fn tunnel_due(quiet: Duration, never_answered: bool) -> bool {
+    quiet >= if never_answered { TUNNEL_AFTER_FIRST } else { TUNNEL_AFTER_LOST }
+}
 
 /// How long a signed-in game may go unregistered before the player is told nobody can reach
 /// them (it registers within a second or two when the helper's packets get through).
@@ -411,8 +432,24 @@ fn write_addr(addr: SocketAddrV4, sa: *mut u8, len: *mut i32) {
 /// signed with the session key, as a registering probe is. None before the game has a ticket.
 pub(crate) fn tunnel_proof() -> Option<Vec<u8>> {
     let st = state();
-    if st.ticket == [0; 16] || st.name.is_empty() {
+    if st.name.is_empty() {
         return None;
+    }
+    // At a relay that never heard this game, no ticket yet: the relay pass it would have shown
+    // it, signed with the session key, as a present is.
+    if st.ticket == [0; 16] {
+        let (day, signature) = st.pass?;
+        let nonce = rand::random::<u32>() | 1;
+        let mut present = Message::TicketPresent {
+            nonce,
+            name: st.name.clone(),
+            day,
+            signature,
+        }
+        .encode();
+        let key = session_key();
+        nat_proto::add_key(&mut present, &key.public_key(), &key.sign_bytes(&nat_proto::present_message(nonce, &st.name, day)));
+        return Some(present);
     }
     let nonce = rand::random::<u32>() | 1;
     let cookie = [0u8; 16];
@@ -648,6 +685,7 @@ fn forget_registration(st: &mut State) {
     st.last_probe = None;
     st.tag = [0; 8];
     st.last_answer = None;
+    st.probing_since = None;
     st.silence_said = false;
     st.send_failing = false;
     st.told_game = None;
@@ -1063,6 +1101,38 @@ fn worker(host: String, port: u16) {
                 }
             }
         }
+        // The helper doesn't hear this game: its traffic through the tunnel instead.
+        let fallback = {
+            let mut st = state();
+            let never_answered = st.last_answer.is_none();
+            let quiet = st.last_answer.or(st.probing_since).map(|t| t.elapsed());
+            match (quiet, st.server) {
+                (Some(quiet), Some(helper))
+                    if tunnel_due(quiet, never_answered)
+                        && !st.tunnel_fallback_tried
+                        && !crate::tunnel::on()
+                        && st.mode != Some(NatMode::Off)
+                        && !nat_proto::is_private(*helper.ip()) =>
+                {
+                    st.tunnel_fallback_tried = true;
+                    info!(
+                        "NAT: the NAT helper hasn't heard this game for {} s{}: its traffic goes through the server's tunnel over HTTPS",
+                        quiet.as_secs(),
+                        if never_answered { " since it first tried" } else { "" }
+                    );
+                    Some(helper)
+                }
+                _ => None,
+            }
+        };
+        if let Some(helper) = fallback {
+            if crate::tunnel::start_helper(&host, helper) {
+                let mut st = state();
+                // The second port isn't carried; probe at once through the tunnel.
+                st.second = None;
+                st.last_probe = None;
+            }
+        }
         let probes = {
             let mut st = state();
             let interval = if st.reply.is_some() { KEEPALIVE } else { PROBE_INTERVAL };
@@ -1085,6 +1155,9 @@ fn worker(host: String, port: u16) {
                 }
             }
             st.last_probe = Some(Instant::now());
+            if st.probing_since.is_none() {
+                st.probing_since = st.last_probe;
+            }
             // At another relay than the server's own, with no ticket from it yet: the pass
             // first (or nothing, until signing in gives one).
             if st.use_pass && st.ticket == [0; 16] {
@@ -1352,6 +1425,14 @@ mod tests {
             signed_in_at: Some(now),
             ..State::default()
         }
+    }
+
+    #[test]
+    fn the_helpers_silence_moves_its_traffic_to_the_tunnel() {
+        assert!(!tunnel_due(Duration::from_secs(19), true), "never heard: 20 s");
+        assert!(tunnel_due(Duration::from_secs(20), true));
+        assert!(!tunnel_due(Duration::from_secs(25), false), "a missed keepalive or so: not yet");
+        assert!(tunnel_due(Duration::from_secs(50), false), "heard before, silent 50 s");
     }
 
     #[test]

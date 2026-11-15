@@ -5,7 +5,8 @@
 //! (the sign-in, the secure service, the NAT helper), and what comes back goes down the tunnel.
 //!
 //! - The first message proves the name ([`crate::nat_helper::tunnel_auth`]: a signed probe with
-//!   its ticket), the same proof a relayed player gives: a tunnel is no wider a door than the relay.
+//!   its ticket, or at a relay the signed relay pass the relay would answer with one), the same
+//!   proof a relayed player gives: a tunnel is no wider a door than the relay.
 //! - One tunnel per name (a new one replaces it), [`MAX_PER_IP`] per address and [`MAX_TUNNELS`]
 //!   in all, each at most [`BYTES_PER_SEC`] (a relayed player's traffic and some).
 //! - A tunnelled player is always relayed: the helper sees them at a loopback address, which no
@@ -193,7 +194,7 @@ async fn handle(logger: &Logger, stream: tokio::net::TcpStream, peer: SocketAddr
     let first = tokio::time::timeout(AUTH_WITHIN, up.next()).await.map_err(|_| "no proof in time".to_string())?;
     let Some(Ok(Ws::Binary(first))) = first else { return Err("no proof".into()) };
     let name = match tunnel::parse(&first) {
-        Some((tunnel::AUTH, probe)) => crate::nat_helper::tunnel_auth(probe).ok_or("the proof didn't hold")?,
+        Some((tunnel::AUTH, probe)) => crate::nat_helper::tunnel_auth(probe, ip).ok_or("the proof didn't hold")?,
         _ => return Err("no proof".into()),
     };
     // The name's socket from a tunnel that closed a moment ago, else a new one.
