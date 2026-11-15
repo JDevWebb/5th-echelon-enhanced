@@ -260,6 +260,11 @@ impl Screen for SettingsPage {
             }
             "allow-game" => {
                 let (tone, note) = crate::settings::allow_game(app);
+                // Let in now: what this network allows is checked again (J4), or games would
+                // keep asking for the relay the firewall made them need.
+                if tone == "ok" {
+                    let _ = crate::settings::check_network(app, true);
+                }
                 if let Some(Ok(list)) = &mut self.tests {
                     if let Some(row) = list.iter_mut().find(|(name, ..)| name == launcher::settings::FIREWALL_TEST) {
                         *row = (row.0.clone(), tone.to_string(), note);
