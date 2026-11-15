@@ -12,6 +12,8 @@ const INFO_WAIT: Duration = Duration::from_secs(3);
 
 /// What the player is told when the tunnel is used.
 pub const NOTICE: &str = "Your connection blocks the game's traffic (UDP), so the game goes through HTTPS instead. It will be slower than usual.";
+/// Or, when the player chose it (Settings › Network › Always go through HTTPS).
+pub const NOTICE_CHOSEN: &str = "The game goes through HTTPS, as set in Settings › Network. It will be slower than usual.";
 
 /// The tunnel for this start, if the game should use one: `server` (the profile's host), its
 /// info's ports, and whether UDP to its helper got an answer (`udp_ok`).
