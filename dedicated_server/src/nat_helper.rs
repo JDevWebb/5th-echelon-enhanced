@@ -1402,6 +1402,47 @@ fn remote_path(guest: &str, host: &str) -> Option<(Path, Vec<Option<String>>)> {
 
 static TABLE: OnceLock<Arc<Mutex<Table>>> = OnceLock::new();
 
+/// The server's storage, for a player's station URLs when the helper moves them ([`readdress`]).
+static STORAGE: OnceLock<Arc<crate::storage::Storage>> = OnceLock::new();
+
+/// [`readdress`] for a player another relay moved (the network's matchmaking server), with the
+/// helper's logger.
+pub fn readdress_quietly(name: &str, advertise: SocketAddrV4, observed: std::net::IpAddr) {
+    let quiet = Logger::root(slog::Discard, slog::o!());
+    readdress(LOGGER.get().unwrap_or(&quiet), name, advertise, observed);
+}
+
+/// The helper's logger, for [`readdress_quietly`].
+static LOGGER: OnceLock<Logger> = OnceLock::new();
+
+/// Gives the helper the server's storage (before [`start`]).
+pub fn set_storage(storage: Arc<crate::storage::Storage>) {
+    let _ = STORAGE.set(storage);
+}
+
+/// A registered player moved to another address (to the relay: their forward let nothing in,
+/// J1, or their joins kept failing, J2): the station URLs their game registered at sign-in,
+/// with the address it had then, are rewritten to the new one. Other players reach a host by
+/// those; left as they were, the host moved to the relay couldn't be joined (the Surface,
+/// 16 Nov 2026).
+fn readdress(logger: &Logger, name: &str, advertise: SocketAddrV4, observed: std::net::IpAddr) {
+    let Some(storage) = STORAGE.get() else { return };
+    let Ok(Some(user_id)) = storage.find_user_id_by_name(name) else { return };
+    let Ok(urls) = crate::storage::run(storage.list_urls(user_id)).and_then(|r| r) else {
+        return;
+    };
+    if urls.is_empty() {
+        return;
+    }
+    let moved = without_local_when_relayed(urls_with_public_address(urls.clone(), advertise), advertise, observed);
+    if moved != urls {
+        match storage.replace_urls(user_id, &moved) {
+            Ok(()) => info!(logger, "NAT helper: {name}'s station URLs now say {advertise}: {urls:?} -> {moved:?}"),
+            Err(e) => warn!(logger, "NAT helper: couldn't rewrite {name}'s station URLs: {e}"),
+        }
+    }
+}
+
 /// Reach checks go from a socket of their own, on a port the system picks (J1). Not the helper's
 /// ports: the game sends to both (its second probe is the NAT type check), and Windows Firewall,
 /// like most routers, lets in what comes from an address and port the game sent to, block rule
@@ -1631,6 +1672,7 @@ fn bind_with_buffers(logger: &Logger, addr: SocketAddr) -> std::io::Result<UdpSo
 /// port after it (probes only, to spot NATs that change ports per
 /// destination).
 pub fn start(logger: &Logger, cfg: NatConfig, relay_ip: Ipv4Addr, may_relay: MayRelay) -> std::io::Result<Vec<std::thread::JoinHandle<()>>> {
+    let _ = LOGGER.set(logger.clone());
     let ticket = crate::keys::load_or_create(std::path::Path::new(KEY_FILE)).map_err(|e| std::io::Error::other(e.to_string()))?;
     let _ = KEYS.set(Keys {
         ticket: ticket.0,
@@ -2326,7 +2368,7 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
                     continue;
                 }
             }
-            let (reply, count, relayed, new, why, checks) = {
+            let (reply, count, relayed, new, why, checks, moved_now) = {
                 let Ok(mut t) = table.lock() else { continue };
                 if !t.admits(src, &name) {
                     debug!(logger, "NAT helper: table full (or too many from {}); {name} not registered", src.ip());
@@ -2353,7 +2395,7 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
                 let moved = matches!(&reply, Message::ProbeReply { flags: rf, .. } if was_relayed.is_some_and(|w| w != (rf & reply_flags::RELAYED != 0)));
                 let why = t.by_name.get(&identity::name_key(&name)).and_then(|id| t.peers.get(id)).map_or("", |p| p.why);
                 let checks = t.take_reach_out();
-                (reply, t.len(), t.relayed(), new || moved, why, checks)
+                (reply, t.len(), t.relayed(), new || moved, why, checks, moved)
             };
             for (to, check) in checks {
                 send_reach(logger, to, check);
@@ -2387,6 +2429,15 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
             }
             if let Err(e) = socket.send_to(&reply.encode(), src) {
                 debug!(logger, "NAT probe reply to {src} failed: {e}");
+            }
+            // Moved after the game registered its URLs: they're rewritten, off this thread.
+            if moved_now {
+                if let Message::ProbeReply { advertise, .. } = reply {
+                    let (logger, name) = (logger.clone(), name.clone());
+                    let _ = std::thread::Builder::new()
+                        .name("nat-readdress".into())
+                        .spawn(move || readdress(&logger, &name, advertise, std::net::IpAddr::V4(*src.ip())));
+                }
             }
         }
     }

@@ -2301,6 +2301,24 @@ impl Storage {
         Ok(())
     }
 
+    /// A player's station URLs, all of them replaced by `urls` (the NAT helper moved them to
+    /// the relay after they registered: the old address mustn't stay among them).
+    pub fn replace_urls(&self, user_id: u32, urls: &[String]) -> Result<()> {
+        run(async {
+            let mut tx = self.pool.begin().await?;
+            sqlx::query("DELETE FROM station_urls WHERE user_id = ?").bind(user_id).execute(&mut *tx).await?;
+            for url in urls {
+                sqlx::query("INSERT OR REPLACE INTO station_urls (user_id, url) VALUES (?, ?)")
+                    .bind(user_id)
+                    .bind(url)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            tx.commit().await
+        })??;
+        Ok(())
+    }
+
     pub async fn list_urls(&self, user_id: u32) -> Result<Vec<String>> {
         Ok(sqlx::query_as("SELECT url FROM station_urls WHERE user_id = ?")
             .bind(user_id)
@@ -3127,6 +3145,30 @@ pub(crate) mod tests {
         let invite_only = storage.create_game_session(private, 1, "113 => 0;3 => 0;4 => 2".into()).unwrap();
         storage.add_participants(1, invite_only, vec![private], vec![]).unwrap();
         assert_eq!(storage.public_room_for(private, joiner).unwrap(), None, "private seats only");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// J1/J2: a player moved to the relay after signing in has their URLs rewritten, the old
+    /// address gone from them.
+    #[test]
+    fn a_moved_players_urls_are_replaced() {
+        let (storage, dir) = temp_storage("readdress");
+        storage.register_user("Moved", "pw", Some("Moved")).unwrap();
+        let id = storage.find_user_id_by_name("Moved").unwrap().unwrap();
+        let at_sign_in = vec![
+            "prudp:/address=203.0.113.5;port=13000;type=2;hdrType=00000000;RVCID=7".to_string(),
+            "prudp:/address=192.168.2.154;port=13000;hdrType=00000000;RVCID=7".to_string(),
+        ];
+        storage.register_urls(id, at_sign_in.clone()).unwrap();
+        let relay: std::net::SocketAddrV4 = "192.0.2.1:40001".parse().unwrap();
+        let moved = crate::nat_helper::without_local_when_relayed(crate::nat_helper::urls_with_public_address(at_sign_in, relay), relay, "203.0.113.5".parse().unwrap());
+        assert_eq!(
+            moved,
+            vec!["prudp:/address=192.0.2.1;port=40001;type=2;hdrType=00000000;RVCID=7".to_string()],
+            "the relay's, no LAN one"
+        );
+        storage.replace_urls(id, &moved).unwrap();
+        assert_eq!(run(storage.list_urls(id)).unwrap().unwrap(), moved, "nothing of the old address left");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

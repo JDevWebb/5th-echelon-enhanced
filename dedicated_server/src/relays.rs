@@ -458,6 +458,7 @@ fn plausible(link: &Link, reg: &crate::link::Reg) -> bool {
 
 fn remote_report(link: &Link, regs: Vec<crate::link::Reg>) {
     let now = std::time::Instant::now();
+    let mut moved = Vec::new();
     let mut remote = REMOTE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if remote.len() >= MAX_REMOTE {
         remote.retain(|_, r| now.duration_since(r.at) < REMOTE_FRESH);
@@ -472,6 +473,13 @@ fn remote_report(link: &Link, regs: Vec<crate::link::Reg>) {
         if remote.get(&key).is_some_and(|r| r.relay != link.id && now.duration_since(r.at) < REMOTE_FRESH) {
             continue;
         }
+        // Moved by its relay after signing in here (J1, J2): the URLs it registered here follow.
+        if remote
+            .get(&key)
+            .is_some_and(|r| r.relay == link.id && r.advertise != reg.advertise && now.duration_since(r.at) < REMOTE_FRESH)
+        {
+            moved.push((reg.name.clone(), reg.advertise, std::net::IpAddr::V4(*reg.real.ip())));
+        }
         remote.insert(
             key,
             Remote {
@@ -483,6 +491,14 @@ fn remote_report(link: &Link, regs: Vec<crate::link::Reg>) {
                 at: now,
             },
         );
+    }
+    drop(remote);
+    if !moved.is_empty() {
+        let _ = std::thread::Builder::new().name("relay-readdress".into()).spawn(move || {
+            for (name, advertise, real) in moved {
+                crate::nat_helper::readdress_quietly(&name, advertise, real);
+            }
+        });
     }
 }
 

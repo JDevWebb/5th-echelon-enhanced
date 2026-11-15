@@ -767,6 +767,8 @@ fn main() -> color_eyre::Result<()> {
     if config.matchmaking.network_relays {
         threads.push(relays::serve(Arc::clone(&storage))?);
     }
+    // For a moved player's station URLs (J1, J2).
+    nat_helper::set_storage(Arc::clone(&storage));
     if nat.enabled {
         let pairs = Arc::clone(&storage);
         // A relay alone doesn't see the games: it asks the network's matchmaking server who it
