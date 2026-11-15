@@ -95,7 +95,9 @@ fn icon_data(hwnd: HWND) -> NOTIFYICONDATAW {
     // SAFETY: the program's own icon (build.rs puts it first), else Windows' plain one.
     data.hIcon = unsafe {
         let module = GetModuleHandleW(None).unwrap_or_default();
-        wm::LoadIconW(module, PCWSTR(1 as *const u16)).or_else(|_| wm::LoadIconW(None, wm::IDI_APPLICATION)).unwrap_or_default()
+        wm::LoadIconW(module, PCWSTR(1 as *const u16))
+            .or_else(|_| wm::LoadIconW(None, wm::IDI_APPLICATION))
+            .unwrap_or_default()
     };
     let tip: Vec<u16> = "5th Echelon Enhanced".encode_utf16().collect();
     data.szTip[..tip.len()].copy_from_slice(&tip);

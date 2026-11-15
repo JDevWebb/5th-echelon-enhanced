@@ -581,7 +581,13 @@ impl Ui {
             let Some(list) = core::urgent_notices() else { return };
             let rows: Vec<crate::UrgentRow> = list
                 .into_iter()
-                .map(|n| crate::UrgentRow { key: s(n.key), kind: s(n.kind), heading: s(n.heading), text: s(n.text), posted: s(n.posted) })
+                .map(|n| crate::UrgentRow {
+                    key: s(n.key),
+                    kind: s(n.kind),
+                    heading: s(n.heading),
+                    text: s(n.text),
+                    posted: s(n.posted),
+                })
                 .collect();
             ui.show(move |w| w.set_urgent(model(rows)));
         });
@@ -1106,6 +1112,11 @@ pub fn run() -> Result<(), slint::PlatformError> {
     ui.load_notice();
     ui.load_once();
     ui.load_banner();
+    // J4: a new network, or one checked over a week ago, is checked quietly once things settle.
+    ui.spawn("network-check", |ui| {
+        std::thread::sleep(std::time::Duration::from_secs(10));
+        let _ = crate::settings::check_network(&ui.app(), false);
+    });
     ui.check_dialogs(true);
     start_ticker(&ui);
     // Started with the system (autostart.rs): minimised once the window is up, or no window

@@ -18,6 +18,7 @@ pub mod matches;
 pub mod network;
 pub mod new_options;
 pub mod prefs;
+pub mod reach;
 pub mod relays;
 pub mod roadmap;
 pub mod server;

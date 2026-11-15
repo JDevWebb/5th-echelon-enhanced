@@ -30,6 +30,7 @@ pub struct SettingsPage {
     passwords: Vec<(String, String)>,
     tests: Option<Result<Vec<(String, String, String)>, String>>,
     testing: bool,
+    checking_network: bool,
     command_line: Option<String>,
     import_text: String,
     import_error: Option<String>,
@@ -264,6 +265,11 @@ impl Screen for SettingsPage {
                         *row = (row.0.clone(), tone.to_string(), note);
                     }
                 }
+            }
+            "check-network" => {
+                self.checking_network = true;
+                let _ = crate::settings::check_network(app, true);
+                self.checking_network = false;
             }
             "test" => {
                 self.testing = true;
@@ -513,6 +519,17 @@ impl SettingsPage {
                 .enabled(nat != "off" && !locked)
                 .sub("Asks the router to forward UDP 13000 to this PC while the game runs, so other players can always reach you directly."),
         );
+        // J4: what the launcher knows about this network, on Automatic.
+        if nat == "auto" && !locked {
+            r.add(note(crate::settings::network_known(_app).unwrap_or_else(|| {
+                "The launcher checks each network you play on, and starts your games the way that works there.".into()
+            })));
+            if self.checking_network {
+                r.add(working("Checking this network…"));
+            } else {
+                r.add(buttons(vec![super::b("check-network", "Check this network")]));
+            }
+        }
         r.card("Connection test");
         r.add(note("Checks each part of the connection in turn: the server's config, its API, signing in to the game service, how other players reach this PC (as the overlay shows it in game), and the server's helper for playing over the internet."));
         if self.testing {
@@ -534,7 +551,11 @@ impl SettingsPage {
                     // The launcher can fix this one, with the player's yes (one UAC prompt).
                     let fixable = cfg!(target_os = "windows") && name == launcher::settings::FIREWALL_TEST && tone == "warn";
                     let row = result(name.clone(), tone, note_text.clone());
-                    r.add(if fixable { row.button(super::b("allow-game", "Allow the game").kind("fix")) } else { row });
+                    r.add(if fixable {
+                        row.button(super::b("allow-game", "Allow the game").kind("fix"))
+                    } else {
+                        row
+                    });
                 }
             }
             None => {}

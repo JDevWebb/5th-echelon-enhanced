@@ -57,9 +57,18 @@ pub fn start(game: &mut Game, notices: &mut Notices, mode: PlayMode, name_not_al
             if tunnel.is_some() {
                 notices.info_long(if Prefs::tunnel_always() { crate::tunnel::NOTICE_CHOSEN } else { crate::tunnel::NOTICE });
             }
+            // On Automatic, a network known not to be reachable directly (J4, reach.rs): the
+            // game asks for the relay at once. Never over the player's own choice.
+            let start_relayed = (tunnel.is_none() && game.cfg.hook_config.networking.nat == hooks_config::NatMode::Auto)
+                .then(|| crate::reach::start_relayed(&game.dir))
+                .flatten();
+            if let Some(why) = &start_relayed {
+                tracing::info!("This network needs the relay ({why}): the game asks for it at once");
+            }
             game.update(notices, |c| {
                 c.apply_profile(&profile);
                 c.hook_config.networking.tunnel = tunnel.clone();
+                c.hook_config.networking.start_relayed = start_relayed.clone();
                 if let Some(t) = &tunnel {
                     c.hook_config.networking.nat_host = None;
                     c.hook_config.networking.nat_port = Some(t.helper).filter(|p| *p != nat_proto::DEFAULT_PORT);

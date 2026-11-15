@@ -906,7 +906,31 @@ pub struct Networking {
     /// start; none is the usual.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel: Option<Tunnel>,
+    /// For this start, on Automatic: the launcher knows this network can't be reached directly
+    /// (0.5.2's J4: its check, or what the game found here before), and why. The game asks for
+    /// the relay from its first probe, instead of finding out in its first seconds. Written by
+    /// the launcher at each start; none is the usual.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_relayed: Option<String>,
 }
+
+/// What the game found about reaching this PC (0.5.2's J4), written by the add-on beside the
+/// game's settings ([`REACH_FILE`]) once its registration with the relay settles; the launcher
+/// keeps it for the network it was on.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct ReachFound {
+    /// Unix seconds.
+    pub at: i64,
+    /// The public address the relay saw the game at.
+    pub public: String,
+    /// Reached through the relay (or directly).
+    pub relayed: bool,
+    /// Why, in a few words ("the router's forward lets nothing in", "strict NAT", ...).
+    pub why: String,
+}
+
+/// [`ReachFound`]'s file, in the game's folder.
+pub const REACH_FILE: &str = "5th-echelon-reach.json";
 
 /// Where the tunnel goes, and the server's UDP services it carries (0.5.2's T).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -943,6 +967,7 @@ impl Default for Networking {
             fixed_server_port: false,
             ip_address_automatic: false,
             tunnel: None,
+            start_relayed: None,
         }
     }
 }

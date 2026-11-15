@@ -566,7 +566,9 @@ fn work(app: &tauri::AppHandle, title: &'static str, f: impl FnOnce() -> Result<
 pub fn allow_game(app: &tauri::AppHandle) -> (&'static str, String) {
     let dir = game_dir(app);
     let done = dir.clone().and_then(|dir| launcher::settings::allow_game_through_firewall(&dir));
-    let (status, note) = dir.as_deref().map_or((Status::Warn, Some("the game's folder isn't known".into())), launcher::settings::firewall_now);
+    let (status, note) = dir
+        .as_deref()
+        .map_or((Status::Warn, Some("the game's folder isn't known".into())), launcher::settings::firewall_now);
     let tone = match status {
         Status::Ok => "ok",
         Status::Warn => "warn",
@@ -674,6 +676,47 @@ pub fn act(app: tauri::AppHandle, action: String, arg: Option<Value>) -> Result<
 
 /// The connection test's results: each part's name, how it went ("ok", "warn", "fail") and
 /// what to say about it. Runs now, in the activity bar too.
+/// What's known about reaching this PC on the network it's on now (J4, reach.rs), for Settings ›
+/// Network; None when nothing is.
+pub fn network_known(app: &tauri::AppHandle) -> Option<String> {
+    let dir = app.state::<Launcher>().lock().game.as_ref().map(|g| g.dir.clone())?;
+    let k = launcher::reach::known_here(&dir)?;
+    Some(launcher::reach::describe(&k, &setup::clock::Clock::local()))
+}
+
+/// Checks this network now (J4), on Automatic only: at start when it's new or its result old
+/// (`force` false), or from Settings › Network. Its activity says what it found when forced.
+pub fn check_network(app: &tauri::AppHandle, force: bool) -> Option<launcher::reach::Known> {
+    let (profile, dir, auto) = {
+        let launcher = app.state::<Launcher>();
+        let inner = launcher.lock();
+        let g = inner.game.as_ref()?;
+        (
+            g.cfg.current_profile().cloned()?,
+            g.dir.clone(),
+            g.cfg.hook_config.networking.nat == hooks_config::NatMode::Auto,
+        )
+    };
+    if !auto || !(force || launcher::reach::due()) {
+        return None;
+    }
+    let activity = force.then(|| {
+        let a = app.state::<Launcher>().lock().notices.start_with(notifier(app), "Checking this network");
+        changed(app);
+        a
+    });
+    let known = launcher::task::guarded(|| Ok::<_, String>(launcher::reach::check(&profile, &dir))).ok().flatten();
+    if let Some(a) = activity {
+        match &known {
+            Some(k) if k.relayed => a.done(format!("This network: through the relay ({})", k.why)),
+            Some(k) => a.done(format!("This network: {}", k.why)),
+            None => a.done("This network couldn't be checked (the game is running, or the server didn't answer)".to_string()),
+        }
+        changed(app);
+    }
+    known
+}
+
 pub fn connection_test(app: tauri::AppHandle) -> Result<Vec<(&'static str, &'static str, Option<String>)>, String> {
     let (profile, nat_port, nat_mode, dir) = {
         let launcher = app.state::<Launcher>();

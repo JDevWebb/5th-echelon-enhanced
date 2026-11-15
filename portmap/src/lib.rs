@@ -200,6 +200,52 @@ pub fn default_gateway() -> Option<Ipv4Addr> {
     (!hop.is_unspecified()).then_some(hop)
 }
 
+/// Which network this PC is on (0.5.2's J4: the launcher remembers what each allows): the
+/// default gateway's hardware address, else its IP address. Kept on this PC only.
+pub fn network_id() -> Option<String> {
+    let gateway = default_gateway()?;
+    Some(match gateway_mac(gateway) {
+        Some(mac) => format!("mac {}", mac.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(":")),
+        None => format!("gw {gateway}"),
+    })
+}
+
+/// The hardware address of `gateway` (the system's ARP table).
+#[cfg(target_os = "windows")]
+pub fn gateway_mac(gateway: Ipv4Addr) -> Option<[u8; 6]> {
+    use windows::Win32::NetworkManagement::IpHelper::SendARP;
+    let mut mac = [0u8; 8];
+    let mut len = mac.len() as u32;
+    let dest = u32::from_ne_bytes(gateway.octets());
+    // SAFETY: an 8-byte buffer and its length, as SendARP asks.
+    if unsafe { SendARP(dest, 0, mac.as_mut_ptr().cast(), &mut len) } != 0 || len < 6 {
+        return None;
+    }
+    let mac: [u8; 6] = mac[..6].try_into().ok()?;
+    (mac != [0; 6]).then_some(mac)
+}
+
+/// The hardware address of `gateway` (`/proc/net/arp`).
+#[cfg(target_os = "linux")]
+pub fn gateway_mac(gateway: Ipv4Addr) -> Option<[u8; 6]> {
+    mac_from_arp_table(&std::fs::read_to_string("/proc/net/arp").ok()?, gateway)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+pub fn gateway_mac(_gateway: Ipv4Addr) -> Option<[u8; 6]> {
+    None
+}
+
+/// `ip`'s hardware address in `/proc/net/arp` ("IP HW-type Flags HW-address Mask Device").
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn mac_from_arp_table(table: &str, ip: Ipv4Addr) -> Option<[u8; 6]> {
+    let line = table.lines().skip(1).find(|l| l.split_whitespace().next() == Some(&ip.to_string()))?;
+    let hw = line.split_whitespace().nth(3)?;
+    let bytes: Vec<u8> = hw.split(':').filter_map(|b| u8::from_str_radix(b, 16).ok()).collect();
+    let mac: [u8; 6] = bytes.try_into().ok()?;
+    (mac != [0; 6]).then_some(mac)
+}
+
 /// The default gateway: the next hop towards the internet.
 #[cfg(target_os = "linux")]
 pub fn default_gateway() -> Option<Ipv4Addr> {
@@ -336,6 +382,15 @@ fn pcp(port: u16, external_port: u16, pinned: Option<Ipv4Addr>, lease: u32) -> R
 
 #[cfg(test)]
 mod tests {
+    /// J4: the gateway's hardware address from Linux's ARP table.
+    #[test]
+    fn the_gateways_hardware_address_is_read() {
+        let table = "IP address       HW type     Flags       HW address            Mask     Device\n192.168.1.1      0x1         0x2         a4:2b:b0:12:34:56     *        wlan0\n192.168.1.9      0x1         0x0         00:00:00:00:00:00     *        wlan0\n";
+        assert_eq!(super::mac_from_arp_table(table, Ipv4Addr::new(192, 168, 1, 1)), Some([0xa4, 0x2b, 0xb0, 0x12, 0x34, 0x56]));
+        assert_eq!(super::mac_from_arp_table(table, Ipv4Addr::new(192, 168, 1, 9)), None, "incomplete");
+        assert_eq!(super::mac_from_arp_table(table, Ipv4Addr::new(10, 0, 0, 1)), None);
+    }
+
     /// PCP (RFC 6887): a MAP request as the RFC lays it out, and its answer read back.
     #[test]
     fn pcp_map_requests_and_answers() {

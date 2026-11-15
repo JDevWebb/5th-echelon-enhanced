@@ -153,6 +153,9 @@ struct State {
     /// The last reach check that got through to the Storm socket (J1): its nonce goes back to
     /// the helper in each probe, proof the port mapping lets others in.
     reach_seen: Option<u32>,
+    /// On Automatic, the launcher said this network needs the relay (J4): asked for from the
+    /// first probe.
+    start_relayed: bool,
     /// When the server first said it checks the router's forward (J1, [`Reply::reach_pending`]).
     reach_pending_since: Option<Instant>,
     /// The ticket for our name, from signing in (zeros: none yet).
@@ -216,6 +219,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     echo_fallback_at: None,
     server_echo_held_said: false,
     reach_seen: None,
+    start_relayed: false,
     reach_pending_since: None,
     ticket: [0; 16],
     cookie: [0; 16],
@@ -1042,6 +1046,60 @@ fn on_reply(from_second: bool, observed: SocketAddrV4, advertise: SocketAddrV4, 
             RETELL.store(true, Ordering::SeqCst);
         }
     }
+    // Settled: what it found goes to the launcher, for this network (J4).
+    let found = (!reply.reach_pending).then(|| reach_found(&st, reply)).flatten();
+    drop(st);
+    if let Some(found) = found {
+        write_reach_found(found);
+    }
+}
+
+/// What the game found about reaching this PC (J4), from a settled answer: None when it says
+/// nothing new (the relay was asked for: by the player, or by the launcher from before).
+fn reach_found(st: &State, reply: Reply) -> Option<hooks_config::ReachFound> {
+    if st.mode != Some(NatMode::Auto) || (reply.relayed && st.start_relayed) {
+        return None;
+    }
+    let why = if !reply.relayed {
+        "reached directly"
+    } else if st.symmetric {
+        "the router gives each destination its own port (strict NAT)"
+    } else if st.mapping.is_some() {
+        "the router's forward lets nothing in (a firewall on this PC, or a second router)"
+    } else {
+        "the router doesn't forward the game's port (UPnP and NAT-PMP off, or none)"
+    };
+    Some(hooks_config::ReachFound {
+        at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or_default()),
+        public: reply.observed.ip().to_string(),
+        relayed: reply.relayed,
+        why: why.into(),
+    })
+}
+
+/// Writes `found` beside the game's settings, once per change (the launcher reads it).
+fn write_reach_found(found: hooks_config::ReachFound) {
+    static LAST: Mutex<Option<(bool, String, String)>> = Mutex::new(None);
+    let key = (found.relayed, found.why.clone(), found.public.clone());
+    {
+        let mut last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if last.as_ref() == Some(&key) {
+            return;
+        }
+        *last = Some(key);
+    }
+    let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(std::path::Path::to_path_buf)) else {
+        return;
+    };
+    match serde_json::to_string(&found) {
+        Ok(text) => match std::fs::write(dir.join(hooks_config::REACH_FILE), text) {
+            Ok(()) => info!("NAT: for the launcher: {}", found.why),
+            Err(e) => warn!("NAT: couldn't keep what this network allows for the launcher: {e}"),
+        },
+        Err(e) => warn!("NAT: couldn't keep what this network allows for the launcher: {e}"),
+    }
 }
 
 /// The address to give the game, once the helper answered and the check
@@ -1418,7 +1476,7 @@ fn worker(host: String, port: u16) {
                 st.sent.rotate_right(1);
                 st.sent[0] = nonce;
                 let mut flags = 0;
-                if st.mode == Some(NatMode::Relay) {
+                if st.mode == Some(NatMode::Relay) || st.start_relayed {
                     flags |= probe_flags::WANT_RELAY;
                 }
                 if st.symmetric {
@@ -1580,6 +1638,11 @@ pub unsafe fn init_hooks(config: &Config, addr: &Addresses) {
         let mut st = state();
         st.mode = Some(mode);
         st.name = config.user.username.clone();
+        // J4: the launcher knows this network needs the relay; asked for from the first probe.
+        if let (NatMode::Auto, Some(why)) = (mode, &config.networking.start_relayed) {
+            info!("NAT: the launcher knows this network isn't reachable directly ({why}): asking for the relay at once");
+            st.start_relayed = true;
+        }
     }
 
     if let Ok(lib) = LoadLibraryA(s!("ws2_32.dll")) {
@@ -1723,6 +1786,37 @@ mod tests {
         st.reply = Some(direct);
         st.reach_pending_since = Instant::now().checked_sub(REACH_HOLD);
         assert_eq!(ready_address(&st), Some(direct.advertise), "no verdict in time: as it is");
+    }
+
+    /// J4: what the game found goes to the launcher, why in a few words; nothing when the relay
+    /// was asked for.
+    #[test]
+    fn the_game_says_what_this_network_allows() {
+        let mut st = online(Instant::now());
+        let direct = Reply {
+            observed: "203.0.113.5:13000".parse().unwrap(),
+            advertise: "203.0.113.5:13000".parse().unwrap(),
+            relayed: false,
+            reach_pending: false,
+            relay_ip: Ipv4Addr::new(192, 0, 2, 1),
+            relay_ports: (40000, 40999),
+        };
+        let found = reach_found(&st, direct).unwrap();
+        assert!(!found.relayed && found.public == "203.0.113.5");
+        let relayed = Reply {
+            relayed: true,
+            advertise: "192.0.2.1:40002".parse().unwrap(),
+            ..direct
+        };
+        st.mapping = Some(direct.observed);
+        assert!(reach_found(&st, relayed).unwrap().why.contains("forward lets nothing in"));
+        st.symmetric = true;
+        assert!(reach_found(&st, relayed).unwrap().why.contains("strict NAT"));
+        st.start_relayed = true;
+        assert_eq!(reach_found(&st, relayed), None, "the launcher asked for it: nothing new");
+        st.start_relayed = false;
+        st.mode = Some(NatMode::Relay);
+        assert_eq!(reach_found(&st, relayed), None, "the player asked for it");
     }
 
     #[test]

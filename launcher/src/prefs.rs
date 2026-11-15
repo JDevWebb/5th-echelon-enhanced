@@ -192,6 +192,9 @@ pub struct Prefs {
     /// connection that lets some UDP through but loses most of it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     tunnel_always: bool,
+    /// What each network allows (0.5.2's J4, reach.rs): reached directly or through the relay.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    networks: Vec<crate::reach::Known>,
     /// What the Play button starts: its split button's last choice.
     #[serde(default, skip_serializing_if = "PlayMode::is_default")]
     play_mode: PlayMode,
@@ -493,6 +496,17 @@ impl Prefs {
     /// Settings › Network › Always go through HTTPS (0.5.2's T): the tunnel at every start.
     pub fn tunnel_always() -> bool {
         Self::load().tunnel_always
+    }
+
+    /// What's known about each network (reach.rs).
+    pub fn known_networks() -> Vec<crate::reach::Known> {
+        Self::load().networks
+    }
+
+    pub fn remember_network(k: crate::reach::Known) {
+        let mut prefs = Self::load();
+        crate::reach::remember(&mut prefs.networks, k);
+        prefs.save();
     }
 
     pub fn set_tunnel_always(on: bool) {
