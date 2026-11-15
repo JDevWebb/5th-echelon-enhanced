@@ -76,9 +76,12 @@ const DETECT_WAIT: Duration = Duration::from_millis(1500);
 /// echo at once, the game took that answer (its unrelayed public address), stopped asking, and
 /// never heard the relay's: it advertised an address nobody could reach and every join failed
 /// (2026-11-05). Held past its last ask (a 6 s hold), the game had no address at all. So the
-/// first eight are held (2 s: a helper answers in 0.1-1.3 s) and the last two go to the game's
+/// first nine are held (2.25 s: a helper answers in 0.1-1.3 s) and the last goes to the game's
 /// own echo, said in the log.
-const ECHO_ASKS_HELD: u32 = 8;
+/// Nine since the tunnel fallback (2.25 s): a game the helper doesn't hear is registered
+/// through the tunnel about 1.7 s after its first ask ([`TUNNEL_AFTER_ASKED`]), and the game
+/// takes its address only as the answer to an ask (2026-11-15).
+const ECHO_ASKS_HELD: u32 = 9;
 
 /// This game's session key (made for each run): its public half goes with the sign-in, so the
 /// NAT ticket and relay pass name it, and the probes and pass presents are signed with it
@@ -140,6 +143,10 @@ struct State {
     echo_requests: u32,
     /// The fall back to the game's own echo was said (once per registration).
     echo_fallback_said: bool,
+    /// When the game first asked the server for its address itself ([`server_echo_held`]).
+    echo_fallback_at: Option<Instant>,
+    /// The server's answer to it was held back (said once).
+    server_echo_held_said: bool,
     /// The last reach check that got through to the Storm socket (J1): its nonce goes back to
     /// the helper in each probe, proof the port mapping lets others in.
     reach_seen: Option<u32>,
@@ -201,6 +208,8 @@ static STATE: Mutex<State> = Mutex::new(State {
     told_game: None,
     echo_requests: 0,
     echo_fallback_said: false,
+    echo_fallback_at: None,
+    server_echo_held_said: false,
     reach_seen: None,
     ticket: [0; 16],
     cookie: [0; 16],
@@ -232,11 +241,21 @@ const SILENCE: Duration = Duration::from_secs(60);
 /// (2026-11-15).
 const TUNNEL_AFTER_FIRST: Duration = Duration::from_secs(20);
 const TUNNEL_AFTER_LOST: Duration = Duration::from_secs(50);
+/// Sooner while the game waits for its address: the game takes the first address it's given,
+/// and only as an answer to its ask (about 2.5 s of asks, the server's answer held 10 s more),
+/// so the helper has to register it through the tunnel by then.
+const TUNNEL_AFTER_ASKED: Duration = Duration::from_millis(1000);
 
 /// Whether the helper's silence moves its traffic to the tunnel now: `never_answered` for
-/// `quiet` (since the first probe), or silent `quiet` since its last answer.
-fn tunnel_due(quiet: Duration, never_answered: bool) -> bool {
-    quiet >= if never_answered { TUNNEL_AFTER_FIRST } else { TUNNEL_AFTER_LOST }
+/// `quiet` (since the first probe), or silent `quiet` since its last answer; `game_waiting`: the
+/// game asked for its address and hasn't been given one.
+fn tunnel_due(quiet: Duration, never_answered: bool, game_waiting: bool) -> bool {
+    let after = match (never_answered, game_waiting) {
+        (true, true) => TUNNEL_AFTER_ASKED,
+        (true, false) => TUNNEL_AFTER_FIRST,
+        (false, _) => TUNNEL_AFTER_LOST,
+    };
+    quiet >= after
 }
 
 /// How long a signed-in game may go unregistered before the player is told nobody can reach
@@ -691,6 +710,8 @@ fn forget_registration(st: &mut State) {
     st.told_game = None;
     st.echo_requests = 0;
     st.echo_fallback_said = false;
+    st.echo_fallback_at = None;
+    st.server_echo_held_said = false;
     st.lost_at = Some(Instant::now());
 }
 
@@ -761,6 +782,9 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
     // A peek leaves the packet queued; consuming NAT messages then would
     // loop on the same one.
     const MSG_PEEK: i32 = 2;
+    if is_storm_socket(s) {
+        retell_address();
+    }
     if !is_storm_socket(s) || buf.is_null() || flags & MSG_PEEK != 0 {
         let n = unsafe { RecvFromHook.call(s, buf, len, flags, from, fromlen) };
         // The tunnel: a reply from a forwarder is shown as from the server's service.
@@ -780,6 +804,12 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
     } else {
         (from, fromlen)
     };
+    // The server's answer to the game's address ask, held back until the helper registered this
+    // game: handed over now with the helper's address in it (or as it was, after a while).
+    if let Some((answer, sender)) = held_echo_ready() {
+        write_addr(sender, from_ptr, len_ptr);
+        return hand_over(&answer, buf, len);
+    }
     // A relayed packet is longer than the game packet inside it: into a buffer
     // only big enough for the game packet it wouldn't fit. Received here then,
     // and handed over as the game's own receive would.
@@ -797,6 +827,12 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
         if let Some(server) = sender.and_then(crate::tunnel::from_forwarder) {
             write_addr(server, from_ptr, len_ptr);
             sender = Some(server);
+        }
+        if server_echo_held(data) {
+            if let Some(sender) = sender {
+                *HELD_ECHO.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((data.to_vec(), sender, Instant::now()));
+            }
+            continue;
         }
         if !nat_proto::is_nat_message(data) {
             if LOG_PACKETS.load(Ordering::Relaxed) {
@@ -955,8 +991,10 @@ fn on_reply(from_second: bool, observed: SocketAddrV4, advertise: SocketAddrV4, 
             "NAT: this PC is {observed} to the server; advertising {advertise}{}",
             if reply.relayed { " (through the relay)" } else { "" }
         );
-        if st.told_game.is_some_and(|t| t != advertise) {
-            warn!("NAT: the game already advertises {:?}; the server corrects it where it can", st.told_game);
+        // Told another address before, or the game took the server's own answer: told again.
+        if st.told_game.is_some_and(|t| t != advertise) || (st.told_game.is_none() && st.echo_fallback_said) {
+            info!("NAT: the game's address was {:?} until now; it's told {advertise} on its next read", st.told_game);
+            RETELL.store(true, Ordering::SeqCst);
         }
     }
 }
@@ -965,7 +1003,9 @@ fn on_reply(from_second: bool, observed: SocketAddrV4, advertise: SocketAddrV4, 
 /// for a symmetric NAT is done (or took too long).
 fn ready_address(st: &State) -> Option<SocketAddrV4> {
     let r = st.reply?;
-    let detect_done = st.second_observed.is_some() || st.symmetric || st.first_reply_at.is_some_and(|t| t.elapsed() > DETECT_WAIT);
+    // No second port to hear from (through the tunnel, which carries the helper's own port
+    // only): nothing to wait for.
+    let detect_done = st.second.is_none() || st.second_observed.is_some() || st.symmetric || st.first_reply_at.is_some_and(|t| t.elapsed() > DETECT_WAIT);
     // A symmetric NAT waits for the relay address.
     if st.symmetric && !r.relayed && st.mode != Some(NatMode::Off) && st.last_probe.is_none_or(|t| t.elapsed() < Duration::from_secs(3)) {
         return None;
@@ -973,7 +1013,113 @@ fn ready_address(st: &State) -> Option<SocketAddrV4> {
     detect_done.then_some(r.advertise)
 }
 
+/// The game's NAT engine, as its last address ask gave it ([`echo_send`]): where a later
+/// address is told ([`retell_address`]).
+static ENGINE: AtomicUsize = AtomicUsize::new(0);
+/// The game's address changed after it was told one, or after it asked the server itself: it's
+/// told again on the game's next read of its match socket ([`retell_address`]).
+static RETELL: AtomicBool = AtomicBool::new(false);
+
+/// Tells the game `address` through its own NAT reply parser, as an answer to its address ask.
+fn tell_game(engine: *mut c_void, parse: usize, address: SocketAddrV4) {
+    // The reply the game's NAT echo expects: type 2, then the station URL.
+    let mut msg = vec![2u8];
+    msg.extend_from_slice(nat_proto::station_url(address).as_bytes());
+    msg.push(0);
+    // The sender's address object; only read for other message types.
+    let mut sender = [0u8; 0x100];
+    unsafe {
+        let parse: ParseFn = std::mem::transmute(parse);
+        parse(engine, sender.as_mut_ptr().cast(), msg.as_ptr(), msg.len() as u32);
+    }
+}
+
+/// How long the server's own answer to the game's address ask is held back while the helper
+/// hasn't registered the game; one held that long is handed over as it was.
+const SERVER_ECHO_HOLD: Duration = Duration::from_secs(10);
+
+/// The server's last answer to the game's address ask held back ([`server_echo_held`]): the
+/// packet, its sender, and when.
+static HELD_ECHO: Mutex<Option<(Vec<u8>, SocketAddrV4, Instant)>> = Mutex::new(None);
+
+/// The held answer to hand the game now: once the helper registered this game, with its address
+/// written in (the game takes the first address it's given, and only as the answer to its ask:
+/// told later, it kept its own; the gamebox, 2026-11-15); after [`SERVER_ECHO_HOLD`] as it was.
+fn held_echo_ready() -> Option<(Vec<u8>, SocketAddrV4)> {
+    let mut held = HELD_ECHO.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (_, _, at) = held.as_ref()?;
+    let advertise = state().reply.map(|r| r.advertise);
+    if advertise.is_none() && at.elapsed() < SERVER_ECHO_HOLD {
+        return None;
+    }
+    let (answer, sender, _) = held.take()?;
+    drop(held);
+    let answer = match advertise {
+        Some(address) => {
+            info!("NAT: the server's answer to the game's address ask is handed over with {address}, the helper's");
+            state().told_game = Some(address);
+            echo_answer_with(&answer, address)
+        }
+        None => {
+            info!("NAT: the helper didn't register this game in time: the server's own answer to its address ask is handed over");
+            answer
+        }
+    };
+    Some((answer, sender))
+}
+
+/// `answer` (the game's ask, then `udp:/address=...;port=...` and a 0) with `address` in it.
+fn echo_answer_with(answer: &[u8], address: SocketAddrV4) -> Vec<u8> {
+    const ANSWER: &[u8] = b"udp:/address=";
+    let at = answer.windows(ANSWER.len()).position(|w| w == ANSWER).unwrap_or(answer.len());
+    let mut out = answer[..at].to_vec();
+    out.extend_from_slice(format!("udp:/address={};port={}\0", address.ip(), address.port()).as_bytes());
+    out
+}
+
+/// Whether `data` is the server's own answer to the game's address ask (the ask, then
+/// `udp:/address=...;port=...`), to be kept from the game: the helper hasn't registered this
+/// game yet, the game asked the server itself less than [`SERVER_ECHO_HOLD`] ago, and NAT is on.
+/// The game keeps the first address it's given, and the server answers from the address the
+/// ask came from: behind a router that put this PC's packets on another PC's public port, that
+/// was the other PC's relay address; the game took it for its own, telling it again later
+/// didn't change it, and that player couldn't join it (2026-11-15). Held back, the game's
+/// first address is the helper's, told once it registers ([`retell_address`]).
+fn server_echo_held(data: &[u8]) -> bool {
+    const ANSWER: &[u8] = b"udp:/address=";
+    if !data.windows(ANSWER.len()).any(|w| w == ANSWER) {
+        return false;
+    }
+    let mut st = state();
+    let hold = st.reply.is_none() && matches!(st.mode, Some(NatMode::Auto | NatMode::Relay)) && st.echo_fallback_at.is_some_and(|t| t.elapsed() < SERVER_ECHO_HOLD);
+    if hold && !st.server_echo_held_said {
+        st.server_echo_held_said = true;
+        info!("NAT: the server's own answer to the game's address ask is kept from it until the helper registers this game");
+    }
+    hold
+}
+
+/// Tells the game its address again when it changed since ([`RETELL`]): on the thread that reads
+/// the match socket, as the game's own answers are read. The helper registered this game later
+/// than the game asked (through the tunnel, after the helper didn't hear it), and the server's
+/// own answer to its ask had been another player's address: behind a router that put this PC's
+/// packets on the other PC's public port, the game took that player's relay address for its
+/// own, and that player couldn't join it (2026-11-15).
+fn retell_address() {
+    if !RETELL.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    let engine = ENGINE.load(Ordering::SeqCst);
+    let (Some(&parse), true) = (PARSE.get(), engine != 0) else { return };
+    let Some(address) = state().reply.map(|r| r.advertise) else { return };
+    tell_game(engine as *mut c_void, parse, address);
+    let mut st = state();
+    info!("NAT: told the game to advertise {address} (its address changed since {:?})", st.told_game);
+    st.told_game = Some(address);
+}
+
 fn echo_send(engine: *mut c_void) {
+    ENGINE.store(engine as usize, Ordering::SeqCst);
     let (address, first, hold) = {
         let mut st = state();
         st.echo_requests += 1;
@@ -996,24 +1142,16 @@ fn echo_send(engine: *mut c_void) {
         let mut st = state();
         if !st.echo_fallback_said {
             st.echo_fallback_said = true;
+            st.echo_fallback_at = Some(Instant::now());
             drop(st);
-            warn!("NAT: no address from the helper in the game's first {ECHO_ASKS_HELD} asks (2 s); the game asks the server itself");
+            warn!("NAT: no address from the helper in the game's first {ECHO_ASKS_HELD} asks; the game asks the server itself");
         } else {
             drop(st);
         }
         unsafe { EchoSendHook.call(engine) };
         return;
     };
-    // The reply the game's NAT echo expects: type 2, then the station URL.
-    let mut msg = vec![2u8];
-    msg.extend_from_slice(nat_proto::station_url(address).as_bytes());
-    msg.push(0);
-    // The sender's address object; only read for other message types.
-    let mut sender = [0u8; 0x100];
-    unsafe {
-        let parse: ParseFn = std::mem::transmute(parse);
-        parse(engine, sender.as_mut_ptr().cast(), msg.as_ptr(), msg.len() as u32);
-    }
+    tell_game(engine, parse, address);
     let mut st = state();
     if st.told_game != Some(address) {
         info!("NAT: told the game to advertise {address}");
@@ -1105,10 +1243,11 @@ fn worker(host: String, port: u16) {
         let fallback = {
             let mut st = state();
             let never_answered = st.last_answer.is_none();
+            let game_waiting = st.echo_requests > 0 && st.told_game.is_none();
             let quiet = st.last_answer.or(st.probing_since).map(|t| t.elapsed());
             match (quiet, st.server) {
                 (Some(quiet), Some(helper))
-                    if tunnel_due(quiet, never_answered)
+                    if tunnel_due(quiet, never_answered, game_waiting)
                         && !st.tunnel_fallback_tried
                         && !crate::tunnel::on()
                         && st.mode != Some(NatMode::Off)
@@ -1429,10 +1568,23 @@ mod tests {
 
     #[test]
     fn the_helpers_silence_moves_its_traffic_to_the_tunnel() {
-        assert!(!tunnel_due(Duration::from_secs(19), true), "never heard: 20 s");
-        assert!(tunnel_due(Duration::from_secs(20), true));
-        assert!(!tunnel_due(Duration::from_secs(25), false), "a missed keepalive or so: not yet");
-        assert!(tunnel_due(Duration::from_secs(50), false), "heard before, silent 50 s");
+        assert!(!tunnel_due(Duration::from_secs(19), true, false), "never heard: 20 s");
+        assert!(tunnel_due(Duration::from_secs(20), true, false));
+        assert!(!tunnel_due(Duration::from_millis(900), true, true), "the game waiting for its address: 1 s");
+        assert!(tunnel_due(Duration::from_millis(1000), true, true));
+        assert!(!tunnel_due(Duration::from_secs(25), false, true), "a missed keepalive or so: not yet");
+        assert!(tunnel_due(Duration::from_secs(50), false, false), "heard before, silent 50 s");
+    }
+
+    #[test]
+    fn the_servers_answer_carries_the_helpers_address() {
+        let ask = b"qq\x05ask";
+        let mut answer = ask.to_vec();
+        answer.extend_from_slice(b"udp:/address=114.23.110.139;port=13000\0");
+        let out = super::echo_answer_with(&answer, "45.77.236.203:40003".parse().unwrap());
+        let mut want = ask.to_vec();
+        want.extend_from_slice(b"udp:/address=45.77.236.203;port=40003\0");
+        assert_eq!(out, want);
     }
 
     #[test]
