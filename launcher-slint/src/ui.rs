@@ -452,6 +452,9 @@ impl Ui {
 
     fn push_activity(self: &Arc<Self>) {
         let a = core::activity(&self.core);
+        if let Some(a) = &a {
+            tracing::info!("Activity bar: {} ({})", a.title, a.state);
+        }
         self.show(move |w| w.set_activity(activity_view(a)));
     }
 

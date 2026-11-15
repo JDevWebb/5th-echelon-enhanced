@@ -55,7 +55,7 @@ pub fn start(game: &mut Game, notices: &mut Notices, mode: PlayMode, name_not_al
                 crate::tunnel::for_start(&profile.server)
             };
             if tunnel.is_some() {
-                notices.info(if Prefs::tunnel_always() { crate::tunnel::NOTICE_CHOSEN } else { crate::tunnel::NOTICE });
+                notices.info_long(if Prefs::tunnel_always() { crate::tunnel::NOTICE_CHOSEN } else { crate::tunnel::NOTICE });
             }
             game.update(notices, |c| {
                 c.apply_profile(&profile);

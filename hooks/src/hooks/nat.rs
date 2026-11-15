@@ -417,7 +417,8 @@ pub fn status() -> Option<String> {
     let ping = st.rtt_ms.map(|ms| format!(" · {ms} ms to the relay")).unwrap_or_default();
     let line = if r.relayed && crate::tunnel::on() {
         // 0.5.2's T: said so (it's slower than usual), as the launcher does at start.
-        format!("Through the relay ({}), over HTTPS: this connection blocks the game's traffic", r.advertise)
+        // Blocked or chosen (Settings › Network): the hook can't tell, so neither is said.
+        format!("Through the relay ({}), over HTTPS (slower than usual)", r.advertise)
     } else if r.relayed {
         format!("Through the relay ({})", r.advertise)
     } else if st.mapping.is_some_and(|m| m == r.advertise) {

@@ -252,9 +252,19 @@ impl Activities {
     pub fn info(&mut self, text: impl Into<String>) {
         let id = self.new_id();
         let mut a = Activity::new(id, text.into());
+        tracing::info!("Notice: {}", a.title);
         a.linger = reading_time(&a.title);
         a.finish(State::Done, Instant::now());
         self.push(a);
+    }
+
+    /// A notice that matters for the whole of the game's run (the tunnel's): shown for as long as
+    /// any is, as the game's window soon covers the launcher's.
+    pub fn info_long(&mut self, text: impl Into<String>) {
+        self.info(text);
+        if let Some(a) = self.list.last() {
+            lock(a).linger = NOTICE_AT_MOST;
+        }
     }
 
     /// A one-line error: shown until dismissed.
