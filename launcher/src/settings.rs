@@ -1191,7 +1191,8 @@ fn connection_test(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui
         } else if ui.button("Run the test").clicked() {
             let nat_port = profile.nat_port.or(game.cfg.hook_config.networking.nat_port);
             let nat_mode = game.cfg.hook_config.networking.nat;
-            settings.tests.start(ctx, move || run_tests(&profile, nat_port, nat_mode));
+            let dir = game.dir.clone();
+            settings.tests.start(ctx, move || run_tests(&profile, nat_port, nat_mode, &dir));
         }
     });
     if let Some(done) = settings.allowing.poll() {
@@ -1222,14 +1223,14 @@ fn connection_test(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui
     }
     if allow {
         let dir = game.dir.clone();
-        settings.allowing.start(ctx, move || allow_game_through_firewall(&dir).map(|()| firewall_now()));
+        settings.allowing.start(ctx, move || allow_game_through_firewall(&dir).map(|()| firewall_now(&dir)));
     }
     if settings.test_results.iter().any(|(_, s, _)| *s != setup::diagnose::Status::Ok) && setup::game::game_running() {
         ui.label(theme::muted("The game is running and holds the ports some tests need; close it and test again."));
     }
 }
 
-pub fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>, nat_mode: hooks_config::NatMode) -> TestResults {
+pub fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>, nat_mode: hooks_config::NatMode, game_dir: &std::path::Path) -> TestResults {
     use crate::network;
     let rt = crate::services::rt();
     let api = profile.api_server_url().to_string();
@@ -1369,23 +1370,23 @@ pub fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>, n
     }
     add("Game's match port (UDP 13000)", storm_port_free());
     if cfg!(target_os = "windows") && !hooks_config::running_under_wine() {
-        add(FIREWALL_TEST, firewall_says(game_firewall_rules().as_deref()));
+        add(FIREWALL_TEST, firewall_says(game_firewall_rules(game_dir).as_deref()));
     }
     results
 }
 
-/// The inbound Windows Firewall rules for the game's two executables, as PowerShell's
-/// firewall cmdlets give them (their values aren't translated, unlike netsh's): JSON of
-/// `{p: program, e: "True"|"False", a: "Allow"|"Block"}`. None when it couldn't be read.
+/// The inbound Windows Firewall rules for the two executables of the game in `game_dir` (only
+/// that copy's: another install's rule lets in another program, and made the line read Ok for a
+/// copy with none, 2026-11-15), as PowerShell's firewall cmdlets give them (their values aren't
+/// translated, unlike netsh's): JSON of `{p: program, e: "True"|"False", a: "Allow"|"Block"}`.
+/// None when it couldn't be read.
 #[cfg(target_os = "windows")]
-fn game_firewall_rules() -> Option<String> {
+fn game_firewall_rules(game_dir: &std::path::Path) -> Option<String> {
     use std::os::windows::process::CommandExt as _;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let script = "Get-NetFirewallApplicationFilter | Where-Object { $_.Program -like '*Blacklist*game.exe' } | \
-        ForEach-Object { $f = $_; Get-NetFirewallRule -AssociatedNetFirewallApplicationFilter $f | Where-Object { \"$($_.Direction)\" -eq 'Inbound' } | \
-        ForEach-Object { [pscustomobject]@{ p = $f.Program; e = \"$($_.Enabled)\"; a = \"$($_.Action)\" } } } | ConvertTo-Json -Compress";
+    let script = firewall_rules_script(game_dir)?;
     let out = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok()?;
@@ -1393,13 +1394,36 @@ fn game_firewall_rules() -> Option<String> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn game_firewall_rules() -> Option<String> {
+fn game_firewall_rules(_game_dir: &std::path::Path) -> Option<String> {
     None
 }
 
-/// The connection test's Windows Firewall line, read again now (after "Allow the game").
-pub fn firewall_now() -> (setup::diagnose::Status, Option<String>) {
-    firewall_says(game_firewall_rules().as_deref())
+/// The PowerShell that lists the inbound rules for the executables of the game in `game_dir`
+/// (a rule's program may be written with variables, %ProgramFiles%: matched expanded, any
+/// case). None when neither executable is there.
+pub fn firewall_rules_script(game_dir: &std::path::Path) -> Option<String> {
+    let exes: Vec<String> = setup::game::GameVersion::ALL
+        .iter()
+        .map(|v| v.full_path(game_dir))
+        .filter(|p| p.is_file())
+        .map(|p| p.display().to_string())
+        .collect();
+    if exes.is_empty() {
+        return None;
+    }
+    // PowerShell single-quoted strings: a quote is written twice.
+    let list = exes.iter().map(|e| format!("'{}'", e.replace('\'', "''"))).collect::<Vec<_>>().join(",");
+    Some(format!(
+        "$exes = @({list}); Get-NetFirewallApplicationFilter | Where-Object {{ $exes -contains [Environment]::ExpandEnvironmentVariables($_.Program) }} | \
+         ForEach-Object {{ $f = $_; Get-NetFirewallRule -AssociatedNetFirewallApplicationFilter $f | Where-Object {{ \"$($_.Direction)\" -eq 'Inbound' }} | \
+         ForEach-Object {{ [pscustomobject]@{{ p = $f.Program; e = \"$($_.Enabled)\"; a = \"$($_.Action)\" }} }} }} | ConvertTo-Json -Compress"
+    ))
+}
+
+/// The connection test's Windows Firewall line for the game in `game_dir`, read again now
+/// (after "Allow the game").
+pub fn firewall_now(game_dir: &std::path::Path) -> (setup::diagnose::Status, Option<String>) {
+    firewall_says(game_firewall_rules(game_dir).as_deref())
 }
 
 /// The connection test's name for the Windows Firewall line, which "Allow the game" fixes.
@@ -1715,6 +1739,24 @@ mod vpn_tests {
         assert!(script.contains("New-NetFirewallRule") && script.contains("Disable-NetFirewallRule") && !script.contains("Remove-NetFirewallRule -Action"));
         std::fs::write(dir.join("Blacklist_game.exe"), b"").unwrap();
         assert!(super::allow_script(&dir).unwrap().contains("Blacklist_game.exe'"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The firewall line reads the rules of this folder's game only, not another install's.
+    #[test]
+    fn the_firewall_line_reads_this_copys_rules_only() {
+        let dir = std::env::temp_dir().join(format!("fe-rules-test-{}-o'neil", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(super::firewall_rules_script(&dir).is_none(), "no game there");
+        std::fs::write(dir.join("Blacklist_DX11_game.exe"), b"").unwrap();
+        let script = super::firewall_rules_script(&dir).unwrap();
+        let exe = dir.join("Blacklist_DX11_game.exe").display().to_string().replace('\'', "''");
+        assert!(script.contains(&format!("'{exe}'")), "this copy's program, quotes doubled: {script}");
+        assert!(
+            script.contains("-contains [Environment]::ExpandEnvironmentVariables($_.Program)"),
+            "matched by path: {script}"
+        );
+        assert!(!script.contains("-like '*Blacklist*"), "not every install's: {script}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

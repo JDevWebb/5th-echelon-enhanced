@@ -564,8 +564,9 @@ fn work(app: &tauri::AppHandle, title: &'static str, f: impl FnOnce() -> Result<
 /// "Allow the game" (0.5.2's J3): the game let in through Windows Firewall, with one UAC prompt.
 /// Then the test's firewall line as it reads now.
 pub fn allow_game(app: &tauri::AppHandle) -> (&'static str, String) {
-    let done = game_dir(app).and_then(|dir| launcher::settings::allow_game_through_firewall(&dir));
-    let (status, note) = launcher::settings::firewall_now();
+    let dir = game_dir(app);
+    let done = dir.clone().and_then(|dir| launcher::settings::allow_game_through_firewall(&dir));
+    let (status, note) = dir.as_deref().map_or((Status::Warn, Some("the game's folder isn't known".into())), launcher::settings::firewall_now);
     let tone = match status {
         Status::Ok => "ok",
         Status::Warn => "warn",
@@ -674,18 +675,18 @@ pub fn act(app: tauri::AppHandle, action: String, arg: Option<Value>) -> Result<
 /// The connection test's results: each part's name, how it went ("ok", "warn", "fail") and
 /// what to say about it. Runs now, in the activity bar too.
 pub fn connection_test(app: tauri::AppHandle) -> Result<Vec<(&'static str, &'static str, Option<String>)>, String> {
-    let (profile, nat_port, nat_mode) = {
+    let (profile, nat_port, nat_mode, dir) = {
         let launcher = app.state::<Launcher>();
         let inner = launcher.lock();
         let g = inner.game.as_ref().ok_or("Find the game first (Settings › Game).")?;
         let profile = g.cfg.current_profile().cloned().ok_or("Choose a server first.")?;
         let nat_port = profile.nat_port.or(g.cfg.hook_config.networking.nat_port);
-        (profile, nat_port, g.cfg.hook_config.networking.nat)
+        (profile, nat_port, g.cfg.hook_config.networking.nat, g.dir.clone())
     };
     let activity = app.state::<Launcher>().lock().notices.start_with(notifier(&app), "Testing the connection");
     activity.step("the server's config, its API, signing in, how players reach you, the internet play helper");
     changed(&app);
-    let results = launcher::task::guarded(|| Ok::<_, String>(launcher::settings::run_tests(&profile, nat_port, nat_mode)))?;
+    let results = launcher::task::guarded(|| Ok::<_, String>(launcher::settings::run_tests(&profile, nat_port, nat_mode, &dir)))?;
     let failed = results.iter().filter(|(_, s, _)| *s == Status::Fail).count();
     activity.done(match failed {
         0 => "Connection test: everything answered".to_string(),
