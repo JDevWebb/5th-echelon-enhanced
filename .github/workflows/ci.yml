@@ -52,8 +52,6 @@ jobs:
           cargo fmt --manifest-path launcher-slint/Cargo.toml --all --check
       - name: Tests
         run: cargo test --locked --workspace --exclude hooks --exclude umd_browser
-      - name: The launcher's screens, headless
-        run: cargo test --locked -p launcher --features ui-tests
       - name: Test players against a fresh server
         run: |
           cargo build --locked -p dedicated_server -p testbot
@@ -83,8 +81,6 @@ jobs:
           scripts/ops-test.sh /ci-bin
       - name: The Linux launcher builds (launcher-slint)
         run: cargo build --locked --manifest-path launcher-slint/Cargo.toml
-      - name: The egui launcher (the fallback, not released) still builds
-        run: cargo build --locked -p launcher
 
   windows:
     name: Windows builds

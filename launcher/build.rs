@@ -1,8 +1,10 @@
+#[cfg(feature = "embed-dll")]
 use std::env;
+#[cfg(feature = "embed-dll")]
 use std::fs;
-use std::io::Write;
 #[cfg(feature = "embed-dll")]
 use std::path::Path;
+#[cfg(feature = "embed-dll")]
 use std::path::PathBuf;
 #[cfg(feature = "embed-dll")]
 use std::process::Command;
@@ -142,10 +144,12 @@ fn embed(dll_path: &Path) {
     brotli::BrotliCompress(&mut in_file, &mut out_file, &params).unwrap();
 }
 
+#[cfg(feature = "embed-dll")]
 mod dll {
     include!("src/dll_utils/parse.rs");
 }
 
+#[cfg(feature = "embed-dll")]
 mod version {
     include!("src/version.rs");
 }
@@ -153,8 +157,10 @@ mod version {
 include!("../build/release.rs");
 
 fn main() {
-    let (name, version) = release();
-
+    // FE_PRODUCT and FE_RELEASE, from release.toml.
+    let _ = release();
+    // The hooks DLL the launcher installs, built in (launcher-slint's embed-dll). The program's
+    // icon, manifest and version info are launcher-slint's (its build.rs).
     #[cfg(feature = "embed-dll")]
     {
         let dir = root_manifest_dir();
@@ -162,68 +168,4 @@ fn main() {
         println!("cargo:rerun-if-changed={}", hooks_dir.to_str().unwrap());
         embed_dll();
     }
-
-    // Decided by the target, not the build host, so cross-builds get the icon,
-    // manifest and version info too. Only for the egui launcher: without `gui` the crate is
-    // launcher-slint's library, and its resources would clash with that program's own.
-    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") && env::var_os("CARGO_FEATURE_GUI").is_some() {
-        winres::WindowsResource::new()
-            // Task Manager and Explorer show the description. The product name
-            // stays "5th Echelon Launcher": tools find launchers by it.
-            .set("FileDescription", &format!("{name} {version}"))
-            .set("FileVersion", &version)
-            .set("ProductVersion", &version)
-            .set_version_info(winres::VersionInfo::FILEVERSION, version_number(&version))
-            .set_version_info(winres::VersionInfo::PRODUCTVERSION, version_number(&version))
-            .set_icon("logo.ico")
-            .set_manifest(
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-<assemblyIdentity
-    version="1.0.0.0"
-    processorArchitecture="*"
-    name="app"
-    type="win32"
-/>
-<dependency>
-    <dependentAssembly>
-        <assemblyIdentity
-            type="win32"
-            name="Microsoft.Windows.Common-Controls"
-            version="6.0.0.0"
-            processorArchitecture="*"
-            publicKeyToken="6595b64144ccf1df"
-            language="*"
-        />
-    </dependentAssembly>
-</dependency>
-</assembly>
-"#,
-            )
-            .compile()
-            .unwrap();
-        println!("cargo:rerun-if-changed=logo.ico");
-    }
-
-    // The window icon and header logo, as raw RGBA plus its size.
-    let img = image::open("../docs/logo.png").unwrap();
-    let rgba = img.as_rgba8().unwrap();
-    let mut f = fs::File::create(PathBuf::from(env::var("OUT_DIR").unwrap()).join("logo.dat")).unwrap();
-    f.write_all(rgba).unwrap();
-    println!("cargo:rustc-env=LOGO_WIDTH={}", rgba.width());
-    println!("cargo:rustc-env=LOGO_HEIGHT={}", rgba.height());
-    println!("cargo:rerun-if-changed=../docs/logo.png");
-
-    // The side menu's GitHub and Discord marks: white on clear, the same square size,
-    // tinted by the launcher.
-    let mut size = None;
-    for name in ["github", "discord"] {
-        let path = format!("assets/{name}.png");
-        let img = image::open(&path).unwrap().to_rgba8();
-        assert_eq!(img.width(), img.height(), "{path} isn't square");
-        assert_eq!(*size.get_or_insert(img.width()), img.width(), "{path} isn't the same size as the other marks");
-        fs::write(PathBuf::from(env::var("OUT_DIR").unwrap()).join(format!("{name}.dat")), img.as_raw()).unwrap();
-        println!("cargo:rerun-if-changed={path}");
-    }
-    println!("cargo:rustc-env=MARK_SIZE={}", size.unwrap_or_default());
 }

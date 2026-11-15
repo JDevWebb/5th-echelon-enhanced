@@ -20,10 +20,6 @@
 #   build/build.sh slint-docs
 #                            the README's and the wiki's screenshots, the launcher's own pages on a
 #                            made-up install -> dist/slint-docs/*.png
-#   (not released from 0.5.0, kept a release as the fallback: the egui launcher)
-#   build/build.sh egui      the egui launcher for Windows and Linux x86_64, the DLL embedded
-#                            -> dist/launcher-egui.exe, dist/launcher-egui-linux-x86_64
-#   build/build.sh shots     every egui launcher screen at several window sizes -> dist/shots/*.png
 #   build/build.sh latency [scenario ...]
 #                            the test players with delay and loss added (PROFILES)
 #   build/build.sh load [options]
@@ -107,8 +103,7 @@ case "${1:-test}" in
     ui
     ;;
   test)
-    # The launcher's screens headless too (its ui-tests feature: never in the launcher as built).
-    run "$IMAGE" sh -c 'cargo test --workspace --exclude hooks --exclude umd_browser && cargo test -p launcher --features ui-tests'
+    run "$IMAGE" cargo test --workspace --exclude hooks --exclude umd_browser
     ;;
   server)
     # The node runs on x86_64; cross-compile for it from any host.
@@ -158,21 +153,6 @@ case "${1:-test}" in
         REQUIRE_IDENTITY=1 scripts/bots.sh /target/native/debug identity-required &&
         MATCHMAKING=1 scripts/bots.sh /target/native/debug relay-pass; fi' bots "$@"
     ;;
-  egui)
-    # The egui launcher (launcher/), not released from 0.5.0: the fallback, kept a release, for
-    # Windows and Linux x86_64, the DLL embedded -> dist/launcher-egui.exe, launcher-egui-linux-x86_64.
-    [ -f dist/uplay_r1_loader.dll ] || { echo "build.sh windows first (the launcher carries its DLL)"; exit 1; }
-    run -e CARGO_TARGET_DIR=/target/win "$IMAGE" sh -c '
-      set -e
-      cargo fetch -q
-      mkdir -p /tmp/sodium
-      cp "$(ls -d /usr/local/cargo/registry/src/*/libsodium-sys-0.2.7 | head -1)/msvc/x64/Release/v142/libsodium.lib" /tmp/sodium/sodium.lib
-      SODIUM_LIB_DIR=/tmp/sodium HOOKS_DLL=/src/dist/uplay_r1_loader.dll cargo xwin build -p launcher --release --features embed-dll --target x86_64-pc-windows-msvc
-      cp /target/win/x86_64-pc-windows-msvc/release/launcher.exe dist/launcher-egui.exe'
-    run -e CARGO_TARGET_DIR=/target/amd64 -e HOOKS_DLL=/src/dist/uplay_r1_loader.dll "$IMAGE" sh -c '
-      cargo build -p launcher --release --features embed-dll --target x86_64-unknown-linux-gnu &&
-      cp /target/amd64/x86_64-unknown-linux-gnu/release/launcher dist/launcher-egui-linux-x86_64'
-    ;;
   slint-shots)
     # Every screen of the Slint launcher in both looks at several window sizes -> dist/slint-shots
     # (launcher-slint/src/shots.rs): made-up data, Slint's software renderer, on an X server in
@@ -201,21 +181,6 @@ case "${1:-test}" in
         # Xvfb started here: xvfb-run can wait forever for its ready signal.
         Xvfb :99 -screen 0 2000x1200x24 -nolisten tcp & sleep 2
         timeout 600 /target/launcher-slint-docs/debug/launcher-slint --shots-docs /src/dist/slint-docs'
-    ;;
-  shots)
-    # Every screen at several window sizes, as PNGs in dist/shots (launcher/src/shots.rs): the
-    # app on a made-up game folder, drawn by wgpu on a software Vulkan (lavapipe), in an image
-    # made from this one with Mesa added.
-    printf 'FROM %s\nRUN apt-get update && apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 && rm -rf /var/lib/apt/lists/*\n' "$IMAGE" \
-      | docker build -q -t fes-shots:local - >/dev/null
-    rm -rf dist/shots
-    # Built with the network (cargo fetches its git dependencies), run with none, so nothing the
-    # app asks for reaches the community network it's set up for.
-    shots=$(run fes-shots:local cargo test -q -p launcher --lib --features shots --no-run --message-format=json \
-      | grep -o '"executable":"[^"]*"' | grep '/launcher-' | tail -1 | cut -d'"' -f4)
-    [ -n "$shots" ] || { echo "the shots test didn't build"; exit 1; }
-    run --network none -e XDG_CONFIG_HOME=/tmp/fe-shots -e SHOTS_OUT=/src/dist/shots -e WGPU_BACKEND=vulkan fes-shots:local \
-      "$shots" shots:: --nocapture --test-threads 1
     ;;
   latency)
     # The test players with delay and loss added (scripts/latency-test.sh; PROFILES to choose).

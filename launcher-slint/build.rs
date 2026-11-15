@@ -1,5 +1,5 @@
 //! The screens (ui/*.slint) compiled in, the release from release.toml, and for Windows the
-//! program's icon and version details (as the egui launcher's build.rs sets them).
+//! program's icon and version details.
 
 fn main() {
     let release = std::fs::read_to_string("../release.toml").unwrap_or_default();

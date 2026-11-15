@@ -2,14 +2,10 @@
 //! the hooks DLL sends them, see `hooks_config::diagnostics`). Asked before the game first
 //! runs with them: until the player answers, nothing is sent (the DLL's default is off).
 
-#[cfg(feature = "gui")]
-use eframe::egui;
 use setup::feedback::Private;
 
 use crate::activity::Activities as Notices;
 use crate::prefs::Prefs;
-#[cfg(feature = "gui")]
-use crate::theme;
 
 /// Lines of the player's own last game shown as the example.
 const EXAMPLE_LINES: usize = 12;
@@ -19,85 +15,14 @@ pub const WHAT: &str = "5th Echelon now sends the server you play on a short dia
 pub const PRIVATE: &str = "Before anything leaves your PC, your PC's name, your Windows account name, your user folder and your internet address are removed. It goes only to the server you're playing on and is kept for at most 30 days.";
 pub const LATER: &str = "You can change this any time in Settings › Feedback.";
 
-/// The question, while it's open.
-#[derive(Default)]
-pub struct Ask {
-    /// The example's lines, once asked for (redacted).
-    example: Option<Vec<String>>,
-    /// Whether the player answered, read once (not every frame).
-    answered: Option<bool>,
-}
+/// The question about diagnostics (launcher-slint asks it).
+pub struct Ask;
 
 impl Ask {
     /// Whether the player still has to answer (an install another tool manages isn't asked:
     /// it stays off).
     pub fn pending(game: Option<&crate::prefs::Game>) -> bool {
         game.is_some_and(|g| g.managed.is_none()) && !Prefs::diagnostics_asked()
-    }
-
-    #[cfg(feature = "gui")]
-    /// Whether the question is up now (other windows wait for it).
-    pub fn asking(&self) -> bool {
-        self.answered == Some(false)
-    }
-
-    #[cfg(feature = "gui")]
-    pub fn show(&mut self, ctx: &egui::Context, game: Option<&mut crate::prefs::Game>, notices: &mut Notices) {
-        let Some(game) = game else { return };
-        if game.managed.is_some() || *self.answered.get_or_insert_with(Prefs::diagnostics_asked) {
-            return;
-        }
-        let mut answer = None;
-        let middle = (ctx.content_rect().height() - 260.0).max(120.0);
-        // Not closed by a click beside it: the game waits for the answer.
-        let _ = egui::Modal::new(egui::Id::new("diagnostics")).show(ctx, |ui| {
-            ui.set_max_width(560.0);
-            ui.label(theme::heading(TITLE));
-            ui.add_space(8.0);
-            egui::ScrollArea::vertical()
-                .id_salt("diagnostics-middle")
-                .max_height(middle)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    ui.label(WHAT);
-                    ui.add_space(6.0);
-                    ui.label(PRIVATE);
-                    ui.add_space(6.0);
-                    ui.label(theme::muted(LATER));
-                    if let Some(lines) = &self.example {
-                        ui.add_space(8.0);
-                        if lines.is_empty() {
-                            ui.label(theme::muted("Nothing yet: your last game didn't write any lines like these."));
-                        } else {
-                            ui.label(theme::muted("From your last game, as it would be sent:"));
-                            egui::ScrollArea::both()
-                                .id_salt("diagnostics-example")
-                                .max_height((middle * 0.6).min(220.0))
-                                .show(ui, |ui| {
-                                    ui.label(egui::RichText::new(lines.join("\n")).monospace().size(11.0));
-                                });
-                        }
-                    }
-                });
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                if self.example.is_none() && ui.add(theme::secondary("Show me an example")).clicked() {
-                    self.example = Some(example(game));
-                }
-                // The two answers alike: neither is the one to pick.
-                if ui.add(theme::secondary("Keep sending")).clicked() {
-                    answer = Some(true);
-                }
-                if ui.add(theme::secondary("Turn it off")).clicked() {
-                    answer = Some(false);
-                }
-            });
-        });
-        if let Some(send) = answer {
-            answer_with(game, notices, send);
-            self.answered = Some(true);
-            self.example = None;
-        }
     }
 }
 

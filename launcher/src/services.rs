@@ -27,7 +27,7 @@ pub fn rt() -> &'static Rt {
 pub struct Rt(tokio::runtime::Runtime);
 
 impl Rt {
-    /// Runs `f` to its end on the runtime. From a plain thread (egui's) it simply waits; from a
+    /// Runs `f` to its end on the runtime. From a plain thread (the launcher's) it simply waits; from a
     /// thread of another runtime (the Tauri launcher's commands run on Tauri's), where tokio
     /// refuses to start one runtime inside another, the thread first hands its other work on.
     pub fn block_on<F: Future>(&self, f: F) -> F::Output {

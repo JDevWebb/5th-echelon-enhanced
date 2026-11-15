@@ -1,5 +1,5 @@
 //! The 5th Echelon launcher in Slint: the Tauri launcher's design with the project's own brand,
-//! in one native window (ui.rs), on the egui launcher's library (core.rs).
+//! in one native window (ui.rs), on the `launcher` crate's logic (core.rs).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 slint::include_modules!();

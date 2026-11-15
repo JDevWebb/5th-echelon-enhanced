@@ -1,8 +1,8 @@
 # The launcher (from 0.5.0; docs/slint-plan.md): released as launcher.exe and
 # launcher-linux-x86_64, one native window on Windows, Linux and the Steam Deck, with no web view
 # to install. The design was the Tauri launcher's (removed with 0.5.0), with 5th Echelon
-# Enhanced's own brand. The logic is the egui launcher's library (`launcher`, built without its
-# interface). A workspace of its own: Slint's dependencies don't go into the main workspace's lock.
+# Enhanced's own brand. The logic is the `launcher` crate's (the egui launcher's library, its
+# interface removed in 0.5.2). A workspace of its own: Slint's dependencies don't go into the main workspace's lock.
 [package]
 name = "launcher-slint"
 version = "0.0.0"
@@ -17,7 +17,7 @@ build = "build.rs"
 # winit for the window's own title bar (dragging, maximising); OpenGL (femtovg) with the software
 # renderer as the fallback where there's no OpenGL 2 (a virtual machine without its driver).
 slint = { version = "~1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility", "unstable-winit-030"] }
-launcher = { path = "../launcher", default-features = false }
+launcher = { path = "../launcher" }
 setup = { path = "../setup" }
 identity = { path = "../identity" }
 hooks-config = { path = "../hooks/hooks-config" }

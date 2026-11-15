@@ -2,17 +2,10 @@
 //! directory): a notice under the launch bar saying when the player's server updates and
 //! is back, in the player's own time, and what to do meanwhile.
 
-#[cfg(feature = "gui")]
-use eframe::egui;
-#[cfg(feature = "gui")]
-use eframe::egui::RichText;
 use setup::clock::Clock;
 use setup::directory::Listing;
 use setup::directory::Rollout;
 use setup::directory::Stage;
-
-#[cfg(feature = "gui")]
-use crate::theme;
 
 /// About how long a server is down while it installs a release and restarts.
 const RESTART: i64 = 120;
@@ -370,110 +363,6 @@ fn rows(input: &Input, rollout: &Rollout, testing_ends: i64, latest: i64) -> Vec
             }
         })
         .collect()
-}
-
-#[cfg(feature = "gui")]
-/// The notice, under the launch bar: a warm strip with the heading and time, what's
-/// happening, its button, and each server. Answers the button pressed.
-pub fn show(ui: &mut egui::Ui, notice: &Notice) -> Option<Action> {
-    let mut pressed = None;
-    let warm = theme::WARN;
-    egui::Frame::new()
-        .fill(warm.linear_multiply(0.07))
-        .stroke(egui::Stroke::new(1.0, warm.linear_multiply(0.35)))
-        .inner_margin(egui::Margin {
-            left: 32,
-            right: 32,
-            top: 14,
-            bottom: 16,
-        })
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal_top(|ui| {
-                let text_width = (ui.available_width() - 240.0).max(300.0);
-                ui.allocate_ui_with_layout(egui::vec2(text_width, 0.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(theme::display(&notice.heading, 16.0).color(warm));
-                        egui::Frame::new()
-                            .fill(warm.linear_multiply(0.16))
-                            .corner_radius(6)
-                            .inner_margin(egui::Margin::symmetric(8, 2))
-                            .show(ui, |ui| {
-                                ui.label(RichText::new(&notice.eta).monospace().size(13.0).color(theme::FG));
-                            });
-                    });
-                    ui.label(RichText::new(&notice.text).color(theme::SOFT).size(14.0));
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                    if let Some((action, label)) = &notice.action {
-                        let button = if notice.kind == Kind::LauncherBehind {
-                            theme::primary(label)
-                        } else {
-                            theme::secondary(label)
-                        };
-                        if ui.add(button).clicked() {
-                            pressed = Some(action.clone());
-                        }
-                    }
-                    if let Some(note) = &notice.note {
-                        ui.label(theme::muted(note.as_str()).small());
-                    }
-                });
-            });
-            if notice.servers.is_empty() {
-                return;
-            }
-            ui.add_space(8.0);
-            let gap = 8.0;
-            let columns = 3;
-            let width = ((ui.available_width() - gap * (columns as f32 - 1.0)) / columns as f32).floor();
-            for chunk in notice.servers.chunks(columns) {
-                ui.horizontal_top(|ui| {
-                    ui.spacing_mut().item_spacing.x = gap;
-                    for row in chunk {
-                        server_box(ui, row, width);
-                    }
-                });
-                ui.add_space(gap);
-            }
-        });
-    pressed
-}
-
-#[cfg(feature = "gui")]
-fn server_box(ui: &mut egui::Ui, row: &Row, width: f32) {
-    let stroke = if row.mine { theme::WARN.linear_multiply(0.55) } else { theme::LINE };
-    egui::Frame::new()
-        .fill(theme::BG.gamma_multiply(0.55))
-        .stroke(egui::Stroke::new(1.0, stroke))
-        .corner_radius(9)
-        .inner_margin(egui::Margin::symmetric(12, 8))
-        .show(ui, |ui| {
-            // The margins and the stroke make up the rest of `width`.
-            ui.set_width(width - 26.0);
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 2.0;
-                ui.horizontal(|ui| {
-                    let name = if row.mine { format!("{} · yours", row.place) } else { row.place.clone() };
-                    ui.label(RichText::new(hooks_config::text::clip(&name, 34)).family(theme::strong()).size(13.5));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new(&row.version).monospace().size(12.0).color(theme::MUTED));
-                    });
-                });
-                let color = match row.tone {
-                    Tone::Now => theme::WARN,
-                    Tone::Done => theme::OK,
-                    Tone::Waiting => theme::MUTED,
-                };
-                ui.add(egui::Label::new(RichText::new(&row.doing).size(12.5).color(color)).wrap());
-                if let Some(f) = row.meter {
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 3.0), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, 2, theme::LINE);
-                    let filled = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * f, rect.height()));
-                    ui.painter().rect_filled(filled, 2, theme::WARN);
-                }
-            });
-        });
 }
 
 #[cfg(test)]

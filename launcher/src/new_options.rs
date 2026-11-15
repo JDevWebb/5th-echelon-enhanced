@@ -12,16 +12,9 @@
 
 use std::path::Path;
 
-#[cfg(feature = "gui")]
-use eframe::egui;
-#[cfg(feature = "gui")]
-use eframe::egui::RichText;
-
 use crate::activity::Activities as Notices;
 use crate::prefs::Game;
 use crate::prefs::Prefs;
-#[cfg(feature = "gui")]
-use crate::theme;
 
 /// The game folder's note of the options asked about there.
 pub const ASKED_FILE: &str = "5th-echelon-options.json";
@@ -154,37 +147,6 @@ pub fn offered(options: &[&NewOption], game_dir: &Path) -> Vec<bool> {
     options.iter().map(|o| o.recommended && (o.blocked)(game_dir).is_none()).collect()
 }
 
-#[cfg(feature = "gui")]
-/// The options as cards with a switch each, `choices` in the same order.
-pub fn list(ui: &mut egui::Ui, options: &[&NewOption], choices: &mut [bool], game_dir: &Path) {
-    for (option, on) in options.iter().zip(choices.iter_mut()) {
-        let blocked = (option.blocked)(game_dir);
-        egui::Frame::new()
-            .fill(theme::SUNKEN)
-            .stroke(egui::Stroke::new(1.0, theme::LINE))
-            .corner_radius(6)
-            .inner_margin(egui::Margin::symmetric(16, 12))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    if blocked.is_some() {
-                        *on = false;
-                    }
-                    ui.add_enabled_ui(blocked.is_none(), |ui| theme::switch(ui, on, RichText::new(option.title).family(theme::strong())));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match blocked {
-                        Some((badge, _)) => crate::play::badge(ui, badge, false),
-                        None if option.recommended => crate::play::badge(ui, "Recommended", true),
-                        None => {}
-                    });
-                });
-                ui.add_space(2.0);
-                ui.label(RichText::new(blocked.map_or(option.text, |(_, why)| why)).color(theme::SOFT));
-            });
-        ui.add_space(8.0);
-    }
-    ui.label(theme::muted(LATER));
-}
-
 /// Writes the choices and notes the options as asked.
 pub fn save(game: &mut Game, notices: &mut Notices, options: &[&NewOption], choices: &[bool]) {
     game.update(notices, |c| {
@@ -219,76 +181,6 @@ pub fn intro(options: &[&NewOption]) -> &'static str {
         INTRO_FOLDER
     } else {
         INTRO_UPDATE
-    }
-}
-
-#[cfg(feature = "gui")]
-/// The guided setup's step: the intro over the list.
-pub fn setup_step(ui: &mut egui::Ui, options: &[&NewOption], choices: &mut [bool], game_dir: &Path) {
-    ui.label(RichText::new(INTRO_SETUP).color(theme::SOFT));
-    ui.add_space(14.0);
-    list(ui, options, choices, game_dir);
-}
-
-#[cfg(feature = "gui")]
-/// The window after an update, while it's open.
-#[derive(Default)]
-pub struct Ask {
-    /// The options asked about and the choices so far, once it opened.
-    open: Option<(Vec<&'static NewOption>, Vec<bool>)>,
-    /// Nothing to ask (worked out once, not every frame).
-    done: bool,
-}
-
-#[cfg(feature = "gui")]
-impl Ask {
-    /// Whether the window is up now (What's new waits for it).
-    pub fn asking(&self) -> bool {
-        self.open.is_some()
-    }
-
-    /// `waiting`: another question is up first, or the guided setup asks itself.
-    pub fn show(&mut self, ctx: &egui::Context, game: Option<&mut Game>, notices: &mut Notices, waiting: bool) {
-        let Some(game) = game else { return };
-        if self.done || waiting {
-            return;
-        }
-        let (options, choices) = self.open.get_or_insert_with(|| {
-            let options = pending(Some(game));
-            let choices = offered(&options, &game.dir);
-            (options, choices)
-        });
-        if options.is_empty() {
-            self.open = None;
-            self.done = true;
-            return;
-        }
-        let mut save_now = false;
-        let middle = (ctx.content_rect().height() - 240.0).max(120.0);
-        // Not closed by a click beside it: the game waits for the answer.
-        let _ = egui::Modal::new(egui::Id::new("new-options")).show(ctx, |ui| {
-            ui.set_max_width(560.0);
-            ui.label(theme::heading("New game options"));
-            ui.add_space(6.0);
-            ui.label(RichText::new(intro(options)).color(theme::SOFT));
-            ui.add_space(12.0);
-            egui::ScrollArea::vertical()
-                .id_salt("new-options-list")
-                .max_height(middle)
-                .auto_shrink([false, true])
-                .show(ui, |ui| list(ui, options, choices, &game.dir));
-            ui.add_space(10.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                save_now = ui.add(theme::primary("Save choices")).clicked();
-            });
-        });
-        if save_now {
-            if let Some((options, choices)) = self.open.take() {
-                save(game, notices, &options, &choices);
-            }
-            self.done = true;
-            notices.info("Saved. Settings › Game changes them any time.");
-        }
     }
 }
 

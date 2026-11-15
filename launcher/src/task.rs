@@ -71,21 +71,6 @@ pub struct Task<T> {
 }
 
 impl<T: FromPanic + Send + 'static> Task<T> {
-    /// Runs `f` on a new thread and repaints `ctx` when it's done, also when
-    /// it panicked (its result is then [`FromPanic`]'s).
-    #[cfg(feature = "gui")]
-    pub fn spawn(ctx: &eframe::egui::Context, f: impl FnOnce() -> T + Send + 'static) -> Self {
-        let result = Arc::new(Mutex::new(None));
-        let slot = Arc::clone(&result);
-        let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            let value = guarded(f);
-            *slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(value);
-            ctx.request_repaint();
-        });
-        Self { result, done: false }
-    }
-
     /// The result, once, when it has arrived.
     pub fn take(&mut self) -> Option<T> {
         if self.done {
@@ -107,11 +92,6 @@ impl<T: Send + 'static> Default for Slot<T> {
 }
 
 impl<T: FromPanic + Send + 'static> Slot<T> {
-    #[cfg(feature = "gui")]
-    pub fn start(&mut self, ctx: &eframe::egui::Context, f: impl FnOnce() -> T + Send + 'static) {
-        self.0 = Some(Task::spawn(ctx, f));
-    }
-
     pub fn running(&self) -> bool {
         self.0.is_some()
     }

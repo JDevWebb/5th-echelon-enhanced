@@ -83,7 +83,7 @@ A tag with a suffix (`v0.3.1-rc.1`) makes a pre-release, which the updater doesn
 | `hooks/` | The game client (`uplay_r1_loader.dll`): Uplay emulation, network fixes and the overlay |
 | `setup/` | The launcher's logic: finding the game, installing, accounts, saves and checks |
 | `launcher-slint/` | The launcher (Windows, Linux and the Steam Deck), in Slint: its own workspace |
-| `launcher/` | The launcher's library (its logic, shared), and the egui interface it had before 0.5.0 |
+| `launcher/` | The launcher's logic (launcher-slint is the program that shows it) |
 | `api/` | The gRPC API definitions |
 | `tools/` | Test players, the DDL parser, Wireshark dissectors, and research tools |
 | `docker/` | The server's Docker image and compose file |

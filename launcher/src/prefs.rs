@@ -1,6 +1,6 @@
 //! What the launcher keeps between runs and works on: its own settings (`launcher.toml`), the
 //! game folder with its settings, and what the Play button starts. Shared by both interfaces
-//! (launcher-slint's, and the egui one).
+//! (launcher-slint's).
 
 use std::path::Path;
 use std::path::PathBuf;
