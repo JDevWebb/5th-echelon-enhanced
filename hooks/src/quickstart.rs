@@ -654,13 +654,16 @@ unsafe fn navigate(mm: usize) {
                     nav.then_matchmaking(coop, asked.playlist);
                 }
                 *((col + COL_FOCUS) as *mut u32) = pos as u32;
-                if send_enter() {
-                    let _ = LOBBY_ENTER.set(LobbyEnter {
-                        at: Instant::now(),
+                if send_enter(true) {
+                    *LOBBY_ENTER.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(LobbyEnter {
                         mm,
                         col,
                         pos,
                         page: page_of(mm),
+                        tries: 1,
+                        down_at: Instant::now(),
+                        ticks: 0,
+                        up_at: None,
                     });
                     info!("quickstart: +{} ms {goal:?}: Enter pressed on id {id} (entry {pos})", ms());
                     return;
@@ -673,21 +676,28 @@ unsafe fn navigate(mm: usize) {
     NAV_BUSY.store(nav.busy(), Ordering::Relaxed);
 }
 
-/// The lobby's Enter ([`send_enter`]): when, on which menu, column and entry, and the menu's
-/// page then.
+/// The lobby's Enter ([`send_enter`]) under way: the menu, its column and entry, the menu's
+/// page before it, which try this is, and when this try's press and release went.
 struct LobbyEnter {
-    at: Instant,
     mm: usize,
     col: usize,
     pos: usize,
     page: Option<u32>,
+    tries: u32,
+    down_at: Instant,
+    ticks: u32,
+    up_at: Option<Instant>,
 }
 
-static LOBBY_ENTER: OnceLock<LobbyEnter> = OnceLock::new();
-/// The lobby's Enter was checked ([`check_lobby_enter`]).
-static LOBBY_ENTER_CHECKED: AtomicBool = AtomicBool::new(false);
-/// How long the lobby's Enter has to move the menu.
+static LOBBY_ENTER: Mutex<Option<LobbyEnter>> = Mutex::new(None);
+/// Ticks of the menu between the lobby's Enter pressed and let go: the game takes a press and
+/// a release on ticks of their own (both in one, the title stayed on "press any key").
+const LOBBY_ENTER_HELD_TICKS: u32 = 3;
+/// How long each Enter has to move the menu, and how many are tried before the menu's own
+/// "select" (an Enter the game didn't take does nothing; on the gamebox with four copies one
+/// in four or two were missed, 2026-11-15).
 const LOBBY_ENTER_WAIT: Duration = Duration::from_secs(2);
+const LOBBY_ENTER_TRIES: u32 = 3;
 
 /// While true, the overlay lets every input message through to the game (the quick start's own
 /// Enter, which its hold would otherwise keep from it).
@@ -698,33 +708,76 @@ fn page_of(mm: usize) -> Option<u32> {
     read_u32(mm + MM_LIST).and_then(|list| read_u32(list as usize + LIST_PAGE))
 }
 
-/// Whether the lobby's Enter needs the menu's own "select" after all: its time is up and the
-/// page is the one it was on.
-fn enter_missed(waited: Duration, before: Option<u32>, now: Option<u32>) -> bool {
-    waited >= LOBBY_ENTER_WAIT && before == now
+/// What the lobby's Enter does next, once let go `waited` ago: nothing yet, done (the menu
+/// moved), another try, or the menu's own "select".
+#[derive(Debug, PartialEq, Eq)]
+enum EnterNext {
+    Wait,
+    Moved,
+    TryAgain,
+    Select,
 }
 
-/// The lobby's Enter, once [`LOBBY_ENTER_WAIT`] has passed: the menu moved, or it's selected as
-/// before (main thread, the menu's tick).
+fn enter_next(waited: Duration, before: Option<u32>, now: Option<u32>, tries: u32) -> EnterNext {
+    if waited < LOBBY_ENTER_WAIT {
+        EnterNext::Wait
+    } else if before != now {
+        EnterNext::Moved
+    } else if tries < LOBBY_ENTER_TRIES {
+        EnterNext::TryAgain
+    } else {
+        EnterNext::Select
+    }
+}
+
+/// The lobby's Enter, on each of the menu's ticks (main thread): let go after
+/// [`LOBBY_ENTER_HELD_TICKS`] ticks; [`LOBBY_ENTER_WAIT`] later, done if the menu moved, else
+/// pressed again, up to [`LOBBY_ENTER_TRIES`], then the menu's own "select" as before.
 unsafe fn check_lobby_enter(mm: usize) {
-    let Some(e) = LOBBY_ENTER.get() else { return };
-    if e.mm != mm || e.at.elapsed() < LOBBY_ENTER_WAIT || LOBBY_ENTER_CHECKED.swap(true, Ordering::Relaxed) {
+    let mut guard = LOBBY_ENTER.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(e) = guard.as_mut() else { return };
+    if e.mm != mm {
         return;
     }
+    let Some(up_at) = e.up_at else {
+        e.ticks += 1;
+        if e.ticks >= LOBBY_ENTER_HELD_TICKS && e.down_at.elapsed() >= Duration::from_millis(100) {
+            send_enter(false);
+            e.up_at = Some(Instant::now());
+        }
+        return;
+    };
     let now = page_of(mm);
-    if enter_missed(e.at.elapsed(), e.page, now) {
-        warn!("quickstart: +{} ms the Enter didn't move the menu (page {now:?}): its \"select\" called instead", ms());
-        select_entry(mm, e.col, e.pos);
-    } else {
-        info!("quickstart: +{} ms the Enter took the menu from page {:?} to {now:?}", ms(), e.page);
+    match enter_next(up_at.elapsed(), e.page, now, e.tries) {
+        EnterNext::Wait => {}
+        EnterNext::Moved => {
+            info!("quickstart: +{} ms the Enter took the menu from page {:?} to {now:?} (try {})", ms(), e.page, e.tries);
+            *guard = None;
+        }
+        EnterNext::TryAgain if send_enter(true) => {
+            info!("quickstart: +{} ms the Enter didn't move the menu (page {now:?}): pressed again", ms());
+            e.tries += 1;
+            e.down_at = Instant::now();
+            e.ticks = 0;
+            e.up_at = None;
+        }
+        EnterNext::TryAgain | EnterNext::Select => {
+            warn!(
+                "quickstart: +{} ms the Enter didn't move the menu (page {now:?}, {} tries): its \"select\" called instead",
+                ms(),
+                e.tries
+            );
+            select_entry(mm, e.col, e.pos);
+            *guard = None;
+        }
     }
 }
 
-/// Presses Enter and lets it go 150 ms later as the keyboard's (SendInput: the game takes its
-/// keys from the window's key messages, and only those a keyboard made), the overlay letting
-/// them through meanwhile. Only with the game's window in front, where the keys go; false when
+/// Presses Enter (`down`) or lets it go as the keyboard's (SendInput: the game takes its keys
+/// from the window's key messages, and only those a keyboard made), the overlay letting them
+/// through meanwhile. Only with the game's window in front, where the keys go; false when
 /// nothing was sent.
-fn send_enter() -> bool {
+fn send_enter(down: bool) -> bool {
     use windows::Win32::UI::Input::KeyboardAndMouse::SendInput;
     use windows::Win32::UI::Input::KeyboardAndMouse::INPUT;
     use windows::Win32::UI::Input::KeyboardAndMouse::INPUT_0;
@@ -741,6 +794,7 @@ fn send_enter() -> bool {
     unsafe { GetWindowThreadProcessId(front, Some(&mut pid)) };
     if front.0 == 0 || pid != std::process::id() {
         info!("quickstart: +{} ms the game's window isn't in front: no Enter sent", ms());
+        LETTING_KEY_THROUGH.store(false, Ordering::SeqCst);
         return false;
     }
     let key = |flags| INPUT {
@@ -757,21 +811,17 @@ fn send_enter() -> bool {
     };
     let size = i32::try_from(std::mem::size_of::<INPUT>()).unwrap_or(0);
     LETTING_KEY_THROUGH.store(true, Ordering::SeqCst);
+    let flags = if down { KEYBD_EVENT_FLAGS(0) } else { KEYEVENTF_KEYUP };
     // SAFETY: one keyboard input, as the API describes it.
-    if unsafe { SendInput(&[key(KEYBD_EVENT_FLAGS(0))], size) } != 1 {
-        LETTING_KEY_THROUGH.store(false, Ordering::SeqCst);
-        return false;
+    let sent = unsafe { SendInput(&[key(flags)], size) } == 1;
+    if !down || !sent {
+        // Let through a moment longer, for the release to reach the game.
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(500));
+            LETTING_KEY_THROUGH.store(false, Ordering::SeqCst);
+        });
     }
-    // Let go a few frames later, as a key is: the game takes the press and the release on
-    // ticks of their own.
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(150));
-        // SAFETY: as above.
-        let _ = unsafe { SendInput(&[key(KEYEVENTF_KEYUP)], size) };
-        std::thread::sleep(Duration::from_millis(500));
-        LETTING_KEY_THROUGH.store(false, Ordering::SeqCst);
-    });
-    true
+    sent
 }
 
 /// Focuses entry `pos` of the menu's column and calls the menu's own "select", as a click does.
@@ -1035,12 +1085,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_lobbys_enter_is_backed_by_the_select_only_when_the_menu_stayed() {
+    fn the_lobbys_enter_is_tried_again_then_backed_by_the_select() {
         let wait = LOBBY_ENTER_WAIT;
-        assert!(!enter_missed(wait / 2, Some(0), Some(0)), "too soon to tell");
-        assert!(enter_missed(wait, Some(0), Some(0)), "still on its page: selected as before");
-        assert!(!enter_missed(wait, Some(0), Some(1)), "moved: nothing more");
-        assert!(enter_missed(wait, None, None), "no page read either time: selected as before");
+        assert_eq!(enter_next(wait / 2, Some(0), Some(0), 1), EnterNext::Wait, "too soon to tell");
+        assert_eq!(enter_next(wait, Some(0), Some(1), 1), EnterNext::Moved);
+        assert_eq!(enter_next(wait, Some(0), Some(0), 1), EnterNext::TryAgain, "still on its page: pressed again");
+        assert_eq!(enter_next(wait, Some(0), Some(0), LOBBY_ENTER_TRIES - 1), EnterNext::TryAgain);
+        assert_eq!(enter_next(wait, Some(0), Some(0), LOBBY_ENTER_TRIES), EnterNext::Select, "out of tries: selected as before");
+        assert_eq!(enter_next(wait, None, None, LOBBY_ENTER_TRIES), EnterNext::Select, "no page read: selected as before");
     }
 
     #[test]
