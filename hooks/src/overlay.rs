@@ -620,6 +620,10 @@ fn server_fix_hint() -> String {
 
 /// What a connection error means for the player, and what to do about it.
 fn describe_error(err: &crate::api::Error) -> (&'static str, String) {
+    // Closed for maintenance (0.5.2): every call's sign-out is that, until a sign-in goes through.
+    if let Some(why) = crate::api::closed_now() {
+        return ("Closed for maintenance", why);
+    }
     let fix = server_fix_hint();
     let tool = setup_tool();
     match err {

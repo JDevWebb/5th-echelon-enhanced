@@ -653,6 +653,7 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
         return Err(Error::LoginFailure);
     } else if !response.token.is_empty() {
         info!("Login successful");
+        let _ = CLOSED.lock().unwrap_or_else(PoisonError::into_inner).take();
         *WRONG.lock().unwrap_or_else(PoisonError::into_inner) = 0;
         let _ = LOGIN_HOLD.lock().unwrap_or_else(PoisonError::into_inner).take();
         crate::uplay_r1_loader::signed_in();
@@ -852,11 +853,26 @@ async fn relogin_after(used: Option<MetadataValue<Ascii>>) -> Result<(), Option<
 /// The server's refusal while a maintenance window keeps all but testers out (0.5.2), in its
 /// words ("Closed for maintenance until 21:00 UTC. Only testers can play until then...").
 fn closed_for_maintenance(e: &Error) -> Option<String> {
-    match e {
-        Error::GRPCStatus(s) if s.code() == tonic::Code::Unavailable && s.message().starts_with("Closed for maintenance") => Some(s.message().to_string()),
-        Error::Refused(why) if why.starts_with("Closed for maintenance") => Some(why.clone()),
-        _ => None,
-    }
+    let text = match e {
+        Error::GRPCStatus(s) => s.message(),
+        Error::Refused(why) => why.as_str(),
+        _ => return None,
+    };
+    // Also inside a held sign-in's "Couldn't reach the server to sign in (...)".
+    let at = text.find("Closed for maintenance")?;
+    let why = text[at..].trim_end_matches(|c| c == ')' || c == ' ').to_string();
+    *CLOSED.lock().unwrap_or_else(PoisonError::into_inner) = Some(why.clone());
+    Some(why)
+}
+
+/// The server's last refusal of a sign-in for maintenance, until a sign-in goes through: every
+/// call's "signed out" is that meanwhile (the event poll's said "sign in again", alternating
+/// with the others' "closed for maintenance": the Surface, 16 Nov 2026).
+static CLOSED: Mutex<Option<String>> = Mutex::new(None);
+
+/// Why the server refused this game's sign-in, while it's closed for maintenance.
+pub fn closed_now() -> Option<String> {
+    CLOSED.lock().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
 /// Chat on the player's server (docs/chat.md): whether it's open to them, and what they may do.
@@ -944,4 +960,22 @@ pub fn chat_mark_read(with: &str, up_to: i64) -> Result<(), Error> {
         client.mark_read(request).await?;
         Ok(())
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Closed for maintenance is found in the server's refusal and in a held sign-in's message,
+    /// and is what every sign-out says until a sign-in goes through.
+    #[test]
+    fn closed_for_maintenance_is_remembered() {
+        let held = Error::Refused("Couldn't reach the server to sign in (Closed for maintenance (test) until 18:54 UTC. Only testers can play until then., 2 times)".into());
+        let why = closed_for_maintenance(&held).expect("found inside the held message");
+        assert!(why.starts_with("Closed for maintenance (test) until 18:54 UTC"), "{why}");
+        assert_eq!(closed_now().as_deref(), Some(why.as_str()));
+        assert_eq!(closed_for_maintenance(&Error::Refused("too many sign-ins".into())), None);
+        let _ = CLOSED.lock().unwrap_or_else(PoisonError::into_inner).take();
+        assert_eq!(closed_now(), None, "cleared by a sign-in");
+    }
 }
