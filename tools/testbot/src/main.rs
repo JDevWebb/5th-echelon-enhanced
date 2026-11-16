@@ -3536,6 +3536,86 @@ async fn cross_relay(ctx: &mut Ctx, relay: IpAddr) -> Result<()> {
     stranger.disconnect().await
 }
 
+/// 0.5.4: a guest relayed at relay B (`--third`) joins a host who's direct at relay A
+/// (`--other`). Relay B has no registration for the host's own address; the matchmaking server,
+/// putting the two together (the guest's probe of the host, as the game asks before it joins),
+/// tells relay B where the host is (link Locate), so the guest's packets for the host's address
+/// go to relay A and on to the host. Before, relay B dropped them as "nobody's address" (ca1,
+/// 16 Nov 2026: Tea_bag at de1 joining John_Fisher, direct at us1).
+async fn cross_relay_direct_host(ctx: &mut Ctx, relay_a: IpAddr, relay_b: IpAddr) -> Result<()> {
+    use nat_proto::Message;
+    let (at_a, at_b) = (nat_addr(relay_a, false)?, nat_addr(relay_b, false)?);
+    let mut host = ctx.player("Host").await?;
+    let mut guest = ctx.player("Guest").await?;
+    let register = |p: &testbot::bot::Bot, at, flags| {
+        let (name, pass) = (p.name.clone(), p.relay_pass.clone());
+        async move {
+            let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+            let ticket = testbot::bot::present_pass(&socket, at, &name, &pass)
+                .await?
+                .ok_or_else(|| eyre!("the relay didn't take {name}'s pass"))?;
+            let reg = testbot::bot::nat_register(&socket, at, flags, &name, ticket).await?;
+            Ok::<_, eyre::Report>((socket, reg))
+        }
+    };
+    let (sh, rh) = register(&host, at_a, 0).await?;
+    let (sg, rg) = register(&guest, at_b, nat_proto::probe_flags::WANT_RELAY).await?;
+    ensure!(!rh.relayed && rg.relayed, "relayed: host {}, guest {}", rh.relayed, rg.relayed);
+    // Both relays report every 2 s.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let send = |tag, to, payload: &[u8]| {
+        Message::DataTo {
+            tag,
+            to,
+            payload: payload.to_vec(),
+        }
+        .encode()
+    };
+    // Before the matchmaking server put them together: relay B doesn't know the address.
+    sg.send_to(&send(rg.tag, rh.advertise, b"too soon"), at_b).await?;
+    ensure!(
+        nat_wait_data(&sh, Duration::from_millis(2500)).await.is_none(),
+        "a packet reached a direct host at another relay before the matchmaking server put the two together"
+    );
+    host.register_urls(&[&format!("prudp:/address={};port={};RVCID=5;hdrType=0;type=2", rh.advertise.ip(), rh.advertise.port())])
+        .await?;
+    let game = host.create_session(PUBLIC_MATCH).await?;
+    host.add_participants(game, &[host.pid], &[]).await?;
+    // The guest's game asks for the host's probe before it joins: they're put together.
+    let h = host.connection_id().await?;
+    guest
+        .request_probes(&format!("udp:/address={};port={}", rg.advertise.ip(), rg.advertise.port()), &[h])
+        .await?;
+    // Guest to host: through relay B, forwarded to relay A, delivered to the host's own socket.
+    let mut carried = None;
+    for _ in 0..5 {
+        sg.send_to(&send(rg.tag, rh.advertise, b"to the direct host"), at_b).await?;
+        if let Some(Message::DataFrom { from, payload, .. }) = nat_wait_data(&sh, Duration::from_millis(800)).await {
+            carried = Some((from, payload));
+            break;
+        }
+    }
+    ensure!(
+        carried == Some((rg.advertise, b"to the direct host".to_vec())),
+        "the guest's packet for the direct host at another relay wasn't forwarded and delivered: {carried:?}"
+    );
+    // And back: the host's game sends to the guest's relay address through its own relay.
+    let mut back = None;
+    for _ in 0..5 {
+        sh.send_to(&send(rh.tag, rg.advertise, b"back again"), at_a).await?;
+        if let Some(Message::DataFrom { from, payload, .. }) = nat_wait_data(&sg, Duration::from_millis(800)).await {
+            back = Some((from, payload));
+            break;
+        }
+    }
+    ensure!(
+        back == Some((rh.advertise, b"back again".to_vec())),
+        "the host's reply didn't come back through both relays: {back:?}"
+    );
+    host.disconnect().await?;
+    guest.disconnect().await
+}
+
 /// Global matchmaking (G1 item 8): two players signed in to the matchmaking server
 /// (`--server`), each relayed at a different relay (`--other`, `--third`). The host's game
 /// sends to the guest's address on the other relay through its own, which forwards it; it
@@ -4426,6 +4506,7 @@ async fn run() -> Result<()> {
             "hardware-second" => 150,
             "cross-relay" => 60,
             "cross-relay-forward" => 60,
+            "cross-relay-direct-host" => 60,
             "chat" => 120,
             "reconnect" | "closing-note" => 180,
             // About a dozen players and three parts (private refusals, a public match, one
@@ -4541,6 +4622,10 @@ async fn run() -> Result<()> {
                 "cross-relay-forward" => match (other, third) {
                     (Some(a), Some(b)) => cross_relay_forward(&mut ctx, a, b).await,
                     _ => Err(eyre!("cross-relay-forward needs --other <a relay> --third <another relay>")),
+                },
+                "cross-relay-direct-host" => match (other, third) {
+                    (Some(a), Some(b)) => cross_relay_direct_host(&mut ctx, a, b).await,
+                    _ => Err(eyre!("cross-relay-direct-host needs --other <a relay> --third <another relay>")),
                 },
                 other => Err(eyre!("unknown scenario {other:?} (known: {})", SCENARIOS.join(", "))),
             }

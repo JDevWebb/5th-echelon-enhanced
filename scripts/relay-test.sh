@@ -72,6 +72,8 @@ echo "--- test players across the relay"
 client "$bin/testbot" --server "$mm" --other "$syd" cross-relay || rc=1
 echo "--- test players at two relays, forwarded between them"
 client "$bin/testbot" --server "$mm" --other "$syd" --third "$eu" cross-relay-forward || rc=1
+echo "--- a guest relayed at one relay joining a host who's direct at another (0.5.4)"
+client "$bin/testbot" --server "$mm" --other "$syd" --third "$eu" cross-relay-direct-host || rc=1
 echo "--- a game without a session key (0.4.7), relayed by the matchmaking server's own helper"
 client "$bin/testbot" --server "$mm" nat-relay || rc=1
 echo "--- a keyed game (0.5.0) at the matchmaking server's own helper, with its relay pass"
