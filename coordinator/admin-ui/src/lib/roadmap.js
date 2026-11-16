@@ -23,16 +23,18 @@ export const STARTING_ITEMS = [
   ['shipping', 'A redesigned launcher', 'One native app for Windows, Linux and the Steam Deck, in a dark or a light look, with a Play button that says whether you\'re ready, and the overlay to match.', ['Launcher', 'Overlay'], 'In 0.5.0'],
   ['shipping', 'Matches, and lobbies that carry on', 'Every public match on a tab of its own, to join one, queue for a seat or start your own; the lobby carries on when its host leaves.', ['Launcher', 'Overlay'], 'In 0.5.0'],
   ['shipping', 'Fixes after the move to one network', 'The ping shown is your nearest relay\'s, in the launcher and the overlay; chat scrolls in the overlay; typing the community network\'s address works.', ['Launcher', 'Overlay'], 'In 0.5.1'],
-  ['shipping', 'Joins that work', 'The server checks a forwarded port really lets others in before connecting them directly, and moves a player whose joins keep failing to the relay; two PCs behind one router both get through; the connection test names VPN adapters.', ['Network', 'Launcher'], 'In 0.5.2'],
+  ['shipping', 'Joins that work', 'The server checks a forwarded port really lets others in before connecting them directly, and moves a player whose joins keep failing to the relay; two PCs behind one router both get through; the launcher learns which way works on each network you play on; the connection test names VPN adapters and lets the game through Windows Firewall.', ['Network', 'Launcher'], 'In 0.5.2'],
   ['shipping', 'Playing where UDP is blocked', 'The game goes through the server over HTTPS (port 443) on networks that block its own traffic, found by the launcher at each start.', ['Network', 'Launcher'], 'In 0.5.2'],
   ['shipping', 'Fair play, round two', 'The match\'s rules and every weapon\'s stats compared between the games in a match, so an edited one shows; cheat switches on a player\'s own character and live weapons; the checks report while a match runs. Report only.', ['Overlay', 'Server'], 'In 0.5.2'],
+  ['shipping', 'Notices from the admins', 'A one-line notice above Play in every launcher within a minute (a known problem, a fix, news), and once in the overlay.', ['Launcher', 'Overlay'], 'In 0.5.2'],
+  ['shipping', 'Start with Windows', 'The launcher can start when you sign in, minimised or in the tray, so friends and invitations reach you.', ['Launcher'], 'In 0.5.2'],
   ['shipping', 'Maintenance that says so', 'When the servers are closed for maintenance the launcher says until when, and the overlay warns before it starts.', ['Launcher', 'Server'], 'In 0.5.2'],
   ['next', 'Fair play: characters and names', 'Health and movement speed on a player\'s own character, names shown to others, rank and XP. Report only.', ['Overlay', 'Server'], 'Planned'],
   ['next', 'Matchmaking failover', 'Another server takes over matchmaking if the matchmaking server goes down.', ['Network'], 'Planned'],
+  ['next', 'Screen shake and field of view', 'Options to turn the camera shake off and to widen the view, once their values are found in the game.', ['Launcher'], 'Planned'],
   ['next', 'Turning speed at high frame rates', 'The view turns slower with the mouse above 60 fps; a fix is being tested.', ['Launcher'], 'Building'],
   ['later', 'More relays where players are', 'Only once the Sessions page shows relayed players far from the six.', ['Network'], 'When data says'],
   ['later', 'Code signing for Windows', 'A signed launcher and DLL, so antivirus programs stop guessing.', ['Release'], 'Later'],
-  ['later', 'Settings of our own', 'Stop the two launchers resetting each other\'s settings.', ['Launcher'], 'On hold'],
   // Requests quote players: admins only until someone chooses to show them. (0.4.2's two are
   // answered: disconnects by Sessions' endings, chat under Next.)
 ].map(([lane, title, body, tags, status, source = '']) => ({ lane, title, body, tags, status, public: lane !== 'requested', source }));

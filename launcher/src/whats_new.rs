@@ -44,6 +44,11 @@ pub const RELEASES: &[Release] = &[
                 community: false,
             },
             Item {
+                title: "The launcher learns each network",
+                text: "On Automatic, the launcher checks each network you play on (the first time, then weekly, or Settings › Network › Check this network) and remembers whether other players reach you directly. Where they can't, your games start on the relay at once. It stays on your PC.",
+                community: false,
+            },
+            Item {
                 title: "Play where the game's traffic is blocked",
                 text: "On a network that blocks the game's traffic (some mobile data), the launcher sends it through the server over HTTPS instead, and tells you. Slower than usual, so only when nothing else works. Settings › Network › Always go through HTTPS turns it on for a connection that loses most of it.",
                 community: false,
@@ -71,16 +76,32 @@ pub const RELEASES: &[Release] = &[
         ],
         fixed: &[
             Fix {
+                lead: "Play SvM and Play Coop",
+                rest: " no longer start a search of their own when you press Enter or A during the start, no longer pick a menu entry with your first key, and stop the title music when you reach the lobby.",
+            },
+            Fix {
+                lead: "Invitations you didn't accept",
+                rest: " no longer put your quick match into the inviter's lobby, even after New match.",
+            },
+            Fix {
+                lead: "A search where every match is under way",
+                rest: " says so in the overlay, instead of searching on.",
+            },
+            Fix {
+                lead: "A crash on Silo",
+                rest: " while the game loaded part of the map in the background (DirectX 9 and 11).",
+            },
+            Fix {
                 lead: "Still set up on eu1",
                 rest: " (or another of the community's old servers): the launcher moves you to the network's server at start instead of saying it can't connect.",
             },
             Fix {
                 lead: "Two PCs behind one router",
-                rest: " can both play on the same relay: the second one's port forwarding no longer collides with the first's traffic.",
+                rest: " can both play on the same relay: the second one's port forwarding no longer collides with the first's traffic, and where the router lets nothing through, its game goes over HTTPS by itself.",
             },
             Fix {
                 lead: "The connection test",
-                rest: " also names a VPN adapter that may carry your matches, and another program holding the game's match port.",
+                rest: " also names a VPN adapter that may carry your matches and another program holding the game's match port, and no longer fails its sign-in for a player who hasn't played that day.",
             },
             Fix {
                 lead: "Long answers from the server",
