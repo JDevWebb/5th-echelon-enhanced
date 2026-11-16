@@ -386,6 +386,7 @@ fn handle(
     if req.method == "POST" || upload {
         let mut length = 0usize;
         let mut expects = false;
+        let mut relayed_for: Option<String> = None;
         for _ in 0..64 {
             let mut header = String::new();
             (&mut rdr).take(MAX_REQUEST_LINE).read_line(&mut header)?;
@@ -402,6 +403,9 @@ fn handle(
                 if name.trim().eq_ignore_ascii_case("x-forwarded-for") {
                     req.peer = crate::rate_limit::client_ip(req.conn_peer, Some(value.trim()));
                 }
+                if name.trim().eq_ignore_ascii_case(crate::relays::RELAYED_FOR) {
+                    relayed_for = Some(value.trim().chars().take(64).collect::<String>());
+                }
                 if name.trim().eq_ignore_ascii_case("x-forwarded-proto") {
                     req.forwarded_proto = Some(value.trim().chars().take(16).collect());
                 }
@@ -410,6 +414,8 @@ fn handle(
                 }
             }
         }
+        // Through one of the network's relays (SR): the player behind it.
+        req.peer = crate::relays::relayed_client(req.peer, relayed_for.as_deref());
         if length > if upload { crate::uploads::MAX_UPLOAD } else { MAX_BODY } {
             return refuse(&stream, "413 Payload Too Large");
         }

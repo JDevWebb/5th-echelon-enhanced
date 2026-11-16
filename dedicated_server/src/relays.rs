@@ -80,6 +80,30 @@ pub fn ranges() -> Vec<(Ipv4Addr, (u16, u16))> {
     ranges
 }
 
+/// The header a relay's Caddy adds when it passes a player's API call on to the matchmaking
+/// server (0.5.5's SR): the player's address, as the relay saw it.
+pub const RELAYED_FOR: &str = "x-5e-relayed-for";
+
+/// The client behind an API call that came through one of the network's relays (SR): the
+/// address in [`RELAYED_FOR`] when the call came from a relay of the network (`from`, the client
+/// as the proxies in front of this server name it), else `from`. On the matchmaking server only.
+pub fn relayed_client(from: Option<std::net::IpAddr>, relayed_for: Option<&str>) -> Option<std::net::IpAddr> {
+    if !NETWORK_RELAYS.load(Ordering::Relaxed) {
+        return from;
+    }
+    let relays: Vec<std::net::IpAddr> = network().iter().map(|r| std::net::IpAddr::V4(r.ip)).collect();
+    via_relay(from, relayed_for, &relays)
+}
+
+fn via_relay(from: Option<std::net::IpAddr>, relayed_for: Option<&str>, relays: &[std::net::IpAddr]) -> Option<std::net::IpAddr> {
+    let from = from?;
+    if !relays.contains(&from.to_canonical()) {
+        return Some(from);
+    }
+    // The relay's Caddy sets the header (replacing any the player sent): one address.
+    Some(relayed_for.and_then(|v| v.trim().parse::<std::net::IpAddr>().ok()).unwrap_or(from))
+}
+
 /// The relays to offer launchers (`/api/info`): the network's, when this is the matchmaking
 /// server; none otherwise (players then use this server's own helper).
 pub fn offered() -> Vec<Relay> {
@@ -917,6 +941,18 @@ mod tests {
         assert_eq!(LEARNED.lock().unwrap().get(&from).map(|(l, _)| l.clone()).as_deref(), Some("syd"));
         learn(from, "syd");
         assert_eq!(LEARNED.lock().unwrap().get(&from).map(|(l, _)| l.clone()).as_deref(), Some("syd"), "its own again");
+    }
+
+    #[test]
+    fn an_api_call_through_a_relay_counts_for_the_player_behind_it() {
+        let relay: std::net::IpAddr = "198.51.100.33".parse().unwrap();
+        let player: std::net::IpAddr = "203.0.113.40".parse().unwrap();
+        let other: std::net::IpAddr = "192.0.2.9".parse().unwrap();
+        assert_eq!(via_relay(Some(relay), Some("203.0.113.40"), &[relay]), Some(player));
+        assert_eq!(via_relay(Some(other), Some("203.0.113.40"), &[relay]), Some(other), "only a relay's word counts");
+        assert_eq!(via_relay(Some(relay), None, &[relay]), Some(relay), "the relay's own call");
+        assert_eq!(via_relay(Some(relay), Some("not an address"), &[relay]), Some(relay));
+        assert_eq!(via_relay(None, Some("203.0.113.40"), &[relay]), None);
     }
 
     #[test]

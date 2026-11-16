@@ -1233,7 +1233,8 @@ pub struct MyUsers {
 /// `X-Forwarded-For` (see `rate_limit::client_ip`).
 fn client_addr<T>(request: &Request<T>) -> Option<std::net::IpAddr> {
     let forwarded = request.metadata().get("x-forwarded-for").and_then(|v| v.to_str().ok());
-    crate::rate_limit::client_ip(request.remote_addr().map(|a| a.ip()), forwarded)
+    let relayed_for = request.metadata().get(crate::relays::RELAYED_FOR).and_then(|v| v.to_str().ok());
+    crate::relays::relayed_client(crate::rate_limit::client_ip(request.remote_addr().map(|a| a.ip()), forwarded), relayed_for)
 }
 
 #[tonic::async_trait]

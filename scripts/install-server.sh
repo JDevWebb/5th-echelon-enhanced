@@ -3175,7 +3175,7 @@ restart_server() {
 # The site's routes, for http:// and https:// alike. The admin API
 # (accounts and games) is never served to the internet: manage the server
 # on the machine itself (or through an SSH tunnel to 127.0.0.1:50051).
-site_routes() {
+site_routes() { # [MATCHMAKING NAME: a relay passes the API on to it]
   cat <<'SITE'
 	# The API takes messages up to 8 MB: a player's report with its logs is
 	# the largest (6 MB of them, compressed). Nothing else is near it.
@@ -3187,11 +3187,31 @@ site_routes() {
 		respond 403
 	}
 	@grpc header Content-Type application/grpc*
+SITE
+  if [ -n "${1:-}" ]; then
+    # A relay of a network (0.5.5's SR): players whose own route to the matchmaking server loses
+    # its answers reach its API through here. The player's address goes with each call (set
+    # here, replacing any the player sent); the matchmaking server believes it only from the
+    # network's relays.
+    cat <<SITE
+	handle @grpc {
+		reverse_proxy https://$1 {
+			header_up Host $1
+			header_up X-5E-Relayed-For {remote_host}
+			flush_interval -1
+		}
+	}
+SITE
+  else
+    cat <<'SITE'
 	handle @grpc {
 		reverse_proxy h2c://127.0.0.1:50051 {
 			flush_interval -1
 		}
 	}
+SITE
+  fi
+  cat <<'SITE'
 	handle /mp_balancing.ini {
 		reverse_proxy 127.0.0.1:8000
 	}
@@ -3232,15 +3252,20 @@ site_block() {
     echo "# 5th Echelon: the game's online config and community API, its content,"
     echo "# and the launcher's API (gRPC). http:// on purpose: the game can only"
     echo "# speak plain HTTP on port 80, so this name must never redirect to HTTPS."
+    # A relay of a network passes the API on to the matchmaking server (SR), on its own names.
+    local upstream=""
+    if [ "$(checked_value role kind '^(game|relay)$')" = relay ] && [ -n "$mm_record" ] && [ "$mm_record" != "$domain" ]; then
+      upstream="$mm_record"
+    fi
     echo "$http_sites {"
-    site_routes
+    site_routes "$upstream"
     echo "}"
     if [ "$https_api" -eq 1 ]; then
       echo
       echo "# The same over HTTPS (Caddy gets the certificate): launchers that"
       echo "# see api_tls in /api/info use this, so nothing travels readable."
       echo "$https_sites {"
-      site_routes
+      site_routes "$upstream"
       echo "}"
       if [ -n "$mm_record" ] && [ "$mm_record" != "$domain" ] && [[ " ${names[*]} " == *" $mm_record "* ]]; then
         echo
