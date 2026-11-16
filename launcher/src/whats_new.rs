@@ -35,6 +35,26 @@ pub struct Release {
 /// Newest first. A release with nothing a player would notice has no entry.
 pub const RELEASES: &[Release] = &[
     Release {
+        version: "0.5.4",
+        thanks: &[],
+        new: &[
+            Item {
+                title: "Joining a host on another relay",
+                text: "Joining a host who plays on another relay (from Europe into a lobby in the Americas, say) no longer fails when that host's router forwards the game's port: the server tells your relay where the host is, so your game's first packets get through.",
+                community: false,
+            },
+            Item {
+                title: "A lobby nobody can get into goes through the server",
+                text: "On a quiet night, when three players in half an hour can't get into a host's match and nobody has, that host's games move to the server's relay, so the next player gets in.",
+                community: false,
+            },
+        ],
+        fixed: &[Fix {
+            lead: "With Fusion Fix installed,",
+            rest: " the game no longer crashes a few seconds after it starts from Play SvM, Play Co-op or Join, or with the mouse turning beta on: Fusion Fix makes its changes first, then 5th Echelon's go in.",
+        }],
+    },
+    Release {
         version: "0.5.2",
         thanks: &["Iceman", "KazakhBro", "Glacio1", "Gex"],
         new: &[
