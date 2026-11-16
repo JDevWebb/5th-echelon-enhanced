@@ -281,19 +281,36 @@ pub fn recording(data: Vec<u8>) -> Result<String, String> {
 
 /// Tells the server what a fair-play check found (F7, F8): report only. Failures are logged.
 pub fn fair_play_check(check: &str, detail: &str, value: f64, wine: bool) {
-    let result = run(signed_in(|| async {
-        let mut client = connect!(MiscClient);
-        client
-            .fair_play_check(tonic::Request::new(server_api::misc::FairPlayCheckRequest {
-                check: check.to_string(),
-                detail: detail.to_string(),
-                value,
-                wine,
-            }))
-            .await?;
-        Ok(())
-    }));
-    if let Err(e) = result {
+    let (check, detail) = (check.to_string(), detail.to_string());
+    let send = async move {
+        signed_in(|| async {
+            let mut client = connect!(MiscClient);
+            client
+                .fair_play_check(tonic::Request::new(server_api::misc::FairPlayCheckRequest {
+                    check: check.clone(),
+                    detail: detail.clone(),
+                    value,
+                    wine,
+                }))
+                .await?;
+            Ok(())
+        })
+        .await
+    };
+    // From inside another call to the server (the weapons check runs while the match state is
+    // being sent), blocking would panic: "Cannot start a runtime from within a runtime" (0.5.2,
+    // MackyWacky's co-op game, which froze after it once). Sent alongside then, not waited for.
+    if tokio::runtime::Handle::try_current().is_ok() {
+        if let Ok(rt) = runtime() {
+            rt.spawn(async move {
+                if let Err(e) = send.await {
+                    tracing::warn!("Telling the server a fair-play check failed: {e}");
+                }
+            });
+        }
+        return;
+    }
+    if let Err(e) = run(send) {
         tracing::warn!("Telling the server a fair-play check failed: {e}");
     }
 }
@@ -972,6 +989,15 @@ pub fn chat_mark_read(with: &str, up_to: i64) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fair-play check made while another call to the server is running (the weapons check,
+    /// inside the match state's) goes out alongside it: blocking there panicked in 0.5.2.
+    #[test]
+    fn a_fair_play_check_inside_another_call_doesnt_block() {
+        runtime().unwrap().block_on(async {
+            fair_play_check("weapon", "test", 1.0, false);
+        });
+    }
 
     /// Closed for maintenance is found in the server's refusal and in a held sign-in's message,
     /// and is what every sign-out says until a sign-in goes through.
