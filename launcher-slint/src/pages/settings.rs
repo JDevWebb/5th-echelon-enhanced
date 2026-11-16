@@ -783,18 +783,21 @@ impl SettingsPage {
             current,
         ));
         r.card("Starting");
-        r.add(note(if cfg!(target_os = "windows") {
+        // The docs' screenshots show Windows, started in the tray.
+        let docs = crate::docs_shots::as_windows();
+        let windows = cfg!(target_os = "windows") || docs;
+        r.add(note(if windows {
             "Start the launcher when you sign in to Windows, so friends and invitations reach you: minimised, or in the tray (no window until you click its icon). Windows' Startup apps can turn it off too."
         } else {
             "Start the launcher when you sign in, minimised, so friends and invitations reach you."
         }));
-        let how = launcher::autostart::how();
+        let how = if docs { Some(launcher::autostart::Start::Tray) } else { launcher::autostart::how() };
         r.add(switch(
             "start_with_system",
-            if cfg!(target_os = "windows") { "Start with Windows" } else { "Start when I sign in" },
+            if windows { "Start with Windows" } else { "Start when I sign in" },
             how.is_some(),
         ));
-        if let (Some(how), true) = (how, launcher::autostart::TRAY_HERE) {
+        if let (Some(how), true) = (how, launcher::autostart::TRAY_HERE || docs) {
             r.add(segments(
                 "start_how",
                 "",

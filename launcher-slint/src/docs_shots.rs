@@ -183,6 +183,7 @@ fn play(w: &AppWindow, d: &Docs, facts: setup::diagnose::Facts, adjust: impl FnO
 
 /// The common state of the window: the community network, friends online, nothing open.
 fn base(w: &AppWindow, d: &Docs) {
+    w.window().set_size(slint::LogicalSize::new(1280.0, 800.0));
     d.use_game(&d.game);
     write_prefs(d, Prefs::Answered);
     {
@@ -398,6 +399,8 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "settings-network-test",
             set: |w, d| {
+                // Taller: 0.5.2's test has eight parts.
+                w.window().set_size(slint::LogicalSize::new(1280.0, 1000.0));
                 d.settings(w, "network", |p| {
                     p.tested(
                         [
@@ -406,6 +409,9 @@ fn shots() -> Vec<Shot> {
                             ("Game service sign-in", "ok", ""),
                             ("How players reach this PC", "ok", "Direct, router port opened (UPnP); the game opens it while it runs"),
                             ("Internet play helper", "ok", "the relay Sydney"),
+                            ("VPN adapters", "ok", ""),
+                            ("Game's match port (UDP 13000)", "ok", ""),
+                            ("Windows Firewall", "ok", ""),
                         ]
                         .iter()
                         .map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string()))
@@ -446,7 +452,12 @@ fn shots() -> Vec<Shot> {
         },
         Shot {
             name: "settings-display",
-            set: |w, d| d.settings(w, "display", |_| {}),
+            // As on Windows, started in the tray (the Starting card's choice shows only when on).
+            set: |w, d| {
+                AS_WINDOWS.store(true, std::sync::atomic::Ordering::Relaxed);
+                d.settings(w, "display", |_| {});
+                AS_WINDOWS.store(false, std::sync::atomic::Ordering::Relaxed);
+            },
         },
         Shot {
             name: "settings-feedback",
@@ -578,6 +589,14 @@ fn group_facts(game: &Path) -> setup::diagnose::Facts {
     }
 }
 
+/// Set while a page is drawn as it looks on Windows (the docs show Windows), for what differs.
+static AS_WINDOWS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the docs' shot being drawn shows Windows (never outside `--shots-docs`).
+pub fn as_windows() -> bool {
+    AS_WINDOWS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn run(dir: PathBuf) -> Result<(), slint::PlatformError> {
     let err = |e: String| slint::PlatformError::Other(e);
     std::fs::create_dir_all(&dir).map_err(|e| err(e.to_string()))?;
@@ -660,7 +679,7 @@ pub fn run(dir: PathBuf) -> Result<(), slint::PlatformError> {
 /// The community server's made-up news.
 fn community_news() -> Vec<setup::server_info::NewsItem> {
     vec![
-        news("0.5.0: one server for everyone", "Every region now plays on the same server, so every search finds the whole community. Your name, friends and stats came with you; the game uses the relay nearest you by itself."),
+        news("0.5.2: through when UDP is blocked", "Where a network blocks the game's traffic, it now goes through the server over HTTPS, and the launcher learns how other players reach you on each network you play on."),
         news("Fair play", "Report a player from the overlay (F5 › Match): the admins see the match with it. Match recordings are kept a week for that."),
         news("SvM night, Saturday 8 pm UTC", "Blacklist and Classic, all evening. Bring a friend."),
     ]
