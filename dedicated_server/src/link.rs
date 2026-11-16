@@ -21,9 +21,15 @@
 //!   until the direct player happened to send first, and most joins into a direct host from
 //!   another relay failed (72% on ca1, 13-16 Nov 2026).
 //!
+//! - [`Body::Tunnelled`]: a relay signs one of its tunnelled players in to the matchmaking server
+//!   (0.5.5's SR): their sign-in and secure-service datagrams come from the relay's port, and this
+//!   says whose they are and the player's real address, so the matchmaking server's per-address
+//!   limits and checks see the player.
+//!
 //! `MAGIC` and the version differ from the games' protocol (nat_proto), so neither side takes
 //! the other's messages.
 
+use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::SocketAddrV4;
 
@@ -46,6 +52,7 @@ const OP_INTRODUCE: u8 = 6;
 const OP_RELAY: u8 = 7;
 const OP_REACH: u8 = 8;
 const OP_LOCATE: u8 = 9;
+const OP_TUNNELLED: u8 = 10;
 
 /// A player registered with a relay.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +119,15 @@ pub enum Body {
         at: SocketAddrV4,
         relay: String,
     },
+    /// From a relay: its tunnelled player `name` signs in to the matchmaking server through it,
+    /// from the relay's port `port`; their real address is `ip`. `open` is false once the tunnel
+    /// closed. Said again every 20 s while it's open.
+    Tunnelled {
+        name: String,
+        port: u16,
+        ip: IpAddr,
+        open: bool,
+    },
 }
 
 /// The longest event detail carried (JSON).
@@ -157,6 +173,7 @@ pub fn seal(key: &[u8; 32], from: &str, time: i64, body: &Body) -> Vec<u8> {
         Body::Relay { .. } => OP_RELAY,
         Body::Reach { .. } => OP_REACH,
         Body::Locate { .. } => OP_LOCATE,
+        Body::Tunnelled { .. } => OP_TUNNELLED,
     });
     out.extend_from_slice(&time.to_be_bytes());
     put_text(&mut out, from);
@@ -204,6 +221,21 @@ pub fn seal(key: &[u8; 32], from: &str, time: i64, body: &Body) -> Vec<u8> {
             put_text(&mut out, b);
         }
         Body::Relay { name } => put_text(&mut out, name),
+        Body::Tunnelled { name, port, ip, open } => {
+            put_text(&mut out, name);
+            out.extend_from_slice(&port.to_be_bytes());
+            match ip {
+                IpAddr::V4(v4) => {
+                    out.push(4);
+                    out.extend_from_slice(&v4.octets());
+                }
+                IpAddr::V6(v6) => {
+                    out.push(6);
+                    out.extend_from_slice(&v6.octets());
+                }
+            }
+            out.push(u8::from(*open));
+        }
         Body::Locate { name, at, relay } => {
             put_text(&mut out, name);
             put_addr(&mut out, *at);
@@ -332,6 +364,21 @@ pub fn open(data: &[u8], key: &[u8; 32], now: i64) -> Option<(String, Body)> {
             to: r.addr()?,
             nonce: u32::from_be_bytes(r.take(4)?.try_into().ok()?),
         },
+        OP_TUNNELLED => {
+            let name = r.text()?;
+            let port = u16::from_be_bytes(r.take(2)?.try_into().ok()?);
+            let ip = match r.u8()? {
+                4 => IpAddr::from(<[u8; 4]>::try_from(r.take(4)?).ok()?),
+                6 => IpAddr::from(<[u8; 16]>::try_from(r.take(16)?).ok()?),
+                _ => return None,
+            };
+            Body::Tunnelled {
+                name,
+                port,
+                ip,
+                open: r.u8()? != 0,
+            }
+        }
         OP_LOCATE => Body::Locate {
             name: r.text()?,
             at: r.addr()?,
@@ -396,6 +443,18 @@ mod tests {
                 name: "Kiwi".into(),
                 at: "203.0.113.9:60063".parse().unwrap(),
                 relay: "us1".into(),
+            },
+            Body::Tunnelled {
+                name: "Kiwi".into(),
+                port: 51234,
+                ip: "203.0.113.9".parse().unwrap(),
+                open: true,
+            },
+            Body::Tunnelled {
+                name: "Tank".into(),
+                port: 1,
+                ip: "2001:db8::7".parse().unwrap(),
+                open: false,
             },
         ] {
             assert_eq!(open(&seal(&key, "mm", 5, &body), &key, 5), Some(("mm".to_string(), body)));

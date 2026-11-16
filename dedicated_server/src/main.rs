@@ -799,7 +799,9 @@ fn main() -> color_eyre::Result<()> {
         // The tunnel for players whose UDP is blocked (0.5.2's T), when it's set up.
         if let Some(listen) = nat.tunnel {
             let (login, secure, helper) = tunnel_ports;
-            let services = tunnel::Services { login, secure, helper };
+            // A relay's tunnel signs its players in to the network's matchmaking server (SR).
+            let upstream = if relay_only { tunnel::Upstream::Matchmaking } else { tunnel::Upstream::Local };
+            let services = tunnel::Services { login, secure, helper, upstream };
             let tunnel_logger = logger.new(o!("service" => "tunnel"));
             let spawned = std::thread::Builder::new().name("tunnel".into()).spawn(move || {
                 let logger = tunnel_logger;

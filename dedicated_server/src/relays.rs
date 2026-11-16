@@ -206,6 +206,13 @@ pub fn on_link(data: &[u8], src: std::net::SocketAddrV4, socket: &std::net::UdpS
             }
         }
         crate::link::Body::Locate { .. } => {}
+        // A relay's tunnelled player signing in through it (SR): only on the network's
+        // matchmaking server, only from a relay of the network, and only for that relay's own
+        // address (where the datagrams come from).
+        crate::link::Body::Tunnelled { name, port, ip, open } if NETWORK_RELAYS.load(Ordering::Relaxed) && !link.matchmaking => {
+            forwarded_note(std::net::SocketAddr::new(link.ip.into(), port), ip, &name, open, std::time::Instant::now());
+        }
+        crate::link::Body::Tunnelled { .. } => {}
         crate::link::Body::Reach { to, nonce } => {
             if reach_allowed(to) {
                 crate::nat_helper::send_reach_for_another(socket, to, nonce);
@@ -299,6 +306,61 @@ pub fn introduce_remote(a: &str, b: &str) {
     for link in links().iter().filter(|l| relays.contains(&l.id)) {
         let message = crate::link::seal(&link.key, own, identity::now(), &body);
         let _ = socket.send_to(&message, std::net::SocketAddrV4::new(link.ip, link.port));
+    }
+}
+
+/// A relay's tunnelled players signing in through it (SR), on the matchmaking server: by the
+/// relay's address and port their datagrams come from, their real address, their name and when
+/// the relay last said so.
+type SignIns = std::collections::HashMap<std::net::SocketAddr, (std::net::IpAddr, String, std::time::Instant)>;
+static FORWARDED: std::sync::LazyLock<Mutex<SignIns>> = std::sync::LazyLock::new(Mutex::default);
+/// How long a relay's word on a tunnel holds without being said again (every 20 s).
+const FORWARDED_FOR: std::time::Duration = std::time::Duration::from_secs(70);
+const MAX_FORWARDED: usize = 50_000;
+
+fn forwarded_note(from: std::net::SocketAddr, ip: std::net::IpAddr, name: &str, open: bool, now: std::time::Instant) {
+    let mut f = FORWARDED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !open {
+        f.remove(&from);
+        return;
+    }
+    if f.len() >= MAX_FORWARDED && !f.contains_key(&from) {
+        f.retain(|_, (.., at)| now.saturating_duration_since(*at) < FORWARDED_FOR);
+        if f.len() >= MAX_FORWARDED {
+            return;
+        }
+    }
+    f.insert(from, (ip, name.to_string(), now));
+}
+
+/// The real address of the player whose sign-in a relay forwards from `src` (SR), if one does.
+pub fn forwarded_ip(src: std::net::SocketAddr) -> Option<std::net::IpAddr> {
+    forwarded_ip_at(src, std::time::Instant::now())
+}
+
+fn forwarded_ip_at(src: std::net::SocketAddr, now: std::time::Instant) -> Option<std::net::IpAddr> {
+    let f = FORWARDED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    f.get(&src).filter(|(.., at)| now.saturating_duration_since(*at) < FORWARDED_FOR).map(|(ip, ..)| *ip)
+}
+
+/// On a relay: the network's matchmaking server's address, where its tunnelled players' sign-in
+/// goes (SR).
+pub fn matchmaking_ip() -> Option<Ipv4Addr> {
+    links().iter().find(|l| l.matchmaking).map(|l| l.ip)
+}
+
+/// On a relay: tells the network's matchmaking server that its tunnelled player `name` (at `ip`)
+/// signs in through this relay's port `port`, or no longer does.
+pub fn tunnelled(name: &str, port: u16, ip: std::net::IpAddr, open: bool) {
+    let (Some(socket), Some(own)) = (LINK_SOCKET.get(), OWN_ID.get()) else { return };
+    let body = crate::link::Body::Tunnelled {
+        name: name.into(),
+        port,
+        ip,
+        open,
+    };
+    for link in links().iter().filter(|l| l.matchmaking) {
+        let _ = socket.send_to(&crate::link::seal(&link.key, own, identity::now(), &body), std::net::SocketAddrV4::new(link.ip, link.port));
     }
 }
 
@@ -855,6 +917,21 @@ mod tests {
         assert_eq!(LEARNED.lock().unwrap().get(&from).map(|(l, _)| l.clone()).as_deref(), Some("syd"));
         learn(from, "syd");
         assert_eq!(LEARNED.lock().unwrap().get(&from).map(|(l, _)| l.clone()).as_deref(), Some("syd"), "its own again");
+    }
+
+    #[test]
+    fn a_relays_tunnelled_players_are_known_by_its_port_for_a_while() {
+        let relay: std::net::SocketAddr = "198.51.100.33:52001".parse().unwrap();
+        let player: std::net::IpAddr = "203.0.113.40".parse().unwrap();
+        let t = std::time::Instant::now();
+        assert_eq!(forwarded_ip_at(relay, t), None);
+        forwarded_note(relay, player, "Ghost", true, t);
+        assert_eq!(forwarded_ip_at(relay, t + std::time::Duration::from_secs(30)), Some(player));
+        assert_eq!(forwarded_ip_at("198.51.100.33:52002".parse().unwrap(), t), None, "only that port");
+        assert_eq!(forwarded_ip_at(relay, t + FORWARDED_FOR), None, "not said again: lapsed");
+        forwarded_note(relay, player, "Ghost", true, t);
+        forwarded_note(relay, player, "Ghost", false, t);
+        assert_eq!(forwarded_ip_at(relay, t), None, "closed");
     }
 
     #[test]

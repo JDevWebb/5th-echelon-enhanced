@@ -50,29 +50,53 @@ fn parked() -> std::sync::MutexGuard<'static, HashMap<String, (Instant, std::syn
     PARKED.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Where each tunnel's datagrams go on this machine.
+/// Where each tunnel's datagrams go: the services' ports, on this machine or (the sign-in and
+/// the secure service, at a relay) the network's matchmaking server ([`Upstream`]).
 #[derive(Debug, Clone, Copy)]
 pub struct Services {
     pub login: u16,
     pub secure: u16,
     pub helper: u16,
+    pub upstream: Upstream,
+}
+
+/// Where the sign-in and the secure service are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Upstream {
+    /// On this machine (a game server).
+    Local,
+    /// At the network's matchmaking server (a relay, 0.5.5's SR): a player whose own route to
+    /// it loses the answers signs in through their relay. The relay tells it whose datagrams
+    /// they are and the player's real address over the link ([`crate::relays::tunnelled`]).
+    Matchmaking,
+    /// At this address (tests).
+    #[cfg(test)]
+    At(std::net::IpAddr),
 }
 
 impl Services {
-    fn port(self, service: u8) -> Option<u16> {
+    /// Where the sign-in and the secure service are now: none at a relay before the coordinator
+    /// named the network's matchmaking server.
+    fn upstream_ip(self) -> Option<IpAddr> {
+        match self.upstream {
+            Upstream::Local => Some(IpAddr::from([127, 0, 0, 1])),
+            Upstream::Matchmaking => crate::relays::matchmaking_ip().map(IpAddr::from),
+            #[cfg(test)]
+            Upstream::At(ip) => Some(ip),
+        }
+    }
+
+    fn target(self, service: u8) -> Option<SocketAddr> {
         match service {
-            tunnel::LOGIN => Some(self.login),
-            tunnel::SECURE => Some(self.secure),
-            tunnel::HELPER => Some(self.helper),
+            tunnel::LOGIN => Some(SocketAddr::new(self.upstream_ip()?, self.login)),
+            tunnel::SECURE => Some(SocketAddr::new(self.upstream_ip()?, self.secure)),
+            tunnel::HELPER => Some(SocketAddr::new(IpAddr::from([127, 0, 0, 1]), self.helper)),
             _ => None,
         }
     }
 
-    fn service(self, port: u16) -> Option<u8> {
-        [(self.login, tunnel::LOGIN), (self.secure, tunnel::SECURE), (self.helper, tunnel::HELPER)]
-            .into_iter()
-            .find(|(p, _)| *p == port)
-            .map(|(_, s)| s)
+    fn service(self, from: SocketAddr) -> Option<u8> {
+        [tunnel::LOGIN, tunnel::SECURE, tunnel::HELPER].into_iter().find(|s| self.target(*s) == Some(from))
     }
 }
 
@@ -105,12 +129,16 @@ pub(crate) fn test_tunnel_at(port: u16, ip: IpAddr) {
 }
 
 /// The address a datagram from `src` stands for: a tunnel's player's real address when `src` is
-/// a tunnel's loopback socket, else `src`'s own.
+/// a tunnel's loopback socket, or a relay's port its tunnelled player signs in through (SR),
+/// else `src`'s own.
 pub fn source_ip(src: SocketAddr) -> IpAddr {
     if src.ip().is_loopback() {
         if let Some(ip) = real_ip(src.port()) {
             return ip;
         }
+    }
+    if let Some(ip) = crate::relays::forwarded_ip(src) {
+        return ip;
     }
     src.ip()
 }
@@ -210,9 +238,11 @@ async fn handle(logger: &Logger, stream: tokio::net::TcpStream, peer: SocketAddr
         p.remove(&identity::name_key(&name)).map(|(_, s)| s)
     };
     let was_resumed = resumed.is_some();
+    // On every address at a relay: its sign-in goes to the matchmaking server elsewhere.
+    let bind = if services.upstream == Upstream::Local { "127.0.0.1" } else { "0.0.0.0" };
     let socket = match resumed {
         Some(s) => s,
-        None => std::sync::Arc::new(tokio::net::UdpSocket::bind(("127.0.0.1", 0)).await.map_err(|e| e.to_string())?),
+        None => std::sync::Arc::new(tokio::net::UdpSocket::bind((bind, 0)).await.map_err(|e| e.to_string())?),
     };
     let port = socket.local_addr().map_err(|e| e.to_string())?.port();
     let id = {
@@ -235,6 +265,11 @@ async fn handle(logger: &Logger, stream: tokio::net::TcpStream, peer: SocketAddr
         if was_resumed { ", resumed" } else { "" }
     );
     crate::session_events::note(crate::session_events::Who::Name(name.clone()), "tunnel", serde_json::json!({ "open": true }));
+    // At a relay: the matchmaking server is told whose sign-in comes from this port.
+    let forwards = services.upstream == Upstream::Matchmaking;
+    if forwards {
+        crate::relays::tunnelled(&name, port, ip, true);
+    }
     let mut rate = Rate::new();
     let mut ping = tokio::time::interval(PING_EVERY);
     let mut buf = vec![0u8; 2048];
@@ -247,9 +282,9 @@ async fn handle(logger: &Logger, stream: tokio::net::TcpStream, peer: SocketAddr
             message = up.next() => match message {
                 Some(Ok(Ws::Binary(data))) => {
                     let Some((service, datagram)) = tunnel::parse(&data) else { continue };
-                    let Some(to) = services.port(service) else { continue };
+                    let Some(to) = services.target(service) else { continue };
                     if rate.take(datagram.len()) {
-                        let _ = socket.send_to(datagram, ("127.0.0.1", to)).await;
+                        let _ = socket.send_to(datagram, to).await;
                     }
                 }
                 Some(Ok(Ws::Close(_))) | None => break Ok(()),
@@ -258,7 +293,7 @@ async fn handle(logger: &Logger, stream: tokio::net::TcpStream, peer: SocketAddr
             },
             got = socket.recv_from(&mut buf) => {
                 let Ok((n, from)) = got else { continue };
-                let Some(service) = from.ip().is_loopback().then(|| services.service(from.port())).flatten() else { continue };
+                let Some(service) = services.service(from) else { continue };
                 if rate.take(n) {
                     if let Err(e) = down.send(Ws::Binary(tunnel::frame(service, &buf[..n]).into())).await {
                         break Err(e.to_string());
@@ -266,6 +301,9 @@ async fn handle(logger: &Logger, stream: tokio::net::TcpStream, peer: SocketAddr
                 }
             }
             _ = ping.tick() => {
+                if forwards {
+                    crate::relays::tunnelled(&name, port, ip, true);
+                }
                 if let Err(e) = down.send(Ws::Ping(Vec::new().into())).await {
                     break Err(e.to_string());
                 }
@@ -286,6 +324,9 @@ async fn handle(logger: &Logger, stream: tokio::net::TcpStream, peer: SocketAddr
                 p.insert(identity::name_key(&name), (Instant::now(), std::sync::Arc::clone(&socket)));
             }
         }
+    }
+    if forwards {
+        crate::relays::tunnelled(&name, port, ip, false);
     }
     info!(logger, "Tunnel: {name}'s closed");
     crate::session_events::note(crate::session_events::Who::Name(name), "tunnel", serde_json::json!({ "open": false }));
@@ -331,11 +372,21 @@ mod tests {
             login: 21126,
             secure: 21127,
             helper: 21128,
+            upstream: Upstream::Local,
         };
-        assert_eq!(s.port(tunnel::SECURE), Some(21127));
-        assert_eq!(s.port(tunnel::AUTH), None);
-        assert_eq!(s.service(21128), Some(tunnel::HELPER));
-        assert_eq!(s.service(9999), None);
+        let local = |port: u16| SocketAddr::from(([127, 0, 0, 1], port));
+        assert_eq!(s.target(tunnel::SECURE), Some(local(21127)));
+        assert_eq!(s.target(tunnel::AUTH), None);
+        assert_eq!(s.service(local(21128)), Some(tunnel::HELPER));
+        assert_eq!(s.service(local(9999)), None);
+        // At a relay: the sign-in and the secure service are the matchmaking server's, the
+        // helper its own.
+        let mm: IpAddr = "198.51.100.7".parse().unwrap();
+        let relay = Services { upstream: Upstream::At(mm), ..s };
+        assert_eq!(relay.target(tunnel::LOGIN), Some(SocketAddr::new(mm, 21126)));
+        assert_eq!(relay.target(tunnel::HELPER), Some(local(21128)));
+        assert_eq!(relay.service(SocketAddr::new(mm, 21127)), Some(tunnel::SECURE));
+        assert_eq!(relay.service(local(21126)), None, "not this machine's sign-in");
     }
 
     #[test]
@@ -353,7 +404,12 @@ mod tests {
         let logger = slog::Logger::root(slog::Discard, slog::o!());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let at = listener.local_addr().unwrap();
-        let services = Services { login: 1, secure: 2, helper: 3 };
+        let services = Services {
+            login: 1,
+            secure: 2,
+            helper: 3,
+            upstream: Upstream::Local,
+        };
         tokio::spawn(async move {
             let (stream, peer) = listener.accept().await.unwrap();
             let r = handle(&logger, stream, peer, services).await;
@@ -387,7 +443,12 @@ mod tests {
                 let _ = service.send_to(&answer, from).await;
             }
         });
-        let services = Services { login, secure: 1, helper: 2 };
+        let services = Services {
+            login,
+            secure: 1,
+            helper: 2,
+            upstream: Upstream::Local,
+        };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let at = listener.local_addr().unwrap();
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
