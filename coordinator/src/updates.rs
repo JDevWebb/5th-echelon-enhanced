@@ -176,6 +176,10 @@ pub struct Rollout {
     pub note: String,
     /// Going out without update windows (an admin's "now", or a rollback).
     pub anytime: bool,
+    /// An admin's "Update every server now": every server installs it at once, players on or
+    /// not (still in order: relays one at a time, the matchmaking server after the rest, the
+    /// coordinator's machine last).
+    pub forced: bool,
 }
 
 /// What the rollout waits for while no server it needs is in an update window.
@@ -201,13 +205,13 @@ struct Member {
 
 impl Coordinator {
     pub async fn rollout(&self) -> sqlx::Result<Rollout> {
-        sqlx::query_as("SELECT target, previous, stage, canary, stage_since, paused, pinned, note, anytime FROM rollout WHERE id = 1")
+        sqlx::query_as("SELECT target, previous, stage, canary, stage_since, paused, pinned, note, anytime, forced FROM rollout WHERE id = 1")
             .fetch_one(&self.pool)
             .await
     }
 
     async fn save_rollout(&self, r: &Rollout) -> sqlx::Result<()> {
-        sqlx::query("UPDATE rollout SET target = ?, previous = ?, stage = ?, canary = ?, stage_since = ?, paused = ?, pinned = ?, note = ?, anytime = ? WHERE id = 1")
+        sqlx::query("UPDATE rollout SET target = ?, previous = ?, stage = ?, canary = ?, stage_since = ?, paused = ?, pinned = ?, note = ?, anytime = ?, forced = ? WHERE id = 1")
             .bind(&r.target)
             .bind(&r.previous)
             .bind(&r.stage)
@@ -217,6 +221,7 @@ impl Coordinator {
             .bind(r.pinned)
             .bind(&r.note)
             .bind(r.anytime)
+            .bind(r.forced)
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -357,6 +362,7 @@ impl Coordinator {
         r.stage_since = identity::now();
         r.paused = paused;
         r.anytime = false;
+        r.forced = false;
         r.note = if paused { format!("{why}; paused, as the rollout was before") } else { why.to_string() };
         self.save_rollout(&r).await?;
         self.tick_rollout().await
@@ -524,7 +530,7 @@ impl Coordinator {
                     let restarting = members
                         .iter()
                         .any(|m| m.relay_only && m.id != server && m.auto_update && m.version != target && now - m.last_seen > FRESH / 3 && now - m.last_seen <= FRESH * 3);
-                    if me.relayed > 0 || restarting {
+                    if (me.relayed > 0 && !r.forced) || restarting {
                         return Ok(None);
                     }
                 }
@@ -547,7 +553,7 @@ impl Coordinator {
             "canary" => r.canary.as_deref() == Some(server),
             // In its window, at once: its players were told when.
             "rolling" | "done" if !r.anytime => true,
-            "rolling" | "done" => players_online == 0 || now - r.stage_since >= QUIET_WAIT,
+            "rolling" | "done" => r.forced || players_online == 0 || now - r.stage_since >= QUIET_WAIT,
             _ => false,
         };
         Ok(asked.then_some(target))
@@ -617,6 +623,24 @@ impl Coordinator {
         self.tick_rollout().await
     }
 
+    /// Every server installs the release now, players on or not, without a window or the canary
+    /// (an urgent fix that can't wait for games to end). Players are cut off when their server
+    /// restarts, for about two minutes; the order stays (relays one at a time, the matchmaking
+    /// server after the rest, the coordinator's machine last).
+    pub async fn force_now(&self) -> sqlx::Result<()> {
+        sqlx::query(
+            "UPDATE rollout SET anytime = 1, forced = 1, paused = 0,
+               stage_since = CASE WHEN stage = 'rolling' THEN stage_since ELSE ? END,
+               stage = CASE WHEN stage IN ('canary', 'verifying') THEN 'rolling' ELSE stage END,
+               note = 'every server updates now, players on or not, by an admin'
+             WHERE id = 1 AND target IS NOT NULL AND stage NOT IN ('done', 'halted')",
+        )
+        .bind(identity::now())
+        .execute(&self.pool)
+        .await?;
+        self.tick_rollout().await
+    }
+
     /// Skips the canary: every server updates (in its update window).
     pub async fn promote(&self) -> sqlx::Result<()> {
         sqlx::query("UPDATE rollout SET stage = 'rolling', stage_since = ?, note = 'promoted by an admin' WHERE id = 1 AND target IS NOT NULL")
@@ -653,6 +677,7 @@ impl Coordinator {
             note: format!("rolled back from {target} by an admin"),
             // A rollback can't wait for a window.
             anytime: true,
+            forced: false,
         };
         self.save_rollout(&back).await.map_err(|e| e.to_string())?;
         Ok(previous)
@@ -755,7 +780,7 @@ pub fn public_rollout(r: &Rollout, window_open: bool) -> Option<Value> {
         "stage_started": r.stage_since,
         "canary": r.canary,
         "healthy_for": HEALTHY_FOR,
-        "quiet_wait": if r.anytime { QUIET_WAIT } else { 0 },
+        "quiet_wait": if r.anytime && !r.forced { QUIET_WAIT } else { 0 },
         "windows": !r.anytime,
     }))
 }

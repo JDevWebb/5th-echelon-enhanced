@@ -88,6 +88,7 @@ A member server drops out of the server directory, and players' launchers stop o
 | Pin / Unpin | A pinned rollout ignores new releases until unpinned |
 | Skip the canary | Every server updates (in its update window) without waiting for the canary |
 | Update now, without a window | The rollout goes out without update windows: each server when quiet, or within 2 hours; for urgent fixes |
+| Update every server now | Every server installs the release at once, players on or not, without a window or the canary: games in progress are cut off as their server restarts (about two minutes). Relays go one at a time, the matchmaking server after the rest, the coordinator's machine last. Not for a halted rollout |
 | Halt | Stop the rollout where it is |
 | Roll back to … | Every server returns to the release before (from its kept copy, so no download), and the rollout is pinned there |
 | Roll this out | Roll out an earlier signed release, with a canary, and pin it |

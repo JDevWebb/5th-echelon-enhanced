@@ -32,6 +32,7 @@
               <button v-else type="button" @click="act('pin')">Pin (hold this release)</button>
               <button v-if="['canary', 'verifying', 'halted'].includes(r.stage)" type="button" @click="act('promote', ['Update every server now?', 'Every server installs the release without waiting for the canary.', 'Skip the canary'])">Skip the canary</button>
               <button v-if="r.target && !r.anytime && !['done', 'halted'].includes(r.stage)" type="button" @click="act('now', ['Update without a window?', 'Servers install the release without waiting for an update window: each when nobody is playing on it, or within 2 hours. Players get no warning ahead. For urgent fixes.', 'Update now'])">Update now, without a window</button>
+              <button v-if="r.target && !r.forced && !['done', 'halted'].includes(r.stage)" class="danger" type="button" @click="act('force', ['Update every server now, players on or not?', 'Every server installs the release now, without a window or the canary: games in progress are cut off as their server restarts, for about two minutes. Relays go one at a time, the matchmaking server after the rest, this machine last. For a fix that can\'t wait for games to end.', 'Update every server now', true])">Update every server now</button>
               <button v-if="r.previous" class="danger" type="button" @click="act('rollback', [`Roll back to ${r.previous}?`, 'Every server goes back to the release before (each kept it), and the rollout is pinned there.', `Roll back to ${r.previous}`, true])">Roll back to {{ r.previous }}</button>
             </div>
           </details>
@@ -47,7 +48,8 @@
       </ol>
       <p v-if="r.note" class="callout" :class="{ bad: r.stage === 'halted' }">{{ r.note }}</p>
       <p v-if="r.target && !['done', 'halted'].includes(r.stage)" class="small muted" style="margin-top: 8px">
-        <template v-if="r.anytime">Going out without update windows: each server when it's quiet, or within 2 hours.</template>
+        <template v-if="r.forced">Every server updates now, players on or not: relays one at a time, the matchmaking server after the rest, this machine last.</template>
+        <template v-else-if="r.anytime">Going out without update windows: each server when it's quiet, or within 2 hours.</template>
         <template v-else-if="u.next_window">Installs in update windows only. {{ u.next_window.start <= Date.now() / 1000 ? 'One is under way' : 'The next starts' }}: {{ fmt.when(u.next_window.start) }} to {{ fmt.when(u.next_window.end) }}.</template>
         <template v-else>Installs in update windows only, and none is booked: <a href="#maintenance" @click.prevent="toBooking">book one</a> so players know when.</template>
       </p>
@@ -140,7 +142,7 @@ const name = id => serverName(o.value?.servers.find(sv => sv.id === id) || { id 
 const stageText = computed(() => ({
   canary: r.value.canary ? `${name(r.value.canary)} installs it first` : r.value.anytime ? 'choosing a server to try it on' : 'waiting for an update window to try it on a server',
   verifying: `watching ${name(r.value.canary)} on the new release`,
-  rolling: r.value.anytime ? 'the rest update, each when it\'s quiet (or within 2 hours)' : 'the rest update in their update windows',
+  rolling: r.value.forced ? 'every server updates now, players on or not' : r.value.anytime ? 'the rest update, each when it\'s quiet (or within 2 hours)' : 'the rest update in their update windows',
   done: 'every server runs it',
 }));
 const updater = sv => {

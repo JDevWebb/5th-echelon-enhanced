@@ -531,6 +531,54 @@ async fn the_matchmaking_server_and_the_coordinators_machine_dont_wait_for_each_
     assert_eq!(beat(de.clone(), "de", "1.0.0", false).await.as_deref(), Some("1.1.0"), "then last");
 }
 
+/// An admin's "Update every server now": no window, no canary, and servers with players on (and
+/// a relay carrying players) update at once; the order stays (the matchmaking server after the
+/// rest). A halted rollout isn't forced through.
+#[tokio::test]
+async fn an_admin_can_force_every_server_to_update_now() {
+    let t = start("rollout-forced").await;
+    t.c.set_matchmaking_server("mm");
+    let beat = |secret: String, id: &'static str, version: &'static str, relay: bool, players: u32| {
+        let t = &t;
+        async move {
+            let body = json!({ "name": id, "host": id, "listed": !relay, "auto_update": true, "version": version,
+                "players_online": if relay { 0 } else { players }, "role": if relay { "relay" } else { "game" },
+                "relayed": if relay { players } else { 0 } });
+            t.c.heartbeats.seen.lock().unwrap().clear();
+            let (status, answer) = t.call("POST", "/v1/heartbeat", Some(&secret), Some(body)).await;
+            assert_eq!(status, StatusCode::OK, "{answer}");
+            answer["update"]["version"].as_str().map(str::to_string)
+        }
+    };
+    let (mm, au, syd) = (t.join("mm").await, t.join("au").await, t.join("syd").await);
+    beat(mm.clone(), "mm", "1.0.0", false, 9).await;
+    beat(au.clone(), "au", "1.0.0", false, 6).await;
+    beat(syd.clone(), "syd", "1.0.0", true, 4).await;
+    t.c.start_rollout("1.1.0", "a test").await.unwrap();
+    assert_eq!(beat(au.clone(), "au", "1.0.0", false, 6).await, None, "no window booked");
+
+    // Forced: rolling at once, players on or not.
+    let cookie = admin_cookie(&t, "ops", 0).await;
+    let (status, answer) = admin_call(&admin_router(&t), "POST", "/api/updates/force", &cookie, Some(json!({}))).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let r = t.c.rollout().await.unwrap();
+    assert!(r.forced && r.anytime && r.stage == "rolling", "{r:?}");
+    assert_eq!(beat(au.clone(), "au", "1.0.0", false, 6).await.as_deref(), Some("1.1.0"), "players on");
+    assert_eq!(beat(syd.clone(), "syd", "1.0.0", true, 4).await.as_deref(), Some("1.1.0"), "a relay carrying players");
+    assert_eq!(beat(mm.clone(), "mm", "1.0.0", false, 9).await, None, "the matchmaking server still goes after the rest");
+    beat(au.clone(), "au", "1.1.0", false, 6).await;
+    beat(syd.clone(), "syd", "1.1.0", true, 4).await;
+    assert_eq!(beat(mm.clone(), "mm", "1.0.0", false, 9).await.as_deref(), Some("1.1.0"), "then, players on");
+
+    // A new release starts unforced; a halted one isn't forced through.
+    t.c.start_rollout("1.2.0", "the next").await.unwrap();
+    assert!(!t.c.rollout().await.unwrap().forced, "a new rollout isn't forced");
+    t.c.halt("a test").await.unwrap();
+    t.c.force_now().await.unwrap();
+    let r = t.c.rollout().await.unwrap();
+    assert!(!r.forced && r.stage == "halted", "{r:?}");
+}
+
 /// Releases go out only in update windows, booked ahead so players know: nobody is asked
 /// without one, a server's own window lets only it update, and other maintenance stops it.
 #[tokio::test]

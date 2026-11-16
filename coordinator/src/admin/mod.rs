@@ -2244,6 +2244,11 @@ async fn update_action(
         "unpin" => c.set_pinned(false).await.map(|()| "unpinned".into()).map_err(|e| e.to_string()),
         "promote" => c.promote().await.map(|()| "rolling out to every server".into()).map_err(|e| e.to_string()),
         "now" => c.go_now().await.map(|()| "going out now, without an update window".into()).map_err(|e| e.to_string()),
+        "force" => c
+            .force_now()
+            .await
+            .map(|()| "every server updates now, players on or not".into())
+            .map_err(|e| e.to_string()),
         "halt" => c.halt("halted by an admin").await.map(|()| "halted".into()).map_err(|e| e.to_string()),
         "rollback" => c.roll_back().await.map(|v| format!("rolling back to {v}")),
         "release" => c.roll_out(version.trim()).await.map(|()| format!("rolling out {}", version.trim())),
