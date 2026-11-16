@@ -482,6 +482,55 @@ async fn rollouts_know_relays_and_the_matchmaking_server() {
     assert_eq!(beat(mm.clone(), "mm", "1.0.0", false, 0).await.as_deref(), Some("1.1.0"), "then last");
 }
 
+/// The matchmaking server on one machine and a game server on the coordinator's (ca1 and de1):
+/// the matchmaking server goes once every other member but the coordinator's machine runs the
+/// release, then the coordinator's machine. They used to wait for each other until LAST_WAIT
+/// (0.5.2 and 0.5.3, 16 Nov 2026: both rollouts finished by hand).
+#[tokio::test]
+async fn the_matchmaking_server_and_the_coordinators_machine_dont_wait_for_each_other() {
+    let t = start("rollout-mm-local").await;
+    t.c.set_matchmaking_server("mm");
+    let _ = t.c.local_servers.set(vec!["de".into()]);
+    let beat = |secret: String, id: &'static str, version: &'static str, relay: bool| {
+        let t = &t;
+        async move {
+            let body = json!({ "name": id, "host": id, "listed": !relay, "auto_update": true, "version": version,
+                "players_online": 0, "role": if relay { "relay" } else { "game" }, "relayed": 0 });
+            t.c.heartbeats.seen.lock().unwrap().clear();
+            let (status, answer) = t.call("POST", "/v1/heartbeat", Some(&secret), Some(body)).await;
+            assert_eq!(status, StatusCode::OK, "{answer}");
+            answer["update"]["version"].as_str().map(str::to_string)
+        }
+    };
+    let (mm, de, au, syd) = (t.join("mm").await, t.join("de").await, t.join("au").await, t.join("syd").await);
+    for (s, id, relay) in [(&mm, "mm", false), (&de, "de", false), (&au, "au", false), (&syd, "syd", true)] {
+        beat(s.clone(), id, "1.0.0", relay).await;
+    }
+    update_window(&t, None).await;
+    t.c.start_rollout("1.1.0", "a test").await.unwrap();
+    sqlx::query("UPDATE rollout SET stage = 'rolling', stage_since = ?")
+        .bind(identity::now())
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(beat(mm.clone(), "mm", "1.0.0", false).await, None, "the matchmaking server waits for au and syd");
+    assert_eq!(beat(de.clone(), "de", "1.0.0", false).await, None, "the coordinator's machine waits for everyone else");
+    beat(au.clone(), "au", "1.1.0", false).await;
+    beat(syd.clone(), "syd", "1.1.0", true).await;
+    assert_eq!(
+        beat(mm.clone(), "mm", "1.0.0", false).await.as_deref(),
+        Some("1.1.0"),
+        "the matchmaking server doesn't wait for the coordinator's machine"
+    );
+    assert_eq!(
+        beat(de.clone(), "de", "1.0.0", false).await,
+        None,
+        "the coordinator's machine still waits for the matchmaking server"
+    );
+    beat(mm.clone(), "mm", "1.1.0", false).await;
+    assert_eq!(beat(de.clone(), "de", "1.0.0", false).await.as_deref(), Some("1.1.0"), "then last");
+}
+
 /// Releases go out only in update windows, booked ahead so players know: nobody is asked
 /// without one, a server's own window lets only it update, and other maintenance stops it.
 #[tokio::test]

@@ -528,9 +528,15 @@ impl Coordinator {
                         return Ok(None);
                     }
                 }
+                // Not for the servers on the coordinator's machine, though: they wait for every
+                // other member, the matchmaking server included, so each waited for the other
+                // until LAST_WAIT (0.5.2 and 0.5.3, 16 Nov 2026: ca1 and de1, both rollouts
+                // finished by hand). The matchmaking server goes after every other member, and
+                // the coordinator's machine after it.
                 if self.matchmaking_server.get().is_some_and(|mm| mm == server) && !waited {
                     let fresh: Vec<&Member> = members.iter().filter(|m| now - m.last_seen <= FRESH).collect();
-                    let others: Vec<String> = vec![server.to_string()];
+                    let mut others: Vec<String> = self.local_members(&members).await;
+                    others.push(server.to_string());
                     if !others_done(&fresh, &others, &target) {
                         return Ok(None);
                     }
