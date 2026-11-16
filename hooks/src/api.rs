@@ -860,7 +860,14 @@ fn closed_for_maintenance(e: &Error) -> Option<String> {
     };
     // Also inside a held sign-in's "Couldn't reach the server to sign in (...)".
     let at = text.find("Closed for maintenance")?;
-    let why = text[at..].trim_end_matches(|c| c == ')' || c == ' ').to_string();
+    let mut why = text[at..].trim_end_matches(|c| c == ')' || c == ' ');
+    // A held sign-in's count after it (", 5 times").
+    if let Some((before, after)) = why.rsplit_once(", ") {
+        if after.strip_suffix(" times").is_some_and(|n| n.chars().all(|c| c.is_ascii_digit())) {
+            why = before;
+        }
+    }
+    let why = why.to_string();
     *CLOSED.lock().unwrap_or_else(PoisonError::into_inner) = Some(why.clone());
     Some(why)
 }
@@ -972,7 +979,7 @@ mod tests {
     fn closed_for_maintenance_is_remembered() {
         let held = Error::Refused("Couldn't reach the server to sign in (Closed for maintenance (test) until 18:54 UTC. Only testers can play until then., 2 times)".into());
         let why = closed_for_maintenance(&held).expect("found inside the held message");
-        assert!(why.starts_with("Closed for maintenance (test) until 18:54 UTC"), "{why}");
+        assert_eq!(why, "Closed for maintenance (test) until 18:54 UTC. Only testers can play until then.", "without the count");
         assert_eq!(closed_now().as_deref(), Some(why.as_str()));
         assert_eq!(closed_for_maintenance(&Error::Refused("too many sign-ins".into())), None);
         let _ = CLOSED.lock().unwrap_or_else(PoisonError::into_inner).take();

@@ -241,7 +241,8 @@ systemctl stop 5th-echelon; systemctl stop 5th-echelon-standby
 echo "--- backup.sh"
 mkdir -p /tmp/s3/live /tmp/s3/archive /tmp/s3/eu1-own
 rclone --config /dev/null serve s3 /tmp/s3 --auth-key testkey,testsecret123 --addr 127.0.0.1:9000 >/tmp/s3.log 2>&1 &
-sleep 3
+# Until it answers (a fixed 3 s wasn't enough on a busy machine: curl's "couldn't connect").
+for _ in $(seq 60); do curl -s -o /dev/null http://127.0.0.1:9000/ && break; sleep 0.5; done
 cat > "$BACKUP_ENV" <<ENV
 BACKUP_R2_ENDPOINT=http://127.0.0.1:9000
 BACKUP_R2_BUCKET=live
