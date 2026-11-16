@@ -3416,7 +3416,7 @@ mod tests {
         };
         let relayed = "prudp:/address=139.99.73.120;port=40000;type=2";
         let lan = "prudp:/address=192.168.1.20;port=13000";
-        let home: std::net::IpAddr = "114.23.110.139".parse().unwrap();
+        let home: std::net::IpAddr = "203.0.113.140".parse().unwrap();
         super::note_house_urls(7001, home, vec![lan.into()]);
         let seen = |viewer: u32, ip: &str, urls: &[&str]| {
             super::with_house_urls(vec![room(urls)], viewer, ip.parse().unwrap())
@@ -3425,13 +3425,13 @@ mod tests {
                 .remove(0)
                 .station_urls
         };
-        assert_eq!(seen(7002, "114.23.110.139", &[relayed]), vec![relayed, lan], "a housemate gets the LAN address");
+        assert_eq!(seen(7002, "203.0.113.140", &[relayed]), vec![relayed, lan], "a housemate gets the LAN address");
         assert_eq!(seen(7003, "187.15.143.10", &[relayed]), vec![relayed], "a stranger doesn't");
-        assert_eq!(seen(7001, "114.23.110.139", &[relayed]), vec![relayed], "nor the player themselves");
-        assert!(seen(7002, "114.23.110.139", &[]).is_empty(), "no URLs read for them: none added");
-        assert_eq!(seen(7002, "114.23.110.139", &[relayed, lan]), vec![relayed, lan], "never twice");
+        assert_eq!(seen(7001, "203.0.113.140", &[relayed]), vec![relayed], "nor the player themselves");
+        assert!(seen(7002, "203.0.113.140", &[]).is_empty(), "no URLs read for them: none added");
+        assert_eq!(seen(7002, "203.0.113.140", &[relayed, lan]), vec![relayed, lan], "never twice");
         super::note_house_urls(7001, home, Vec::new());
-        assert_eq!(seen(7002, "114.23.110.139", &[relayed]), vec![relayed], "not relayed any more: forgotten");
+        assert_eq!(seen(7002, "203.0.113.140", &[relayed]), vec![relayed], "not relayed any more: forgotten");
     }
     use super::NotificationEvent;
     use super::Subnet;

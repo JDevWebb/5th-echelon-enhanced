@@ -1748,10 +1748,10 @@ mod tests {
     fn the_servers_answer_carries_the_helpers_address() {
         let ask = b"qq\x05ask";
         let mut answer = ask.to_vec();
-        answer.extend_from_slice(b"udp:/address=114.23.110.139;port=13000\0");
-        let out = super::echo_answer_with(&answer, "45.77.236.203:40003".parse().unwrap());
+        answer.extend_from_slice(b"udp:/address=203.0.113.140;port=13000\0");
+        let out = super::echo_answer_with(&answer, "198.51.100.203:40003".parse().unwrap());
         let mut want = ask.to_vec();
-        want.extend_from_slice(b"udp:/address=45.77.236.203;port=40003\0");
+        want.extend_from_slice(b"udp:/address=198.51.100.203;port=40003\0");
         assert_eq!(out, want);
     }
 

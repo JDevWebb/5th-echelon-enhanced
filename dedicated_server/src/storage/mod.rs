@@ -3157,7 +3157,7 @@ pub(crate) mod tests {
         let id = storage.find_user_id_by_name("Moved").unwrap().unwrap();
         let at_sign_in = vec![
             "prudp:/address=203.0.113.5;port=13000;type=2;hdrType=00000000;RVCID=7".to_string(),
-            "prudp:/address=192.168.2.154;port=13000;hdrType=00000000;RVCID=7".to_string(),
+            "prudp:/address=192.168.1.20;port=13000;hdrType=00000000;RVCID=7".to_string(),
         ];
         storage.register_urls(id, at_sign_in.clone()).unwrap();
         let relay: std::net::SocketAddrV4 = "192.0.2.1:40001".parse().unwrap();
