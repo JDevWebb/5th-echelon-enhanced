@@ -195,6 +195,13 @@ pub struct Prefs {
     /// What each network allows (0.5.2's J4, reach.rs): reached directly or through the relay.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     networks: Vec<crate::reach::Known>,
+    /// Settings › Network › Sign in through the nearest relay (0.5.5's SR): always, on any network.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    sign_in_via_relay: bool,
+    /// The networks where the game's calls to the server kept losing their answers, and when the
+    /// game found it (sign_in_route.rs): they sign in through the nearest relay for a while.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    via_relay_networks: Vec<(String, i64)>,
     /// What the Play button starts: its split button's last choice.
     #[serde(default, skip_serializing_if = "PlayMode::is_default")]
     play_mode: PlayMode,
@@ -506,6 +513,27 @@ impl Prefs {
     pub fn remember_network(k: crate::reach::Known) {
         let mut prefs = Self::load();
         crate::reach::remember(&mut prefs.networks, k);
+        prefs.save();
+    }
+
+    pub fn sign_in_via_relay() -> bool {
+        Self::load().sign_in_via_relay
+    }
+
+    pub fn set_sign_in_via_relay(on: bool) {
+        let mut prefs = Self::load();
+        prefs.sign_in_via_relay = on;
+        prefs.save();
+    }
+
+    /// The networks that sign in through a relay, and when that was found (sign_in_route.rs).
+    pub fn via_relay_networks() -> Vec<(String, i64)> {
+        Self::load().via_relay_networks
+    }
+
+    pub fn remember_via_relay(network: &str, at: i64) {
+        let mut prefs = Self::load();
+        crate::sign_in_route::remember(&mut prefs.via_relay_networks, network, at);
         prefs.save();
     }
 

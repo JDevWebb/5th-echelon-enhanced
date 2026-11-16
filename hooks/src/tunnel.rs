@@ -77,21 +77,43 @@ pub fn on() -> bool {
     MAP.read().is_ok_and(|m| !m.is_empty())
 }
 
-/// Starts the tunnel to `target` (the launcher's `networking.tunnel`).
-pub fn start(target: hooks_config::Tunnel) {
-    let Some(server) = (target.host.as_str(), 443).to_socket_addrs().ok().and_then(|mut a| {
+fn resolve_v4(host: &str) -> Option<std::net::Ipv4Addr> {
+    (host, 443).to_socket_addrs().ok().and_then(|mut a| {
         a.find_map(|a| match a {
             std::net::SocketAddr::V4(v4) => Some(*v4.ip()),
             std::net::SocketAddr::V6(_) => None,
         })
-    }) else {
+    })
+}
+
+/// Starts the tunnel to `target` (the launcher's `networking.tunnel`). Through a relay
+/// (`target.via`, 0.5.5's SR), the tunnel ends there: the game's sign-in and secure service still
+/// go to the server's addresses (the relay passes them on), and its helper is the relay's.
+pub fn start(target: hooks_config::Tunnel) {
+    let Some(server) = resolve_v4(&target.host) else {
         warn!("Tunnel: {} didn't resolve; the game's traffic goes as usual", target.host);
         return;
     };
-    let services =
-        [(tunnel::LOGIN, target.login), (tunnel::SECURE, target.secure), (tunnel::HELPER, target.helper)].map(|(service, port)| (service, SocketAddrV4::new(server, port)));
-    if start_with(&target.host, &services) {
-        info!("Tunnel: the game's UDP to {server} goes through https://{}{}", target.host, tunnel::PATH);
+    let (end, helper_ip) = match target.via.as_deref() {
+        Some(via) => match resolve_v4(via) {
+            Some(ip) => (via.to_string(), ip),
+            None => {
+                warn!("Tunnel: the relay {via} didn't resolve; the game's traffic goes as usual");
+                return;
+            }
+        },
+        None => (target.host.clone(), server),
+    };
+    let services = [
+        (tunnel::LOGIN, SocketAddrV4::new(server, target.login)),
+        (tunnel::SECURE, SocketAddrV4::new(server, target.secure)),
+        (tunnel::HELPER, SocketAddrV4::new(helper_ip, target.helper)),
+    ];
+    if start_with(&end, &services) {
+        match &target.via {
+            Some(via) => info!("Tunnel: the game signs in to {} through the relay {via} (https://{via}{})", target.host, tunnel::PATH),
+            None => info!("Tunnel: the game's UDP to {server} goes through https://{}{}", target.host, tunnel::PATH),
+        }
     }
 }
 

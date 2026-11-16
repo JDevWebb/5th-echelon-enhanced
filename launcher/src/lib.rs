@@ -25,6 +25,7 @@ pub mod server;
 pub mod server_menu;
 pub mod services;
 pub mod settings;
+pub mod sign_in_route;
 pub mod start;
 pub mod support;
 pub mod task;

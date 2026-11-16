@@ -27,6 +27,7 @@ pub fn decide(server: &str, ports: Option<&setup::server_info::Ports>, udp_ok: b
         login: ports.login,
         secure: ports.secure.unwrap_or(ports.login.wrapping_add(1)),
         helper: ports.nat?,
+        via: None,
     })
 }
 

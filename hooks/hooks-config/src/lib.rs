@@ -912,6 +912,12 @@ pub struct Networking {
     /// the launcher at each start; none is the usual.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_relayed: Option<String>,
+    /// For this start, the API is reached through this relay (0.5.5's SR): its Caddy passes the
+    /// calls on to the server. Only the connection: the server's name (`api_server`) stays what
+    /// the game signs in to and salts its hardware ids with. Written by the launcher at each
+    /// start; none is the usual.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_via: Option<String>,
 }
 
 /// What the game found about reaching this PC (0.5.2's J4), written by the add-on beside the
@@ -941,7 +947,26 @@ pub struct Tunnel {
     pub login: u16,
     pub secure: u16,
     pub helper: u16,
+    /// Through this relay instead (0.5.5's SR): the tunnel is `wss://<via>/tunnel`, the sign-in
+    /// and the secure service stay `host`'s (the relay passes them on), and the helper is the
+    /// relay's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
 }
+
+/// What the game found about its connection to the server (0.5.5's SR), written by the add-on
+/// beside the game's settings ([`VIA_RELAY_FILE`]) when its calls to the server kept failing: the
+/// launcher signs in through the nearest relay on this network from the next start.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct ViaRelayFound {
+    /// Unix seconds.
+    pub at: i64,
+    /// What happened, in a few words.
+    pub why: String,
+}
+
+/// [`ViaRelayFound`]'s file, in the game's folder.
+pub const VIA_RELAY_FILE: &str = "5th-echelon-via-relay.json";
 
 const fn default_true() -> bool {
     true
@@ -968,6 +993,7 @@ impl Default for Networking {
             ip_address_automatic: false,
             tunnel: None,
             start_relayed: None,
+            api_via: None,
         }
     }
 }

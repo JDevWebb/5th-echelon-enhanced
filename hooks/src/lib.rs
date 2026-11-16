@@ -75,6 +75,7 @@ mod quickstart;
 mod recording;
 mod roster;
 mod round_state;
+mod route_check;
 mod scheme_pool_fix;
 mod speed_check;
 mod storm_fix;

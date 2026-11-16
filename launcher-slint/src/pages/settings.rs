@@ -153,6 +153,7 @@ impl Screen for SettingsPage {
                 }
             }
             "tunnel_always" => launcher::prefs::Prefs::set_tunnel_always(on),
+            "sign_in_via_relay" => launcher::prefs::Prefs::set_sign_in_via_relay(on),
             // The system's own setting (autostart.rs), not the launcher's.
             // Turned on as it last was (or minimised); turned off, gone.
             "start_with_system" => {
@@ -585,6 +586,16 @@ impl SettingsPage {
         r.add(
             switch("tunnel_always", "Always go through HTTPS", launcher::prefs::Prefs::tunnel_always())
                 .sub("For a connection that lets some of the game's traffic through but loses most of it, which the check at start can miss."),
+        );
+        r.card("Signing in");
+        r.add(note("Where your connection to the server keeps losing its answers, the game signs in through the relay near you instead: the game notices, and the next start goes that way on this network for a week."));
+        r.add(
+            switch(
+                "sign_in_via_relay",
+                "Always sign in through the relay near you",
+                launcher::prefs::Prefs::sign_in_via_relay(),
+            )
+            .sub("On every network. Only on a network with relays, and slower to sign in than directly when the direct way works."),
         );
     }
 

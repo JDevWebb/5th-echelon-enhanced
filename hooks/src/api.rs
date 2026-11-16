@@ -109,9 +109,20 @@ async fn create_channel() -> std::result::Result<tonic::transport::Channel, Erro
     let Some(url) = crate::config::URL.get() else {
         return Err(Error::MissingUrl);
     };
+    // Through a relay (0.5.5's SR): the connection goes there over HTTPS, and its Caddy passes the
+    // calls on to the server. The server's own name stays the API's for everything else.
+    let via = hooks_config::get().and_then(|c| c.networking.api_via.clone());
+    let connect_to = match via.as_deref().and_then(|v| url::Url::parse(&format!("https://{v}/")).ok()) {
+        Some(relay) => {
+            tracing::info!("Reaching {} through the relay {}", url.host_str().unwrap_or_default(), relay.host_str().unwrap_or_default());
+            relay
+        }
+        None => url.clone(),
+    };
+    let url = &connect_to;
     tracing::debug!("Connecting to {url}");
-    let mut endpoint = tonic::transport::Channel::from_shared(url.as_str()).unwrap(); // this should not fail (ideally) as url is a url::Url which gets converted to an Uri
-                                                                                      // HTTPS when the server has it (the launcher sets the URL from what the server reports).
+    let mut endpoint = tonic::transport::Channel::from_shared(url.as_str().to_string()).unwrap(); // this should not fail (ideally) as url is a url::Url which gets converted to an Uri
+                                                                                                  // HTTPS when the server has it (the launcher sets the URL from what the server reports).
     if url.scheme() == "https" {
         endpoint = endpoint.tls_config(tonic::transport::ClientTlsConfig::new().with_webpki_roots())?;
     } else if crate::config::api_in_clear(url) {
@@ -183,7 +194,10 @@ pub fn runtime() -> Result<&'static tokio::runtime::Runtime, Error> {
 }
 
 fn run<T>(func: impl Future<Output = Result<T, Error>>) -> Result<T, Error> {
-    runtime()?.block_on(func)
+    let result = runtime()?.block_on(func);
+    // Calls whose answers keep getting lost: the launcher goes through a relay next time (SR).
+    crate::route_check::note(&result);
+    result
 }
 
 /// Whether the server refused a call because our token is no longer good

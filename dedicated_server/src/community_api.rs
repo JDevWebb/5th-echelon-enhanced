@@ -217,6 +217,11 @@ fn info(cfg: CommunityApiConfig) -> Value {
     if rate_limit::identity_required() {
         features.push("identity-required");
     }
+    // A relay passes its players' sign-in and API on to the matchmaking server (0.5.5's SR):
+    // launchers send a player whose own route to it loses the answers this way.
+    if RELAY_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
+        features.push("relay-sign-in");
+    }
     let mut info = json!({
         "name": env!("FE_PRODUCT"),
         "version": RELEASE,

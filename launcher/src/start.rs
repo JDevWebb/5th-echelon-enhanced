@@ -49,12 +49,30 @@ pub fn start(game: &mut Game, notices: &mut Notices, mode: PlayMode, name_not_al
             // UDP blocked (or the player chose it): through the server's tunnel over HTTPS, to
             // the server's own helper (0.5.2's T). Checked at every start.
             // A relay that answered the launcher's UDP pings: UDP works, nothing to check.
-            let tunnel = if relay.is_some() && !Prefs::tunnel_always() {
+            // The game's calls to the server kept losing their answers on this network (or the
+            // player chose it): sign-in and the API through the nearest relay, which passes them
+            // on (0.5.5's SR). Only with a relay that says it can.
+            let via_relay = relay
+                .as_ref()
+                .and_then(|r| crate::sign_in_route::wanted(&game.dir).map(|why| (r, why)))
+                .filter(|(r, _)| crate::sign_in_route::relay_can(&r.host));
+            let tunnel = if let Some((r, why)) = via_relay {
+                tracing::info!("Signing in to {} through the relay {} ({why})", profile.server, r.host);
+                notices.info_long(why);
+                Some(crate::sign_in_route::tunnel(
+                    &profile.server,
+                    profile.login_port(),
+                    profile.login_port().wrapping_add(1),
+                    &r.host,
+                    r.port,
+                ))
+            } else if relay.is_some() && !Prefs::tunnel_always() {
                 None
             } else {
                 crate::tunnel::for_start(&profile.server)
             };
-            if tunnel.is_some() {
+            let via = tunnel.as_ref().and_then(|t| t.via.clone());
+            if tunnel.is_some() && via.is_none() {
                 notices.info_long(if Prefs::tunnel_always() { crate::tunnel::NOTICE_CHOSEN } else { crate::tunnel::NOTICE });
             }
             // On Automatic, a network known not to be reachable directly (J4, reach.rs): the
@@ -69,7 +87,14 @@ pub fn start(game: &mut Game, notices: &mut Notices, mode: PlayMode, name_not_al
                 c.apply_profile(&profile);
                 c.hook_config.networking.tunnel = tunnel.clone();
                 c.hook_config.networking.start_relayed = start_relayed.clone();
-                if let Some(t) = &tunnel {
+                c.hook_config.networking.api_via = via.clone();
+                if let (Some(_), Some(relay)) = (&via, &relay) {
+                    // Through the relay: its helper, as usual, and the tunnel there.
+                    c.hook_config.networking.nat_host = Some(relay.host.clone());
+                    c.hook_config.networking.nat_port = Some(relay.port).filter(|p| *p != nat_proto::DEFAULT_PORT);
+                    c.hook_config.networking.relays = relay.ranges.clone();
+                    c.hook_config.networking.relay_pings = relay.pings.clone();
+                } else if let Some(t) = &tunnel {
                     c.hook_config.networking.nat_host = None;
                     c.hook_config.networking.nat_port = Some(t.helper).filter(|p| *p != nat_proto::DEFAULT_PORT);
                 } else if let Some(relay) = &relay {
