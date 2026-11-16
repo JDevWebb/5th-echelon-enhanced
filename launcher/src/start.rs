@@ -72,6 +72,8 @@ pub fn start(game: &mut Game, notices: &mut Notices, mode: PlayMode, name_not_al
                 crate::tunnel::for_start(&profile.server)
             };
             let via = tunnel.as_ref().and_then(|t| t.via.clone());
+            // The launcher's own calls go the same way (its sign-in check, friends, chat).
+            crate::network::set_api_via(&profile.server, via.as_deref());
             if tunnel.is_some() && via.is_none() {
                 notices.info_long(if Prefs::tunnel_always() { crate::tunnel::NOTICE_CHOSEN } else { crate::tunnel::NOTICE });
             }

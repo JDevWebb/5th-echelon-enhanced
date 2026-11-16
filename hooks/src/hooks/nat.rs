@@ -419,7 +419,10 @@ pub fn status() -> Option<String> {
         );
     };
     let ping = st.rtt_ms.map(|ms| format!(" · {ms} ms to the relay")).unwrap_or_default();
-    let line = if r.relayed && crate::tunnel::on() {
+    let line = if r.relayed && crate::tunnel::on() && hooks_config::get().is_some_and(|c| c.networking.api_via.is_some()) {
+        // 0.5.5's SR: signed in through the relay, as the launcher said at start.
+        format!("Through the relay ({}), signed in through it over HTTPS", r.advertise)
+    } else if r.relayed && crate::tunnel::on() {
         // 0.5.2's T: said so (it's slower than usual), as the launcher does at start.
         // Blocked or chosen (Settings › Network): the hook can't tell, so neither is said.
         format!("Through the relay ({}), over HTTPS (slower than usual)", r.advertise)

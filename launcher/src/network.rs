@@ -138,9 +138,32 @@ pub use rpc::test_login;
 pub use rpc::ChatApi;
 pub use rpc::PlayerAction;
 
+/// The relays the launcher's own calls to a server's API go through (0.5.5's SR): by the server's
+/// host name, the relay's (sign_in_route.rs). Set when the game signs in that way.
+static API_VIA: std::sync::RwLock<Vec<(String, String)>> = std::sync::RwLock::new(Vec::new());
+
+/// The launcher's calls to `server`'s API go through `relay` from now on (or straight, none).
+pub fn set_api_via(server: &str, relay: Option<&str>) {
+    let Ok(mut via) = API_VIA.write() else { return };
+    let server = server.to_ascii_lowercase();
+    via.retain(|(s, _)| *s != server);
+    if let Some(relay) = relay {
+        via.push((server, relay.to_ascii_lowercase()));
+    }
+}
+
+/// The relay `url`'s API calls go through, if any.
+fn api_via(url: &str) -> Option<String> {
+    let host = url::Url::parse(url).ok()?.host_str()?.to_ascii_lowercase();
+    API_VIA.read().ok()?.iter().find(|(s, _)| *s == host).map(|(_, r)| r.clone())
+}
+
 /// A gRPC endpoint for `url`: HTTPS (with the usual root certificates) when
-/// the URL says so.
+/// the URL says so. Through the server's relay when its sign-in goes that way (SR): over HTTPS,
+/// its Caddy passing the calls on.
 pub fn endpoint(url: &str) -> Result<tonic::transport::Endpoint, Error> {
+    let via = api_via(url).map(|relay| format!("https://{relay}/"));
+    let url = via.as_deref().unwrap_or(url);
     let endpoint = tonic::transport::Endpoint::from_shared(url.to_string()).map_err(|_| Error::ConnectionFailed)?;
     if url.starts_with("https://") {
         return endpoint
@@ -395,9 +418,16 @@ pub async fn server_directory(coordinator: &str) -> Result<Browsed, String> {
     // the Sydney relay, not Canada). The relays it offers, all at once and kept for the start.
     let picks: Vec<_> = servers.iter().map(|s| tokio::spawn(crate::relays::pick(s.host.clone()))).collect();
     let mut pings = pings;
-    for (ping, pick) in pings.iter_mut().zip(picks) {
+    for ((ping, pick), server) in pings.iter_mut().zip(picks).zip(&servers) {
         if let Some(relay) = pick.await.ok().flatten().filter(|p| p.ms > 0) {
             *ping = Some(relay.ms);
+            // Signing in through the relay on this network (SR): the launcher's own calls too.
+            if crate::sign_in_route::kept_or_chosen() {
+                let (host, relay_host) = (server.host.clone(), relay.host.clone());
+                if tokio::task::spawn_blocking(move || crate::sign_in_route::relay_can(&relay_host)).await.unwrap_or(false) {
+                    set_api_via(&host, Some(&relay.host));
+                }
+            }
         }
     }
     Ok(Browsed {

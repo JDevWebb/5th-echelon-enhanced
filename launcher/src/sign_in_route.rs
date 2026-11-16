@@ -44,6 +44,12 @@ pub fn wanted(game_dir: &std::path::Path) -> Option<&'static str> {
     found(&crate::prefs::Prefs::via_relay_networks(), &network, identity::now()).then_some(NOTICE)
 }
 
+/// Whether this network signs in through the relay, from what's kept (no file read): the player
+/// chose it, or the game found it needed to here.
+pub fn kept_or_chosen() -> bool {
+    crate::prefs::Prefs::sign_in_via_relay() || crate::reach::here().is_some_and(|network| found(&crate::prefs::Prefs::via_relay_networks(), &network, identity::now()))
+}
+
 /// The add-on's finding for `network` (the PC rarely changes networks between the game closing
 /// and the launcher reading this), when it's newer than what's kept.
 fn take_game_finding(game_dir: &std::path::Path, network: &str) {
