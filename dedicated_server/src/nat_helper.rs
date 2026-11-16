@@ -1539,6 +1539,12 @@ pub fn relayed_now() -> u32 {
     })
 }
 
+/// What `name`'s game advertises and whether it's relayed, if they're registered at this helper.
+pub fn local_place(name: &str) -> Option<(SocketAddrV4, bool)> {
+    let t = TABLE.get()?.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    t.by_name.get(&identity::name_key(name)).and_then(|id| t.peers.get(id)).map(|p| (p.advertise, p.relayed))
+}
+
 /// Every game registered with this helper, for the network's matchmaking server (link.rs's
 /// reports, from a relay elsewhere).
 pub fn registrations() -> Vec<crate::link::Reg> {

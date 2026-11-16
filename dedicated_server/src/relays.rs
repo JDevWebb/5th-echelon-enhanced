@@ -196,6 +196,16 @@ pub fn on_link(data: &[u8], src: std::net::SocketAddrV4, socket: &std::net::UdpS
         crate::link::Body::Relay { .. } => {}
         // Another member's reach check for its player (J1), sent from here: rate-limited, so a
         // member can't use it to send traffic anywhere at will.
+        // Only from the matchmaking server: a direct player at another member, put together with
+        // one of ours: their address is at that member (forward_link), not "nobody's".
+        crate::link::Body::Locate { name: _, at, relay } if link.matchmaking => {
+            let others: Vec<Ipv4Addr> = links().iter().map(|l| l.ip).collect();
+            let known = links().iter().any(|l| l.id == relay);
+            if known && OWN_ID.get().is_some_and(|own| *own != relay) && !others.contains(at.ip()) {
+                learn(at, &relay);
+            }
+        }
+        crate::link::Body::Locate { .. } => {}
         crate::link::Body::Reach { to, nonce } => {
             if reach_allowed(to) {
                 crate::nat_helper::send_reach_for_another(socket, to, nonce);
@@ -251,6 +261,35 @@ pub fn introduce_remote(a: &str, b: &str) {
         return;
     }
     let (Some(socket), Some(own)) = (MM_SOCKET.get(), OWN_ID.get()) else { return };
+    // Where a direct one of them is, for the other's member (Body::Locate).
+    let place = |name: &str| -> Option<Place> {
+        let remote = REMOTE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(r) = remote.get(&identity::name_key(name)).filter(|r| r.at.elapsed() < REMOTE_FRESH) {
+            return Some(Place {
+                relay: r.relay.clone(),
+                advertise: r.advertise,
+                relayed: r.relayed,
+            });
+        }
+        drop(remote);
+        crate::nat_helper::local_place(name).map(|(advertise, relayed)| Place {
+            relay: own.clone(),
+            advertise,
+            relayed,
+        })
+    };
+    for locate in locates((a, place(a)), (b, place(b))) {
+        if locate.tell == *own {
+            learn(locate.at, &locate.relay);
+        } else if let Some(link) = links().iter().find(|l| l.id == locate.tell) {
+            let body = crate::link::Body::Locate {
+                name: locate.name,
+                at: locate.at,
+                relay: locate.relay,
+            };
+            let _ = socket.send_to(&crate::link::seal(&link.key, own, identity::now(), &body), std::net::SocketAddrV4::new(link.ip, link.port));
+        }
+    }
     let mut relays: Vec<String> = [a, b].iter().filter_map(|name| remote_relay_of(name).map(|(relay, ..)| relay)).collect();
     relays.dedup();
     if relays.is_empty() {
@@ -261,6 +300,43 @@ pub fn introduce_remote(a: &str, b: &str) {
         let message = crate::link::seal(&link.key, own, identity::now(), &body);
         let _ = socket.send_to(&message, std::net::SocketAddrV4::new(link.ip, link.port));
     }
+}
+
+/// Where a player is registered: at which member, what their game advertises, whether relayed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Place {
+    relay: String,
+    advertise: std::net::SocketAddrV4,
+    relayed: bool,
+}
+
+/// A [`crate::link::Body::Locate`] to send: tell member `tell` that `name` is at `at`, at member
+/// `relay`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Locate {
+    tell: String,
+    name: String,
+    at: std::net::SocketAddrV4,
+    relay: String,
+}
+
+/// For two players put together: each direct one's address, for the other's member when that's
+/// another member. A relayed player's address is on their relay's range, which every member
+/// forwards to already; two at one member need nothing.
+fn locates(a: (&str, Option<Place>), b: (&str, Option<Place>)) -> Vec<Locate> {
+    let mut out = Vec::new();
+    for ((name, place), (_, other)) in [(&a, &b), (&b, &a)] {
+        let (Some(p), Some(o)) = (place, other) else { continue };
+        if !p.relayed && p.relay != o.relay {
+            out.push(Locate {
+                tell: o.relay.clone(),
+                name: (*name).to_string(),
+                at: p.advertise,
+                relay: p.relay.clone(),
+            });
+        }
+    }
+    out
 }
 
 /// On the network's matchmaking server: `name` is to be relayed from now on (J2); the relay
@@ -779,6 +855,37 @@ mod tests {
         assert_eq!(LEARNED.lock().unwrap().get(&from).map(|(l, _)| l.clone()).as_deref(), Some("syd"));
         learn(from, "syd");
         assert_eq!(LEARNED.lock().unwrap().get(&from).map(|(l, _)| l.clone()).as_deref(), Some("syd"), "its own again");
+    }
+
+    #[test]
+    fn a_direct_player_is_located_for_the_other_players_member() {
+        let place = |relay: &str, at: &str, relayed: bool| {
+            Some(Place {
+                relay: relay.into(),
+                advertise: at.parse().unwrap(),
+                relayed,
+            })
+        };
+        // Tea_bag relayed at de1 joining John_Fisher direct at us1 (ca1, 16 Nov): de1 is told
+        // where John_Fisher is; us1 needs nothing (Tea_bag's address is de1's).
+        let host = place("us1", "203.0.113.51:60063", false);
+        let joiner = place("de1", "198.51.100.33:40000", true);
+        assert_eq!(
+            locates(("Tea_bag", joiner.clone()), ("John_Fisher", host.clone())),
+            vec![Locate {
+                tell: "de1".into(),
+                name: "John_Fisher".into(),
+                at: "203.0.113.51:60063".parse().unwrap(),
+                relay: "us1".into(),
+            }]
+        );
+        // Both direct at two members: each is told of the other.
+        let direct_joiner = place("de1", "192.0.2.7:13000", false);
+        assert_eq!(locates(("a", direct_joiner), ("b", host.clone())).len(), 2);
+        // At one member, or relayed, or not registered: nothing.
+        assert!(locates(("a", place("us1", "192.0.2.7:13000", false)), ("b", host.clone())).is_empty());
+        assert!(locates(("a", joiner.clone()), ("b", place("us1", "198.51.100.9:40001", true))).is_empty());
+        assert!(locates(("a", None), ("b", host)).is_empty());
     }
 
     #[test]

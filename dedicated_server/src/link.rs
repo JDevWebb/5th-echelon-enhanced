@@ -15,6 +15,11 @@
 //!   failing, 0.5.2's J2): their relay relays them from their next probe.
 //! - [`Body::Reach`]: send a reach check to a player's mapped address for another member (J1),
 //!   at most one a second to any address from each member (relays.rs).
+//! - [`Body::Locate`]: the matchmaking server put a relay's player together with a direct player
+//!   at another member: that player's address is at that member, so the relay forwards its
+//!   player's packets for it there (0.5.4). Before, the relay dropped them as "nobody's address"
+//!   until the direct player happened to send first, and most joins into a direct host from
+//!   another relay failed (72% on ca1, 13-16 Nov 2026).
 //!
 //! `MAGIC` and the version differ from the games' protocol (nat_proto), so neither side takes
 //! the other's messages.
@@ -40,6 +45,7 @@ const OP_FORWARD: u8 = 5;
 const OP_INTRODUCE: u8 = 6;
 const OP_RELAY: u8 = 7;
 const OP_REACH: u8 = 8;
+const OP_LOCATE: u8 = 9;
 
 /// A player registered with a relay.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +105,13 @@ pub enum Body {
         to: SocketAddrV4,
         nonce: u32,
     },
+    /// From the matchmaking server: `name`, a direct player registered at member `relay`, is at
+    /// `at` (what their game advertises).
+    Locate {
+        name: String,
+        at: SocketAddrV4,
+        relay: String,
+    },
 }
 
 /// The longest event detail carried (JSON).
@@ -143,6 +156,7 @@ pub fn seal(key: &[u8; 32], from: &str, time: i64, body: &Body) -> Vec<u8> {
         Body::Introduce { .. } => OP_INTRODUCE,
         Body::Relay { .. } => OP_RELAY,
         Body::Reach { .. } => OP_REACH,
+        Body::Locate { .. } => OP_LOCATE,
     });
     out.extend_from_slice(&time.to_be_bytes());
     put_text(&mut out, from);
@@ -190,6 +204,11 @@ pub fn seal(key: &[u8; 32], from: &str, time: i64, body: &Body) -> Vec<u8> {
             put_text(&mut out, b);
         }
         Body::Relay { name } => put_text(&mut out, name),
+        Body::Locate { name, at, relay } => {
+            put_text(&mut out, name);
+            put_addr(&mut out, *at);
+            put_text(&mut out, relay);
+        }
         Body::Reach { to, nonce } => {
             put_addr(&mut out, *to);
             out.extend_from_slice(&nonce.to_be_bytes());
@@ -313,6 +332,11 @@ pub fn open(data: &[u8], key: &[u8; 32], now: i64) -> Option<(String, Body)> {
             to: r.addr()?,
             nonce: u32::from_be_bytes(r.take(4)?.try_into().ok()?),
         },
+        OP_LOCATE => Body::Locate {
+            name: r.text()?,
+            at: r.addr()?,
+            relay: r.text()?,
+        },
         _ => return None,
     };
     Some((from, body))
@@ -367,6 +391,11 @@ mod tests {
             Body::Reach {
                 to: "203.0.113.9:13000".parse().unwrap(),
                 nonce: 77,
+            },
+            Body::Locate {
+                name: "Kiwi".into(),
+                at: "203.0.113.9:60063".parse().unwrap(),
+                relay: "us1".into(),
             },
         ] {
             assert_eq!(open(&seal(&key, "mm", 5, &body), &key, 5), Some(("mm".to_string(), body)));
