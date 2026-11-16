@@ -94,6 +94,23 @@ pub unsafe fn turn_per_second() {
     // The stub lives as long as the game.
     std::mem::forget(alloc);
 
+    let stub = stub as usize;
+    // Fusion Fix's DisableNegativeMouseAcceleration finds the clamp by `0F 28 C3 D9 86`, which
+    // runs into the bytes this jump replaces: it NOPs the `movaps` (the 3 bytes before), and
+    // then ours goes in (fusion_fix_first.rs).
+    let before = site.patch - 3;
+    let at_start: [u8; 3] = crate::fusion_fix_first::bytes_at(before);
+    crate::fusion_fix_first::apply_after(
+        "mouse-turn-fix (beta)",
+        crate::fusion_fix_first::will_patch(&hooks_config::fusion_fix::MOUSE_ACCEL_KEYS),
+        move || unsafe { crate::fusion_fix_first::bytes_at::<3>(before) } != at_start,
+        move || unsafe { jump_to_stub(site, stub) },
+    );
+}
+
+/// Puts the jump to the stub at `site`.
+#[allow(clippy::cast_possible_truncation)]
+unsafe fn jump_to_stub(site: mouse_turn::Site, stub: usize) {
     let mut patch = [0x90u8; mouse_turn::ORIGINAL.len()];
     patch[0] = 0xE9;
     patch[1..5].copy_from_slice(&(stub as u32).wrapping_sub(site.patch as u32 + 5).to_le_bytes());

@@ -327,7 +327,19 @@ pub unsafe fn install(lobby: QuickStartLobby) {
 
     // 2.-4. Hooks.
     crate::bink::init();
-    crate::hooks::hook!(SceneStartTickHook, Some(e.scenestart_tick), scene_start_tick);
+    // Fusion Fix's SkipIntro and SkipPressAnyKeyScreen find the title scene's tick by its first
+    // bytes and hook it at +0x16: the detour on its start waits for that (fusion_fix_first.rs).
+    let fusion_fix_hooks = e.scenestart_tick + 0x16;
+    let at_start: [u8; 1] = crate::fusion_fix_first::bytes_at(fusion_fix_hooks);
+    let tick = e.scenestart_tick;
+    crate::fusion_fix_first::apply_after(
+        "quickstart",
+        crate::fusion_fix_first::will_patch(&hooks_config::fusion_fix::SKIP_TITLE_KEYS),
+        move || unsafe { crate::fusion_fix_first::bytes_at::<1>(fusion_fix_hooks) } != at_start,
+        move || unsafe {
+            crate::hooks::hook!(SceneStartTickHook, Some(tick), scene_start_tick);
+        },
+    );
     if let Some(at) = e.smi_step {
         crate::hooks::hook!(SmiStepHook, Some(at), smi_step);
     }

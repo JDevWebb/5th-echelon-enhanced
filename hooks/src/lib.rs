@@ -51,6 +51,7 @@ mod fair_play_beat;
 mod file_check;
 mod fix_stats;
 mod follow_unblock;
+mod fusion_fix_first;
 mod game_state;
 mod gear_list_fix;
 mod hooks;
