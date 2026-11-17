@@ -147,7 +147,13 @@ pub fn notice(input: &Input) -> Option<Notice> {
     let (now, clock) = (input.now, input.clock);
     let (window, phase) = showing(&mine.maintenance, now, clock, ping.is_some())?;
     if window.closed && phase == Phase::During {
-        return Some(closed_notice(mine, window, now, clock, crate::network::sign_in_gate::kept_out()));
+        let kept_out = crate::network::sign_in_gate::kept_out();
+        // Not refused yet: an account check from before the window is checked again, so a
+        // non-tester's Play is blocked within a refresh of the window starting (M2).
+        if kept_out.is_none() {
+            crate::flow::recheck_account_after(window.start, now);
+        }
+        return Some(closed_notice(mine, window, now, clock, kept_out));
     }
     if window.update && phase != Phase::Overrun {
         return Some(update_notice(input, mine, ping, window, phase));

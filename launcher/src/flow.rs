@@ -133,6 +133,17 @@ pub fn forget_account_check() {
     *LAST_ACCOUNT_CHECK.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 }
 
+/// A closed maintenance window started at `start` (Unix seconds; `now` is now): an account check
+/// made before it is dropped, so the next refresh signs in and, refused for the window, blocks
+/// Play at once (0.5.5's M2), not up to [`ACCOUNT_CHECK_HOLDS`] later. A check made since stays.
+pub fn recheck_account_after(start: i64, now: i64) {
+    let mut last = LAST_ACCOUNT_CHECK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let made = last.as_ref().map(|(_, at, _)| now - i64::try_from(at.elapsed().as_secs()).unwrap_or(i64::MAX));
+    if made.is_some_and(|made| made < start) {
+        *last = None;
+    }
+}
+
 /// `check`'s answer for this server, name and password, reusing one from the
 /// last [`ACCOUNT_CHECK_HOLDS`]. A changed server, name or password checks
 /// again at once; so does a check that couldn't reach the server.
@@ -1191,6 +1202,20 @@ fn sentence(text: String) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// M2: a check made before a closed window started is dropped; one made since is kept.
+    #[test]
+    fn an_account_check_from_before_a_closed_window_is_dropped() {
+        let set = || {
+            *super::LAST_ACCOUNT_CHECK.lock().unwrap() = Some(("k".into(), std::time::Instant::now(), super::AccountFact::Ok("me".into())));
+        };
+        let now = 1_000_000;
+        set();
+        super::recheck_account_after(now - 60, now);
+        assert!(super::LAST_ACCOUNT_CHECK.lock().unwrap().is_some(), "made after the window started: kept");
+        super::recheck_account_after(now + 60, now);
+        assert!(super::LAST_ACCOUNT_CHECK.lock().unwrap().is_none(), "made before it: dropped");
+    }
+
     use super::explorer_path;
 
     /// A player still set up on an old community name that doesn't answer (eu1 after the
