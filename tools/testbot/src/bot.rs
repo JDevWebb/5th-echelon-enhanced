@@ -1099,6 +1099,15 @@ impl Bot {
             .into_inner())
     }
 
+    /// In line for a match under way or full (or out of it), as the launcher's Matches does
+    /// while it waits (`QueueRoom`).
+    pub async fn queue_room(&self, room: u32, on: bool) -> std::result::Result<server_api::friends::QueueRoomResponse, tonic::Status> {
+        Ok(FriendsClient::new(self.api.clone())
+            .queue_room(self.authed(server_api::friends::QueueRoomRequest { room, on }))
+            .await?
+            .into_inner())
+    }
+
     /// The public matches in full, as the launcher's Matches tab asks (`Lobbies`).
     pub async fn lobbies(&self) -> std::result::Result<server_api::friends::LobbiesResponse, tonic::Status> {
         Ok(FriendsClient::new(self.api.clone())

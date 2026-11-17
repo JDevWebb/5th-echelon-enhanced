@@ -681,13 +681,28 @@ impl Friends for MyFriends {
             _ => {}
         }
         if crate::match_started::refusing(room) {
+            if crate::match_queue::of(room, me, std::time::Instant::now()).1 > 0 {
+                queue_event(me, serde_json::json!({ "room": room, "host": host, "told": "refusing" }));
+            }
             return reply(JoinStatus::Started, "That match isn't taking players now - pick another, or start a new one.");
         }
         // Players waiting for it (match_queue.rs) go first: only the first in line, as many as
         // it has free seats, and anyone beyond them.
         let free = self.free_seats(room).await?;
-        if !crate::match_queue::let_in(room, me, free, std::time::Instant::now()) {
+        let now = std::time::Instant::now();
+        let (waiting, place) = crate::match_queue::of(room, me, now);
+        if !crate::match_queue::let_in(room, me, free, now) {
+            queue_event(
+                me,
+                serde_json::json!({ "room": room, "host": host, "told": "wait", "place": place, "waiting": waiting, "free": free }),
+            );
             return reply(JoinStatus::Queued, "Players are waiting for this match: join its queue.");
+        }
+        if place > 0 {
+            queue_event(
+                me,
+                serde_json::json!({ "room": room, "host": host, "told": "let_in", "place": place, "waiting": waiting, "free": free }),
+            );
         }
         let invite = self.storage.add_join_request_async(host, None, me, session_type, room).await.map_err(|e| {
             warn!(self.logger, "JoinRoom: {me} couldn't queue the join to {host}'s session {room}: {e}");
@@ -723,8 +738,12 @@ impl Friends for MyFriends {
         };
         let now = std::time::Instant::now();
         if !on {
+            let was = crate::match_queue::of(room, me, now).1;
             crate::match_queue::leave(room, me);
             let (waiting, _) = crate::match_queue::of(room, me, now);
+            if was > 0 {
+                queue_event(me, serde_json::json!({ "room": room, "left": true, "place": was, "waiting": waiting }));
+            }
             return reply(QueueStatus::Ok, 0, waiting, "");
         }
         // As JoinRoom: a public match the caller may join, and nobody learns they were blocked.
@@ -743,16 +762,26 @@ impl Friends for MyFriends {
         // seats promised to the players already waiting. A line for a match anyone can join
         // would let a player hold its seats back from everyone else.
         let (waiting, place) = crate::match_queue::of(room, me, now);
+        let mut why = None;
         if place == 0 {
             let free = self.free_seats(room).await?;
-            if !crate::match_started::refusing(room) && free > waiting {
+            let refusing = crate::match_started::refusing(room);
+            if !refusing && free > waiting {
                 return reply(QueueStatus::NotFound, 0, waiting, "That match can be joined now.");
             }
+            why = Some(serde_json::json!({ "free": free, "refusing": refusing }));
         }
         match crate::match_queue::wait(room, me, now) {
-            Ok((place, waiting)) => reply(QueueStatus::Ok, place, waiting, ""),
+            Ok((place, waiting)) => {
+                // A new place (the launcher's asks to keep it aren't noted).
+                if let Some(why) = why {
+                    queue_event(me, serde_json::json!({ "room": room, "host": host, "place": place, "waiting": waiting, "why": why }));
+                }
+                reply(QueueStatus::Ok, place, waiting, "")
+            }
             Err(crate::match_queue::Refused::Full) => {
                 let (waiting, _) = crate::match_queue::of(room, me, now);
+                queue_event(me, serde_json::json!({ "room": room, "host": host, "refused": "full", "waiting": waiting }));
                 reply(QueueStatus::Full, 0, waiting, "The queue for this match is full.")
             }
         }
@@ -3071,4 +3100,10 @@ fn within(window: &Window, user_id: u32, most: u32, secs: u64) -> bool {
     }
     entry.1 += 1;
     true
+}
+
+/// A step in a player's wait for a match (match_queue.rs), for the Sessions page: a place taken,
+/// left, refused, and what JoinRoom told one in line.
+fn queue_event(me: u32, detail: serde_json::Value) {
+    crate::session_events::note(crate::session_events::Who::Id(me), "queue", detail);
 }

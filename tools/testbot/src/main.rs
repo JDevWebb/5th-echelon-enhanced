@@ -3143,9 +3143,85 @@ async fn match_state(ctx: &mut Ctx) -> Result<()> {
     ensure!(finds(&seeker.search_sessions(&open).await?), "the host said it's joinable, but it isn't found");
     // The host's game turns the seeker away as locked: now it's left out.
     seeker.report_failed_joins(&[(game, 0x9718_2b1b)]).await?;
-    ensure!(!finds(&seeker.search_sessions(&open).await?), "a match its host's game turned a joiner away from was offered");
+    ensure!(
+        !finds(&seeker.search_sessions(&open).await?),
+        "a match its host's game turned a joiner away from was offered"
+    );
     host.disconnect().await?;
     seeker.disconnect().await
+}
+
+/// The queue for a full public match (QueueRoom, as the launcher's Matches does it, then
+/// JoinRoom): two in line take places 1 and 2; while it's full nobody is let in, in line or not;
+/// when a seat opens only the first in line gets it (the second and someone not in line are
+/// told to queue); once the first is in, the second moves up. The list shows each one's place,
+/// a match with a free seat and nobody waiting takes no queue, and leaving the line lets it go.
+async fn match_queue(ctx: &mut Ctx) -> Result<()> {
+    use server_api::friends::queue_room_response::Status as QueueStatus;
+    let map = 930_000 + ctx.run;
+    let two_seats = format!("113 => 0;103 => 1;3 => 2;4 => 0;102 => 8;101 => {map}");
+    let mut host = ctx.player("Host").await?;
+    host.register_urls(&["prudp:/address=127.0.0.1;port=3291;sid=15;type=3"]).await?;
+    let room = host.create_session(&two_seats).await?;
+    host.add_participants(room, &[host.pid], &[]).await?;
+    let mut guest = ctx.player("Guest").await?;
+    guest.register_urls(&["prudp:/address=127.0.0.1;port=3292;sid=15;type=3"]).await?;
+    guest.join_session(room).await?;
+    let mut first = ctx.player("Guest").await?;
+    first.register_urls(&["prudp:/address=127.0.0.1;port=3293;sid=15;type=3"]).await?;
+    let second = ctx.player("Guest").await?;
+    let other = ctx.player("Guest").await?;
+
+    // Full: in line, first and second.
+    let r = first.queue_room(room, true).await?;
+    ensure!(r.status() == QueueStatus::Ok && (r.place, r.waiting) == (1, 1), "the first in line: {r:?}");
+    let r = second.queue_room(room, true).await?;
+    ensure!(r.status() == QueueStatus::Ok && (r.place, r.waiting) == (2, 2), "the second in line: {r:?}");
+    let r = first.queue_room(room, true).await?;
+    ensure!((r.place, r.waiting) == (1, 2), "asking again kept no place: {r:?}");
+    for (who, p) in [("the first in line", &first), ("someone not in line", &other)] {
+        let r = p.join_room(room).await?;
+        ensure!(r.status() == JoinStatus::Queued, "{who} was let into a full match: {:?}", r.status());
+    }
+    let listed = first.lobbies().await?;
+    let seen = listed.lobbies.iter().find(|l| l.room == room).ok_or_else(|| eyre!("the full match isn't listed"))?;
+    ensure!((seen.queue_place, seen.waiting) == (1, 2), "the list says place {} of {}", seen.queue_place, seen.waiting);
+
+    // A seat opens: the first in line only.
+    guest.leave_session(room).await?;
+    for (who, p) in [("the second in line", &second), ("someone not in line", &other)] {
+        let r = p.join_room(room).await?;
+        ensure!(r.status() == JoinStatus::Queued, "{who} took the seat the first in line waits for: {:?}", r.status());
+    }
+    let r = first.join_room(room).await?;
+    ensure!(
+        r.status() == JoinStatus::Ok,
+        "the first in line wasn't let in to the open seat: {:?} {}",
+        r.status(),
+        r.detail
+    );
+    first.join_session(room).await?;
+    // In: the second moves up (the list notes who's in).
+    first.lobbies().await?;
+    let r = second.queue_room(room, true).await?;
+    ensure!(r.status() == QueueStatus::Ok && (r.place, r.waiting) == (1, 1), "the second didn't move up: {r:?}");
+    let r = second.queue_room(room, false).await?;
+    ensure!(r.status() == QueueStatus::Ok && r.waiting == 0, "leaving the line kept a place: {r:?}");
+
+    // A match with a free seat and nobody waiting: no queue, just join.
+    let mut open_host = ctx.player("Host").await?;
+    open_host.register_urls(&["prudp:/address=127.0.0.1;port=3294;sid=15;type=3"]).await?;
+    let open = open_host.create_session(&format!("113 => 0;103 => 1;3 => 8;4 => 0;102 => 8;101 => {}", map + 500)).await?;
+    open_host.add_participants(open, &[open_host.pid], &[]).await?;
+    let r = other.queue_room(open, true).await?;
+    ensure!(r.status() == QueueStatus::NotFound, "a match with free seats took a queue: {r:?}");
+    let r = other.join_room(open).await?;
+    ensure!(r.status() == JoinStatus::Ok, "a match with free seats wasn't joined: {:?} {}", r.status(), r.detail);
+
+    open_host.disconnect().await?;
+    first.disconnect().await?;
+    guest.disconnect().await?;
+    host.disconnect().await
 }
 
 /// Witness reports (F9, every player): a guest in the host's match reports seeing the host too
@@ -4449,6 +4525,7 @@ const SCENARIOS: &[&str] = &[
     "join-now-match",
     "choose-match",
     "lobbies",
+    "match-queue",
     "relay-pass",
     "nat-key",
     "match-state",
@@ -4662,6 +4739,7 @@ async fn run() -> Result<()> {
                 "join-now-match" => join_now_match(&mut ctx).await,
                 "choose-match" => choose_match(&mut ctx).await,
                 "lobbies" => lobbies(&mut ctx).await,
+                "match-queue" => match_queue(&mut ctx).await,
                 "relay-pass" => relay_pass(&mut ctx).await,
                 "nat-key" => nat_key(&mut ctx).await,
                 "match-state" => match_state(&mut ctx).await,

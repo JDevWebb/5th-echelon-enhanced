@@ -71,6 +71,7 @@ const KINDS: &[&str] = &[
     "crash",
     "crash_fixes",
     "tunnel",
+    "queue",
 ];
 
 /// How long after a relay drop a player leaving their match counts as dropping out, and
@@ -913,6 +914,33 @@ fn describe(e: &Event) -> String {
             None => "Invited someone".into(),
         },
         "invite_delivered" => format!("Got {}'s invitation", e.detail["from_name"].as_str().unwrap_or("an")),
+        "queue" => {
+            let place = e.detail["place"].as_u64().unwrap_or(0);
+            let waiting = e.detail["waiting"].as_u64().unwrap_or(0);
+            let room = &e.detail["room"];
+            if e.detail["left"] == true {
+                format!("Left the queue for match {room} (was {place} of {})", waiting + 1)
+            } else if e.detail["refused"] == "full" {
+                format!("Couldn't queue for match {room}: its queue is full ({waiting} waiting)")
+            } else {
+                match e.detail["told"].as_str() {
+                    Some("let_in") => format!("Let in from the queue for match {room} (was {place} of {waiting})"),
+                    Some("wait") => format!(
+                        "Told to wait for match {room}: {} free seat(s), {waiting} waiting, place {place}",
+                        e.detail["free"].as_u64().unwrap_or(0)
+                    ),
+                    Some("refusing") => format!("In the queue for match {room}, but its host's game is turning players away"),
+                    _ => format!(
+                        "Queued for match {room}: place {place} of {waiting}{}",
+                        if e.detail["why"]["refusing"] == true {
+                            " (its host's game is turning players away)"
+                        } else {
+                            " (full)"
+                        }
+                    ),
+                }
+            }
+        }
         "stats" => format!("Stats written: a mission or match ended{times}"),
         "room_update" => {
             let changes: Vec<String> = e.detail["changes"]

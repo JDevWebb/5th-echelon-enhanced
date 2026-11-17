@@ -64,6 +64,11 @@
 //!   games): `under_way_for` (seconds since its game first said so) and `members` then (F4).
 //! - `invite`: `to`, `room` (none: unbound, the receiver finds nothing to join).
 //! - `invite_delivered`: `from`, `room`, `requested` (a join request's, `join-request`).
+//! - `queue` (0.5.5): a player's wait for a full public match (match_queue.rs), from the
+//!   launcher's Matches: a place taken (`room`, `host`, `place`, `waiting`, `why`: `free` seats
+//!   and `refusing` then), left (`left`), refused (`refused`: `full`), or what JoinRoom told one
+//!   in line (`told`: `let_in`, `wait` with `free`, `refusing`). The asks that keep a place
+//!   aren't noted.
 //! - `stats`: the game wrote stats (it does at the end of a mission or match).
 //! - `fair_play`: `check` (`code`, `speed`; 0.5.2: `self`, the add-on's own code changed, and
 //!   `heartbeat`, its checks stopped reporting in a match), `detail`, `value`, `wine`.
