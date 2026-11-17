@@ -333,6 +333,28 @@ fn pcp_map_request(local: Ipv4Addr, nonce: [u8; 12], port: u16, external: u16, l
     req
 }
 
+/// A fresh PCP mapping nonce (RFC 6887 11.1: random, so another host can't take over or remove
+/// the mapping). The standard library's hasher keys come from the system's random source; the
+/// time and a counter make each call's differ. (It was the process id's, its 12 bytes nearly all
+/// the same: miniupnpd logged "PCP MAP 616161616161616161616161" on the 0.5.5 router rig.)
+fn pcp_nonce() -> [u8; 12] {
+    use std::hash::BuildHasher;
+    use std::hash::Hasher;
+    static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let mut out = [0u8; 12];
+    for (i, chunk) in out.chunks_mut(8).enumerate() {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u64(call);
+        h.write_usize(i);
+        h.write_u128(now);
+        h.write_u32(std::process::id());
+        chunk.copy_from_slice(&h.finish().to_le_bytes()[..chunk.len()]);
+    }
+    out
+}
+
 /// A PCP MAP answer for `nonce`: the assigned external address and port.
 fn pcp_map_answer(reply: &[u8], nonce: &[u8; 12]) -> Result<SocketAddrV4, String> {
     if reply.len() < 60 || reply[0] != 2 || reply[1] != 0x81 {
@@ -369,7 +391,7 @@ fn pcp_request(gateway: Ipv4Addr, local: Ipv4Addr, request: &[u8]) -> Result<Vec
 fn pcp(port: u16, external_port: u16, pinned: Option<Ipv4Addr>, lease: u32) -> Result<Mapping, String> {
     let gateway = default_gateway().ok_or("no default gateway")?;
     let local = pinned.or_else(|| local_ip_towards(gateway)).ok_or("no local address towards the router")?;
-    let nonce: [u8; 12] = std::array::from_fn(|i| (std::process::id().wrapping_mul(2_654_435_761).wrapping_add(i as u32) >> 8) as u8);
+    let nonce = pcp_nonce();
     let reply = pcp_request(gateway, local, &pcp_map_request(local, nonce, port, external_port, lease))?;
     let public = pcp_map_answer(&reply, &nonce)?;
     usable_external(*public.ip())?;
@@ -382,6 +404,13 @@ fn pcp(port: u16, external_port: u16, pinned: Option<Ipv4Addr>, lease: u32) -> R
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn pcp_nonces_are_random_and_differ() {
+        let (a, b) = (super::pcp_nonce(), super::pcp_nonce());
+        assert_ne!(a, b, "each mapping its own");
+        assert!(a.iter().any(|x| *x != a[0]), "not one byte twelve times: {a:?}");
+    }
     /// J4: the gateway's hardware address from Linux's ARP table.
     #[test]
     fn the_gateways_hardware_address_is_read() {
