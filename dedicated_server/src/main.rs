@@ -320,7 +320,9 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
                 error!(logger, "starting the play session of {user_id} failed: {e}");
                 false
             });
-            metrics::game_login(user_id, from.ip(), new_session);
+            // The player's own address: a tunnel's (127.0.0.1) and a relay's sign-in for its player
+            // (SR) are counted under the address they carry, as the connection limits count them.
+            metrics::game_login(user_id, tunnel::source_ip(from), new_session);
             // It should register with the NAT helper next: noticed when it doesn't.
             if let Ok(Some(name)) = storage.find_username_by_user_id(user_id) {
                 nat_helper::game_signed_in(&name, user_id);

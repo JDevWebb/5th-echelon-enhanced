@@ -91,7 +91,11 @@ pub fn relayed_client(from: Option<std::net::IpAddr>, relayed_for: Option<&str>)
     if !NETWORK_RELAYS.load(Ordering::Relaxed) {
         return from;
     }
-    let relays: Vec<std::net::IpAddr> = network().iter().map(|r| std::net::IpAddr::V4(r.ip)).collect();
+    // The relays the directory offers (public addresses only), and the members this server holds
+    // link keys for (the relays it already takes reports and questions from, by address), which
+    // a network on private addresses has only.
+    let mut relays: Vec<std::net::IpAddr> = network().iter().map(|r| std::net::IpAddr::V4(r.ip)).collect();
+    relays.extend(links().iter().filter(|l| !l.matchmaking).map(|l| std::net::IpAddr::V4(l.ip)));
     via_relay(from, relayed_for, &relays)
 }
 
