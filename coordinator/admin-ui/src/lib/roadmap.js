@@ -6,12 +6,12 @@ export const PROMOTE_LANES = [['requested', 'Requested'], ['next', 'Next'], ['la
 export const AREAS = ['Launcher', 'Overlay', 'Server', 'Admin', 'Network'];
 export const SUGGESTION_STATUSES = [['new', 'New'], ['planned', 'Planned'], ['done', 'Done'], ['declined', 'Declined']];
 /** Statuses offered when editing an item (any other text up to 24 characters works too). */
-export const STATUS_HINTS = ['In 0.5.0', 'In 0.5.1', 'In 0.5.2', 'In 0.5.3', 'In 0.5.4', 'In 0.5.5', 'Researching', 'Building', 'Mocked up', 'Planned', 'Later', 'On hold', 'When data says', 'Requested', 'Done'];
+export const STATUS_HINTS = ['In 0.5.0', 'In 0.5.1', 'In 0.5.2', 'In 0.5.3', 'In 0.5.4', 'In 0.5.5', 'In 0.5.6', 'Researching', 'Building', 'Mocked up', 'Planned', 'Later', 'On hold', 'When data says', 'Requested', 'Done'];
 /** The lanes the project's roadmap fills; Requested is the players' and admins' own. */
 export const PROJECT_LANES = ['shipping', 'next', 'later'];
 
 /** Lane releases the project's roadmap sets. */
-export const STARTING_RELEASES = { shipping: '0.5.4', next: '0.5.5' };
+export const STARTING_RELEASES = { shipping: '0.5.5', next: '0.5.6' };
 
 /** The project's roadmap as it stands for this release (STARTING_RELEASES.shipping): what an
  * empty roadmap starts from, and what "Update from the project's roadmap" brings one up to.
@@ -30,8 +30,9 @@ export const STARTING_ITEMS = [
   ['shipping', 'Start with Windows', 'The launcher can start when you sign in, minimised or in the tray, so friends and invitations reach you.', ['Launcher'], 'In 0.5.2'],
   ['shipping', 'Joins across relays, and crashes with Fusion Fix', 'Joining a host who plays directly on another relay works; a lobby nobody can get into on a quiet night goes through the relay after three players fail; the game no longer crashes at start with Fusion Fix installed; a co-op freeze after the weapons check is fixed.', ['Network', 'Overlay'], 'In 0.5.4'],
   ['shipping', 'Maintenance that says so', 'When the servers are closed for maintenance the launcher says until when, and the overlay warns before it starts.', ['Launcher', 'Server'], 'In 0.5.2'],
-  ['next', 'Signing in through a nearby relay', 'For players whose connection to the matchmaking server in Canada loses its answers: the sign-in and the launcher\'s connection go through the relay near them instead.', ['Network', 'Launcher'], 'Planned'],
-  ['next', 'Joining a match under way', 'Several players asked: whether a match can let players in after it starts, between rounds first. Being researched; a host\'s choice if it works.', ['Overlay', 'Server'], 'Researching'],
+  ['shipping', 'Signing in through a nearby relay', 'For players whose connection to the matchmaking server in Canada loses its answers, or doesn\'t answer at all: the sign-in, the game\'s online services and the launcher\'s connection go through the relay near them instead.', ['Network', 'Launcher'], 'In 0.5.5'],
+  ['shipping', 'Joining a match under way', 'Quick match, Join and the Matches tab take you into a match whose round has started; the queue is for full matches, and you join by yourself when a seat opens.', ['Launcher', 'Server'], 'In 0.5.5'],
+  ['shipping', 'Joins that keep failing, round three', 'A player whose joins keep failing into a host others get into, or whose router forwards another port than the game uses, goes through the relay, for a week on that network; the game names the player it couldn\'t reach.', ['Network', 'Overlay'], 'In 0.5.5'],
   ['next', 'Fair play: characters and names', 'Health and movement speed on a player\'s own character, names shown to others, rank and XP. Report only.', ['Overlay', 'Server'], 'Planned'],
   ['next', 'Matchmaking failover', 'Another server takes over matchmaking if the matchmaking server goes down.', ['Network'], 'Planned'],
   ['next', 'Screen shake and field of view', 'Options to turn the camera shake off and to widen the view, once their values are found in the game.', ['Launcher'], 'Planned'],

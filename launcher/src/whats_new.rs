@@ -35,6 +35,46 @@ pub struct Release {
 /// Newest first. A release with nothing a player would notice has no entry.
 pub const RELEASES: &[Release] = &[
     Release {
+        version: "0.5.5",
+        thanks: &["Major", "Mumu", "Glacio1"],
+        new: &[
+            Item {
+                title: "Join a match under way",
+                text: "Quick match, Join and the Matches tab now take you into a match whose round has started: you join mid-round, on a team. The Matches tab shows such a match as Under way.",
+                community: false,
+            },
+            Item {
+                title: "The queue waits for a seat",
+                text: "A full match offers Join when a seat opens: you're in line, the game starts if it isn't running, and you join by yourself when a seat is yours.",
+                community: false,
+            },
+            Item {
+                title: "Signing in through the relay near you",
+                text: "If your connection to the server keeps losing its answers, or the server doesn't answer from where you are, the game signs in through the relay near you instead, and tells you. Settings › Network › Always sign in through the relay near you turns it on for every network.",
+                community: true,
+            },
+            Item {
+                title: "Joins that keep failing go through the relay",
+                text: "If your joins into a host others get into keep failing, or your router forwards a different port from the one the game uses, your games move to the relay, and stay there on that network for a week.",
+                community: false,
+            },
+        ],
+        fixed: &[
+            Fix {
+                lead: "On Linux (Steam/Proton),",
+                rest: " the title screen and the SMI table no longer show green textures with purple stripes.",
+            },
+            Fix {
+                lead: "When a maintenance window closes the server,",
+                rest: " Play is blocked at once, instead of letting the game start and be refused.",
+            },
+            Fix {
+                lead: "Playing through HTTPS,",
+                rest: " your ping to the relay now shows in the overlay.",
+            },
+        ],
+    },
+    Release {
         version: "0.5.4",
         thanks: &[],
         new: &[
