@@ -174,6 +174,8 @@ All with the installer, on servers that share a coordinator:
 | **The matchmaking server** | `--matchmaking`; for its standby, `--mm-record <its own DNS-only name>` and `--mm-standby <the group: itself, then the relays>` |
 | **Each relay** | `--role relay --ticket-key <the matchmaking server's relay-pass key>` (logged at its start), and the same `--mm-record` and `--mm-standby` list |
 
+**Signing in through a relay** (0.5.5): a relay with a domain and `--mm-record` also passes on a player's sign-in, secure service, the launcher's API and the game's HTTP (online config, content, uploads) to the matchmaking server, for players whose own route to it loses the answers. The installer writes those Caddy routes and sets `[role] sign_in = true`; only then does the relay's `/api/info` say `relay-sign-in` and launchers use it. The updater installs releases but doesn't re-run the installer, so after updating relays to 0.5.5, run `install-server.sh` once on each with its usual flags.
+
 The matchmaking server signs a relay pass at each sign-in, which relays take with its key; relays forward to each other only between players the matchmaking server put together. Each relay can stand by for the matchmaking server ([failover.md](failover.md)). Moving an existing network of regional servers onto one, accounts, friends and links included, in one update window: [cutover.md](cutover.md).
 
 ## A coordinator on its own

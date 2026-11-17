@@ -94,6 +94,9 @@ A member server drops out of the server directory, and players' launchers stop o
 | Roll this out | Roll out an earlier signed release, with a canary, and pin it |
 | Check GitHub now | Look for a new release now (and says why one isn't rolled out on its own) |
 
+
+**Releases that need the installer once more.** The updater installs a release's programs but doesn't re-run `install-server.sh`, so a release that changes a machine's settings says so in its notes. 0.5.2 (the HTTPS tunnel's route, the reboots) and 0.5.5 (each relay's routes for signing in through it, `[role] sign_in`) are such releases: after the rollout, run the installer once on each machine it names, with its usual flags.
+
 ## Maintenance windows
 
 Admins book a time a server will be down, or the whole network, in the admin UI's **Releases** page: what it's for (an update, or other maintenance), the servers, the start in the admin's own time (with UTC beside it), how long, and a note for players ("Moving to a faster machine"; an update window without one says "Server update"). A booking is a notice for players: the rollout installs releases in update windows (above), and any other work is the admin's to do.
