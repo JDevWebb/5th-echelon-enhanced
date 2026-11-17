@@ -621,6 +621,8 @@ fn plausible(link: &Link, reg: &crate::link::Reg) -> bool {
 fn remote_report(link: &Link, regs: Vec<crate::link::Reg>) {
     let now = std::time::Instant::now();
     let mut moved = Vec::new();
+    // Who it reports, for moves that last (JC2).
+    let mut reported: Vec<(String, std::net::Ipv4Addr, bool)> = Vec::new();
     let mut remote = REMOTE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if remote.len() >= MAX_REMOTE {
         remote.retain(|_, r| now.duration_since(r.at) < REMOTE_FRESH);
@@ -642,6 +644,7 @@ fn remote_report(link: &Link, regs: Vec<crate::link::Reg>) {
         {
             moved.push((reg.name.clone(), reg.advertise, std::net::IpAddr::V4(*reg.real.ip())));
         }
+        reported.push((reg.name.clone(), *reg.real.ip(), reg.relayed));
         remote.insert(
             key,
             Remote {
@@ -655,6 +658,10 @@ fn remote_report(link: &Link, regs: Vec<crate::link::Reg>) {
         );
     }
     drop(remote);
+    // Direct there, though moved to the relay lately on that network (JC2): their relay is told.
+    for name in crate::relay_moves::remote_direct(reported.iter().map(|(name, ip, relayed)| (name.as_str(), *ip, *relayed))) {
+        relay_remote(&name);
+    }
     if !moved.is_empty() {
         let _ = std::thread::Builder::new().name("relay-readdress".into()).spawn(move || {
             for (name, advertise, real) in moved {
@@ -662,6 +669,15 @@ fn remote_report(link: &Link, regs: Vec<crate::link::Reg>) {
             }
         });
     }
+}
+
+/// The player (name key) another relay reported lately as advertising `address` (JC4).
+pub fn remote_advertising(address: std::net::SocketAddrV4) -> Option<String> {
+    let remote = REMOTE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    remote
+        .iter()
+        .find(|(_, r)| r.advertise == address && r.at.elapsed() < REMOTE_FRESH)
+        .map(|(key, _)| key.clone())
 }
 
 /// The address a relay elsewhere checked for `name` (its public one, or the relay's), when a

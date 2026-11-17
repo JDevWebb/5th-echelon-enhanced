@@ -112,6 +112,7 @@ mod rate_limit;
 mod reboot;
 mod recent_log;
 mod recordings;
+mod relay_moves;
 mod relay_pass;
 mod relays;
 mod reports;
@@ -128,6 +129,7 @@ mod tracking;
 mod tracking_ext;
 mod tunnel;
 mod ubi_acc_mgmt;
+mod unreachable;
 mod uplay_win;
 mod uploads;
 mod user_storage;
@@ -140,6 +142,7 @@ use crate::config::DebugConfig;
 fn end_play(logger: &slog::Logger, storage: &Storage, user_id: u32) {
     if let Ok(Some(name)) = storage.find_username_by_user_id(user_id) {
         nat_helper::game_signed_out(&name);
+        relay_moves::signed_out(&name);
     }
     join_fallback::joins().signed_out(user_id);
     fair_play_beats::beats().signed_out(user_id);
@@ -321,6 +324,7 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
             // It should register with the NAT helper next: noticed when it doesn't.
             if let Ok(Some(name)) = storage.find_username_by_user_id(user_id) {
                 nat_helper::game_signed_in(&name, user_id);
+                relay_moves::signed_in(&storage, &logger, user_id, &name);
             }
             players::changed(user_id);
             federation::stats_soon(user_id);

@@ -19,6 +19,7 @@ mod global_stats;
 mod merge;
 mod players;
 mod relationships;
+mod relay_moves;
 mod session_events;
 mod stats;
 

@@ -2838,7 +2838,7 @@ pub(crate) fn note_failed_join(storage: &Storage, logger: &Logger, user_id: u32,
             storage.room_of_failed_join(room).ok().flatten().map(|(creator, _, _)| creator)
         });
         for user in moves {
-            move_to_relay(storage, logger, user);
+            move_to_relay(storage, logger, user, "failed_joins");
         }
     }
     warn!(
@@ -2861,17 +2861,25 @@ pub(crate) fn note_failed_join(storage: &Storage, logger: &Logger, user_id: u32,
 
 /// Moves `user` to the relay (J2), if they're a direct player: their relay relays them from
 /// their next probe (here, or told over the link), and their overlay says why.
-fn move_to_relay(storage: &Storage, logger: &Logger, user: u32) {
+pub(crate) fn move_to_relay(storage: &Storage, logger: &Logger, user: u32, why: &'static str) {
     let Ok(Some(name)) = storage.find_username_by_user_id(user) else { return };
     if crate::nat_helper::registration(&name) != Some(Some(false)) {
         return;
     }
-    crate::nat_helper::force_relay(&name, "failed_joins");
+    crate::nat_helper::force_relay(&name, why);
     let remote = crate::relays::relay_remote(&name);
+    // On this network for a week, not only this session (JC2).
+    let lasting = crate::nat_helper::real_of(&name).map(|real| crate::relay_moves::moved(storage, logger, user, &name, *real.ip(), why));
     info!(
         logger,
-        "{name}'s joins kept failing as a direct player: relayed from now on{}",
-        if remote { " (their relay told)" } else { "" }
+        "{name} relayed from now on ({}){}{}",
+        if why == "unreachable_peer" {
+            "other players' games couldn't reach them"
+        } else {
+            "their joins kept failing as a direct player"
+        },
+        if remote { ", their relay told" } else { "" },
+        if lasting.is_some() { ", for a week on this network" } else { "" }
     );
     crate::reports::tell(user, crate::join_fallback::MOVED_TITLE.into(), crate::join_fallback::MOVED_TEXT.into(), None);
 }
