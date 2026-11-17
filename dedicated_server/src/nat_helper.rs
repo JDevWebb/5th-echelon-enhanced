@@ -289,7 +289,8 @@ fn same(a: &[u8], b: &[u8]) -> bool {
 struct Peer {
     name: String,
     /// Why it's relayed or direct (J5): `asked`, `symmetric`, `no_mapping`, `double_nat`,
-    /// `failed_joins`, or `direct` (a public mapping), for the `nat` event and support.
+    /// `failed_joins`, `unreachable_mapping`, `split_ports` (JC3), `unreachable_peer` (JC4), or
+    /// `direct` (a public mapping), for the `nat` event and support.
     why: &'static str,
     /// The Storm socket's public address, as this helper sees it.
     real: SocketAddrV4,
@@ -651,17 +652,26 @@ impl Table {
         // address than the one this probe came from would have this player advertised (and
         // relayed packets routed) at someone else's address.
         let mapping = mapping.filter(|m| m.ip() == src.ip());
+        // JC3: a router forwarding another port than the one the game's packets leave from
+        // (Gexiii's, ca1 Nov 2026: a new UPnP port each session, packets from 13000). Advertised
+        // at that port, the game's own packets come from an address its peers don't know (as
+        // hosts, such players lost 62% of joins against 42%). So the address it sends from is
+        // the one checked (J1) and advertised; relayed when that doesn't let others in. Only
+        // with the relay on: without it there's no check, and no fallback when it fails.
+        let split = self.cfg.relay == RelayMode::Auto && mapping.is_some_and(|m| !nat_proto::is_private(*m.ip()) && m.port() != src.port());
+        let checked = |m: SocketAddrV4| if split { src } else { m };
         let key = if name.is_empty() { format!("@{src}") } else { identity::name_key(name) };
         // Moved to the relay by the matchmaking server (their joins kept failing, J2), or here: a
         // mapping whose reach check didn't come back (J1).
-        let forced = forced().get(&key).copied().or_else(|| {
+        // Or lately, on this network, for a week (JC2).
+        let forced = forced().get(&key).copied().or_else(|| crate::relay_moves::lasting(&key, *src.ip())).or_else(|| {
             let o = self.by_name.get(&key).and_then(|id| self.peers.get(id))?;
             let failed = !o.relayed
                 && o.reach_ok.is_none()
                 && o.reach_to.is_some()
-                && o.reach_to == mapping
+                && o.reach_to == mapping.map(checked)
                 && o.reach.is_some_and(|(_, sent)| now.saturating_duration_since(sent) > REACH_WAIT);
-            failed.then_some("unreachable_mapping")
+            failed.then_some(if split { "split_ports" } else { "unreachable_mapping" })
         });
         let known = self.by_name.get(&key).and_then(|id| self.peers.get(id));
         if (known.is_some_and(|o| o.relayed) || forced.is_some() || self.wants_relay(src, flags, mapping))
@@ -717,7 +727,7 @@ impl Table {
         let advertise = match (vport, mapping, &old) {
             (Some(v), _, _) => SocketAddrV4::new(self.relay_ip, v),
             (None, _, Some((_, o))) if !o.relayed && o.real == src => o.advertise,
-            (None, Some(m), _) if !nat_proto::is_private(*m.ip()) => m,
+            (None, Some(m), _) if !nat_proto::is_private(*m.ip()) => checked(m),
             _ => src,
         };
         let advertise = if vport.is_none() && taken(self, &advertise) { src } else { advertise };
@@ -766,7 +776,7 @@ impl Table {
         // A direct player with a mapping: check from another address that it lets others in
         // (J1); a new mapping is checked again, a proven one every RECHECK.
         if !relayed && self.cfg.relay == RelayMode::Auto {
-            if let Some(m) = mapping.filter(|m| !nat_proto::is_private(*m.ip())) {
+            if let Some(m) = mapping.filter(|m| !nat_proto::is_private(*m.ip())).map(checked) {
                 let carried = old.as_ref().filter(|(_, o)| o.reach_to == Some(m)).map(|(_, o)| (o.reach, o.reach_ok));
                 let (reach, ok) = carried.unwrap_or((None, None));
                 let proven = ok.is_some_and(|at| now.saturating_duration_since(at) < REACH_RECHECK);
@@ -1530,6 +1540,26 @@ pub fn registration(name: &str) -> Option<Option<bool>> {
         // 2026-11-06: told "the host's game didn't let you in" 0.5 s before the warning).
         None => (missed().contains(&key) || awaiting().get(&key).is_some_and(|at| at.elapsed() >= UNREGISTERED_AFTER)).then_some(None),
     }
+}
+
+/// Who advertises `address` (their game's public or relay address), here or at another relay of
+/// the network: their account id, if their game is signed in here (JC4).
+pub fn who_advertises(address: SocketAddrV4) -> Option<u32> {
+    let local = TABLE.get().and_then(|table| {
+        let t = table.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        t.by_advertise.get(&address).and_then(|id| t.peers.get(id)).map(|p| p.name.clone())
+    });
+    let key = local.or_else(|| crate::relays::remote_advertising(address))?;
+    ids().get(&key).copied()
+}
+
+/// Where `name`'s Storm socket is, as this helper or another relay of the network sees it.
+pub fn real_of(name: &str) -> Option<SocketAddrV4> {
+    let local = TABLE.get().and_then(|table| {
+        let t = table.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        t.by_name.get(&identity::name_key(name)).and_then(|id| t.peers.get(id)).map(|p| p.real)
+    });
+    local.or_else(|| crate::relays::remote_entry(name).map(|(_, real, ..)| real))
 }
 
 /// How many players this helper relays now (a relay updates when it relays nobody).
@@ -2804,6 +2834,38 @@ mod tests {
         assert!(!t.reach_pending_at(bad, later));
         assert!(t.advertised_for_echo(bad, later).is_some_and(|a| a != bad), "relayed: the echo says the relay's address");
         assert!(t.take_reach_out().is_empty(), "no new check while one is out or proven");
+    }
+
+    /// JC3: a router forwarding another port than the one the game's packets leave from: the
+    /// address it sends from is checked and advertised, and it's relayed when that doesn't let
+    /// others in.
+    #[test]
+    fn a_mapping_on_another_port_is_checked_where_the_game_sends_from() {
+        let now = Instant::now();
+        let mut t = table(RelayMode::Auto);
+        let (open, closed) = (a("198.51.100.40:13000"), a("198.51.100.41:13000"));
+        let (open_map, closed_map) = (a("198.51.100.40:35633"), a("198.51.100.41:38255"));
+        let first = t.probe(open, probe_flags::HAS_MAPPING, 1, Some(open_map), "Open", now);
+        assert_eq!(advertise(&first), (open, false), "where its packets come from, not the forward");
+        t.probe(closed, probe_flags::HAS_MAPPING, 1, Some(closed_map), "Closed", now);
+        let checks = t.take_reach_out();
+        let mut to: Vec<_> = checks.iter().map(|(to, _)| *to).collect();
+        to.dedup();
+        assert_eq!(to, vec![open, closed], "checked where it sends from");
+        t.note_reach("Open", Some(checks[0].1), now + Duration::from_secs(1));
+        let later = now + REACH_WAIT + Duration::from_secs(1);
+        assert_eq!(
+            advertise(&t.probe(open, probe_flags::HAS_MAPPING, 2, Some(open_map), "Open", later)),
+            (open, false),
+            "proven: direct"
+        );
+        assert!(
+            advertise(&t.probe(closed, probe_flags::HAS_MAPPING, 2, Some(closed_map), "Closed", later)).1,
+            "nothing came back: relayed"
+        );
+        let why = |t: &Table, name: &str| t.by_name.get(&identity::name_key(name)).and_then(|id| t.peers.get(id)).map(|p| p.why);
+        assert_eq!(why(&t, "Closed"), Some("split_ports"));
+        assert_eq!(why(&t, "Open"), Some("direct"));
     }
 
     #[test]
