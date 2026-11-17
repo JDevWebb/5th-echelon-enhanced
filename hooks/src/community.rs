@@ -1051,6 +1051,9 @@ fn http_get_json<T: for<'de> Deserialize<'de>>(api: &HttpApi, path: &str) -> Opt
             serde_json::from_slice(&body).map_err(|e| warn!("{path}: {e}")).ok()
         }
         Err(e) => {
+            // No answer from the server: one of the calls that sends the next start through the
+            // relay (0.5.5's SR).
+            crate::route_check::note_http(&e);
             if FAILURES.fetch_add(1, Ordering::Relaxed) + 1 == FAILURES_TOLD {
                 warn!("{path}: {e} ({FAILURES_TOLD} times in a row)");
             }
@@ -1094,7 +1097,14 @@ fn tls_config() -> std::io::Result<std::sync::Arc<rustls::ClientConfig>> {
 }
 
 fn http_get(api: &HttpApi, path: &str) -> std::io::Result<Vec<u8>> {
-    let host = api.host.as_str();
+    // Signed in through a relay (0.5.5's SR): the relay's name, its /mm/ passing the request on
+    // to the matchmaking server.
+    let via = hooks_config::get().and_then(|c| c.networking.api_via.clone());
+    let (host, path) = match &via {
+        Some(relay) => (relay.as_str(), format!("/mm{path}")),
+        None => (api.host.as_str(), path.to_string()),
+    };
+    let path = path.as_str();
     let addr = (host, api.tls_port.unwrap_or(80))
         .to_socket_addrs()?
         .next()

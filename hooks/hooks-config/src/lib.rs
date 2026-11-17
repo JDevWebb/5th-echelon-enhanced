@@ -963,6 +963,10 @@ pub struct ViaRelayFound {
     pub at: i64,
     /// What happened, in a few words.
     pub why: String,
+    /// Which of the game's calls lost their answers, each with how many: "api" (the API, gRPC),
+    /// "http" (the server's HTTP: its /api/info, news). Empty from add-ons before it was kept.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed: Vec<String>,
 }
 
 /// [`ViaRelayFound`]'s file, in the game's folder.

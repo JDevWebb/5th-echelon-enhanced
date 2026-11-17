@@ -81,7 +81,8 @@ caddyfile=$(mktemp)
 eval "$(sed -n '/^site_routes() {/,/^}/p' "$here/scripts/install-server.sh")"
 {
   printf '{\n\tservers :80 {\n\t\tprotocols h1 h2c\n\t}\n}\n:80 {\n'
-  site_routes mm.example.test | sed -e "s|reverse_proxy https://mm.example.test|reverse_proxy h2c://$mm:50051|" -e '/header_up Host mm.example.test/d'
+  site_routes mm.example.test | sed -e "/handle @grpc {/,/^\t}/ s|reverse_proxy https://mm.example.test|reverse_proxy h2c://$mm:50051|" \
+    -e "s|reverse_proxy https://mm.example.test|reverse_proxy http://$mm:80|" -e '/header_up Host mm.example.test/d'
   printf '}\n'
 } >"$caddyfile"
 grep -q 'header_up X-5E-Relayed-For {remote_host}' "$caddyfile" || { echo "FAIL the installer's relay routes don't pass the player's address on"; exit 1; }
@@ -114,6 +115,10 @@ echo "--- a guest relayed at one relay joining a host who's direct at another (0
 client "$bin/testbot" --server "$mm" --other "$syd" --third "$eu" cross-relay-direct-host || rc=1
 echo "--- signing in through a relay (0.5.5): the API through its Caddy, the game's sign-in through its tunnel"
 client "$bin/testbot" --server "$mm" --other "$sr" relay-sign-in || rc=1
+echo "--- the add-on's HTTP through the relay (SR): /mm/ on the relay is the matchmaking server's"
+mmid=$(client curl -sf "http://$sr/mm/api/info" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null || true)
+own=$(client curl -sf "http://$mm/api/info" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null || true)
+[ -n "$mmid" ] && [ "$mmid" = "$own" ] && echo "PASS the relay's /mm/api/info is the matchmaking server's ($mmid)" || { echo "FAIL /mm/api/info through the relay: '$mmid', the matchmaking server's: '$own'"; rc=1; }
 echo "--- a game without a session key (0.4.7), relayed by the matchmaking server's own helper"
 client "$bin/testbot" --server "$mm" nat-relay || rc=1
 echo "--- a keyed game (0.5.0) at the matchmaking server's own helper, with its relay pass"

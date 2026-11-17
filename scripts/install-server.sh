@@ -3201,6 +3201,14 @@ SITE
 			flush_interval -1
 		}
 	}
+	# The add-on's own HTTP calls to the matchmaking server (its /api/info, news), by this
+	# relay's name: /mm/PATH is the matchmaking server's PATH.
+	handle_path /mm/* {
+		reverse_proxy https://$1 {
+			header_up Host $1
+			header_up X-5E-Relayed-For {remote_host}
+		}
+	}
 SITE
   else
     cat <<'SITE'
@@ -3260,6 +3268,26 @@ site_block() {
     echo "$http_sites {"
     site_routes "$upstream"
     echo "}"
+    # The game's own HTTP for a player signing in through this relay (SR): its online config,
+    # content and uploads, by the matchmaking server's name, which the add-on has the game find
+    # here. Plain HTTP only (the game's), so no certificate for that name is needed. Not where
+    # this relay serves that name as its own (a failover group's standby): it would pass the
+    # requests on to itself once it took the name over.
+    if [ -n "$upstream" ] && [[ " ${names[*]} " != *" $upstream "* ]]; then
+      echo
+      echo "# The matchmaking server's name, for the game of a player signing in through this relay."
+      echo "http://$upstream {"
+      cat <<SITE
+	request_body {
+		max_size 8MB
+	}
+	reverse_proxy https://$upstream {
+		header_up Host $upstream
+		header_up X-5E-Relayed-For {remote_host}
+	}
+SITE
+      echo "}"
+    fi
     if [ "$https_api" -eq 1 ]; then
       echo
       echo "# The same over HTTPS (Caddy gets the certificate): launchers that"

@@ -467,6 +467,15 @@ fn gethostbyname(name: *const c_char) -> *mut HOSTENT {
     }
     let given_host = unsafe { CStr::from_ptr(name) };
     info!("called with {:?}", given_host);
+    // Signed in through a relay (0.5.5's SR): the server's name is found at the relay, so the
+    // game's own HTTP (its online config, content and uploads) goes there, and the relay's Caddy
+    // passes it on to the matchmaking server by that name.
+    if let Some(relay) = config::get().and_then(|c| relay_for_name(c, given_host)) {
+        if let Ok(relay) = std::ffi::CString::new(relay) {
+            info!("{given_host:?} is reached through the relay {relay:?}");
+            return unsafe { GethostbynameHook.call(relay.as_ptr()) };
+        }
+    }
     let ent = unsafe { GethostbynameHook.call(name) };
 
     let mut hostname = vec![0u8; 1024];
@@ -520,6 +529,13 @@ fn gethostbyname(name: *const c_char) -> *mut HOSTENT {
         }
     }
     ent
+}
+
+/// The relay `name` is reached through, when the game signs in to that server through one (SR).
+fn relay_for_name(cfg: &config::Config, name: &CStr) -> Option<String> {
+    let tunnel = cfg.networking.tunnel.as_ref()?;
+    let via = tunnel.via.as_ref()?;
+    name.to_str().ok().filter(|n| n.eq_ignore_ascii_case(&tunnel.host)).map(|_| via.clone())
 }
 
 fn generate_id(this: *mut NetFiniteStateID, name_ptr: *const i8, insensitive: bool, b: *mut c_void) {
