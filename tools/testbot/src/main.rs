@@ -3121,8 +3121,9 @@ async fn nat_key(ctx: &mut Ctx) -> Result<()> {
 /// each seeing the other at its advertised address; strangers, and packets
 /// without the right tag, get nowhere.
 /// The host's game says its match is under way (0.5.0 plan M2, from the game's own round
-/// state): searches leave the match out, and find it again once the host says it's joinable;
-/// another player saying so of a match they don't host changes nothing.
+/// state): searches still offer it, for the game takes joiners mid-round (0.5.5's JIP), and
+/// another player saying so of a match they don't host changes nothing. Only the host's game
+/// turning a joiner away (a locked refusal of the room the search offered) leaves it out.
 async fn match_state(ctx: &mut Ctx) -> Result<()> {
     let map = 920_000 + ctx.run;
     let open = format!("113 => 0;103 => 1;3 => 8;4 => 0;102 => 8;101 => {map}");
@@ -3137,9 +3138,12 @@ async fn match_state(ctx: &mut Ctx) -> Result<()> {
     seeker.match_state(true, "RoundState_Started").await?;
     ensure!(finds(&seeker.search_sessions(&open).await?), "someone else's word hid the host's match");
     host.match_state(true, "RoundState_Started").await?;
-    ensure!(!finds(&seeker.search_sessions(&open).await?), "a match its host says is under way was offered");
+    ensure!(finds(&seeker.search_sessions(&open).await?), "a match under way wasn't offered (joining mid-round)");
     host.match_state(false, "RoundState_PreRound").await?;
     ensure!(finds(&seeker.search_sessions(&open).await?), "the host said it's joinable, but it isn't found");
+    // The host's game turns the seeker away as locked: now it's left out.
+    seeker.report_failed_joins(&[(game, 0x9718_2b1b)]).await?;
+    ensure!(!finds(&seeker.search_sessions(&open).await?), "a match its host's game turned a joiner away from was offered");
     host.disconnect().await?;
     seeker.disconnect().await
 }
