@@ -119,6 +119,11 @@ echo "--- the add-on's HTTP through the relay (SR): /mm/ on the relay is the mat
 mmid=$(client curl -sf "http://$sr/mm/api/info" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null || true)
 own=$(client curl -sf "http://$mm/api/info" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null || true)
 [ -n "$mmid" ] && [ "$mmid" = "$own" ] && echo "PASS the relay's /mm/api/info is the matchmaking server's ($mmid)" || { echo "FAIL /mm/api/info through the relay: '$mmid', the matchmaking server's: '$own'"; rc=1; }
+echo "--- the game's HTTP through the relay (SR): its online config and content are the matchmaking server's"
+cfg=$(client curl -sf "http://$sr/OnlineConfigService.svc/GetOnlineConfig" || true)
+case "$cfg" in *"address=$mm;"*) echo "PASS the relay's online config is the matchmaking server's (sign-in at $mm)" ;; *) echo "FAIL the online config through the relay: ${cfg:0:160}"; rc=1 ;; esac
+a=$(client curl -sf "http://$sr/mp_balancing.ini" | md5sum) b=$(client curl -sf "http://$mm/mp_balancing.ini" | md5sum)
+[ "$a" = "$b" ] && echo "PASS the relay's content is the matchmaking server's" || { echo "FAIL content through the relay differs"; rc=1; }
 echo "--- a game without a session key (0.4.7), relayed by the matchmaking server's own helper"
 client "$bin/testbot" --server "$mm" nat-relay || rc=1
 echo "--- a keyed game (0.5.0) at the matchmaking server's own helper, with its relay pass"

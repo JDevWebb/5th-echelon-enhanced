@@ -371,6 +371,16 @@ fn forwarded_ip_at(src: std::net::SocketAddr, now: std::time::Instant) -> Option
     f.get(&src).filter(|(.., at)| now.saturating_duration_since(*at) < FORWARDED_FOR).map(|(ip, ..)| *ip)
 }
 
+/// The relay whose tunnel a game's connection from `src` came through (SR), by its name when
+/// the directory gives one (else its address): where that game reaches the matchmaking
+/// server's content and uploads, which the relay's Caddy passes on.
+pub fn relay_name_for(src: std::net::SocketAddr) -> Option<String> {
+    forwarded_ip(src)?;
+    let std::net::IpAddr::V4(ip) = src.ip() else { return Some(src.ip().to_string()) };
+    let named = network().iter().find(|r| r.ip == ip && !r.host.is_empty()).map(|r| r.host.clone());
+    Some(named.unwrap_or_else(|| ip.to_string()))
+}
+
 /// On a relay: the network's matchmaking server's address, where its tunnelled players' sign-in
 /// goes (SR).
 pub fn matchmaking_ip() -> Option<Ipv4Addr> {
@@ -893,6 +903,16 @@ pub fn ask_matchmaking(a: &str, b: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    /// A game signed in through a relay's tunnel gets its content and uploads at that relay.
+    #[test]
+    fn a_relayed_sign_in_is_given_its_relay() {
+        let src: std::net::SocketAddr = "192.0.2.77:40511".parse().unwrap();
+        assert_eq!(super::relay_name_for(src), None, "not through a relay");
+        super::forwarded_note(src, "198.51.100.9".parse().unwrap(), "Faraway", true, std::time::Instant::now());
+        assert_eq!(super::relay_name_for(src).as_deref(), Some("192.0.2.77"), "no name in the directory: its address");
+        assert_eq!(super::relay_name_for("192.0.2.77:40512".parse().unwrap()), None, "another of its sockets: someone else's");
+    }
+
     use super::*;
 
     #[test]

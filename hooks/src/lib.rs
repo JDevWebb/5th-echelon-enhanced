@@ -405,7 +405,13 @@ fn init(hmodule: Option<HMODULE>) {
 
     unsafe {
         hooks::init(config, &addr);
-        if let Some(config_server) = config.config_server.as_ref() {
+        // Signed in through a relay (0.5.5's SR): the game finds its server there, whose Caddy
+        // passes the game's online config, content and uploads on to the matchmaking server.
+        let via = config.networking.tunnel.as_ref().and_then(|t| t.via.as_ref());
+        if let Some(config_server) = via.or(config.config_server.as_ref()) {
+            if let Some(relay) = via {
+                info!("The game's server is reached through the relay {relay}");
+            }
             #[cfg(not(feature = "patch-free"))]
             patch_url(config_server, &addr);
         } else {

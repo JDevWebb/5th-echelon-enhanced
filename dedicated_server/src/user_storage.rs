@@ -115,6 +115,8 @@ impl<CI> UserStorageProtocolServerTrait<CI> for UserStorageProtocolServerImpl {
         let Some(host) = ctx.settings.get("storage_host").cloned() else {
             return Err(Error::AccessDenied);
         };
+        // Signed in through a relay (SR): the upload goes there, which passes it on.
+        let host = crate::relays::relay_name_for(*ci.address()).unwrap_or(host);
         match crate::uploads::begin(user_id, crate::tunnel::source_ip(*ci.address()), request.content_key.type_id, request.size) {
             Ok((pending_id, secret)) => {
                 info!(logger, "User {user_id} uploads {} bytes of content type {:#x}", request.size, request.content_key.type_id);
@@ -190,10 +192,15 @@ impl<CI> UserStorageProtocolServerTrait<CI> for UserStorageProtocolServerImpl {
         if request.content_key.type_id == crate::uploads::SHADOWNET {
             return Err(Error::AccessDenied);
         }
-        content_url(&ctx.settings).map_err(|missing| {
+        let mut url = content_url(&ctx.settings).map_err(|missing| {
             slog::error!(logger, "GetContentUrl: the {missing} setting is missing");
             Error::InternalError
-        })
+        })?;
+        // Signed in through a relay (SR): the content comes from there, which passes it on.
+        if let Some(relay) = crate::relays::relay_name_for(*ci.address()) {
+            url.download_info.host = relay;
+        }
+        Ok(url)
     }
 }
 
