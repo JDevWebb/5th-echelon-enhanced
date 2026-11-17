@@ -27,6 +27,7 @@ pub mod mouse_turn;
 pub mod patterns;
 pub mod quick_start;
 pub mod umd;
+pub mod unreachable;
 
 pub type Address = usize;
 pub type NopRange = Range<Address>;

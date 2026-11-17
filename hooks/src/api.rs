@@ -392,6 +392,23 @@ pub fn join_never_got_in() {
     }
 }
 
+/// Tells the server which players Storm couldn't reach (unreachable.rs, 0.5.5's JC4): it finds
+/// who they are and moves one that two players' games couldn't reach to the relay. Failures are
+/// only logged.
+pub fn unreachable_peers(peers: Vec<server_api::misc::UnreachablePeer>) {
+    let result = run(signed_in(|| {
+        let peers = peers.clone();
+        async move {
+            let mut client = connect!(MiscClient);
+            client.unreachable_peers(tonic::Request::new(server_api::misc::UnreachablePeersRequest { peers })).await?;
+            Ok(())
+        }
+    }));
+    if let Err(e) = result {
+        tracing::warn!("Telling the server which players couldn't be reached failed: {e}");
+    }
+}
+
 /// Tells the server whether this game's match is under way (round_state.rs): it leaves a match
 /// its host says is under way out of searches. Failures are only logged.
 pub fn match_state(under_way: bool, state: &str, settings: &std::collections::BTreeMap<String, f32>) {

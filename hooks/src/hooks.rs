@@ -824,6 +824,8 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
         crate::scheme_pool_fix::keep_shared_scheme_pool();
         crate::particle_fix::guard_particle_fills();
         crate::storm_fix::fix_ticket_observers();
+        // Not a crash fix: names the players Storm couldn't reach, for the server (JC4).
+        crate::unreachable::name_unreachable_peers();
         crate::voice_device_fix::guard_voice_devices();
         crate::tagging_device_fix::guard_tagging_devices();
         crate::perception_fix::guard_perception();

@@ -30,6 +30,7 @@ use hooks_addresses::engine_tables;
 use hooks_addresses::host_migration;
 use hooks_addresses::mouse_turn;
 use hooks_addresses::quick_start;
+use hooks_addresses::unreachable;
 
 const EXECUTABLES: [&str; 2] = ["Blacklist_game.exe", "Blacklist_DX11_game.exe"];
 
@@ -175,6 +176,11 @@ fn check(path: &Path) -> bool {
                 s.setter, s.check, s.leader_action, s.sync_enter, s.sync_tick, s.follow_task, s.follow_delegate, s.facade, s.facade_gate
             )
         }),
+    );
+    // Naming the peer Storm couldn't reach (JC4): both builds.
+    report(
+        "unreachable peers",
+        unreachable::locate(&img).map(|s| format!("report {:#010x}, CONNECTION_FAILED {:#010x}", s.report, s.connection_failed)),
     );
     // The engine's tables (match state, witness reports, recordings, the data version file).
     report(

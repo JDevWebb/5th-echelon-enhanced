@@ -84,6 +84,7 @@ mod texture_upload_fix;
 mod tunnel;
 mod umd_read_fix;
 mod unblock_logic;
+mod unreachable;
 mod uplay_r1_loader;
 mod voice_device_fix;
 mod weapons;
