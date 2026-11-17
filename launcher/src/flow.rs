@@ -80,7 +80,10 @@ pub fn gather(game_dir: &Path, cfg: &Config, bundled: Option<&[u8]>) -> (Facts, 
             let t = Duration::from_secs(2);
             facts.api_port = Some(profile.api_port());
             facts.unencrypted = profile.unencrypted() && !net::is_local_server(&profile.server, ip);
-            facts.server_ports = Some((net::port_open(ip, profile.api_port(), t), net::port_open(ip, setup::CONFIG_PORT, t)));
+            // Signing in through the relay (SR): the server is reached there, so that's what's
+            // checked (its Caddy answers on the same ports and passes the calls on).
+            let reached = crate::network::relay_for(&profile.server).and_then(|relay| net::resolve(&relay)).unwrap_or(ip);
+            facts.server_ports = Some((net::port_open(reached, profile.api_port(), t), net::port_open(reached, setup::CONFIG_PORT, t)));
             facts.account = Some(if !profile.has_account() {
                 AccountFact::None
             } else {

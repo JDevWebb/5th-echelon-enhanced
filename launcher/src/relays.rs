@@ -5,7 +5,9 @@
 //! its own helper, as before.
 //!
 //! The server's list and the pick are kept for [`KEPT_FOR`], so a start doesn't wait on them
-//! twice.
+//! twice. Each server's list is also saved ([`CACHE_FILE`]) and used when the server doesn't
+//! answer: a player whose route to the matchmaking server fails is the one who signs in through
+//! a relay (0.5.5's SR), and the relays are known only from that server.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -23,6 +25,49 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 const INFO_TIMEOUT: Duration = Duration::from_secs(3);
 /// Pings within this of the best count as the same: the server's order (busiest first) wins.
 const TIE: u32 = 15;
+/// Each server's last list of relays, in the launcher's data folder.
+pub const CACHE_FILE: &str = "relays-cache.json";
+/// How long a saved list is used when the server doesn't answer.
+const SAVED_FOR: i64 = 30 * 24 * 3600;
+/// The most servers whose lists are saved.
+const MAX_SAVED: usize = 16;
+
+/// One server's relays, as saved.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct Saved {
+    server: String,
+    /// Unix seconds.
+    at: i64,
+    relays: Vec<Helper>,
+}
+
+fn read_saved(dir: &std::path::Path) -> Vec<Saved> {
+    std::fs::read(dir.join(CACHE_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+/// Keeps `relays` as `server`'s last list.
+fn save(dir: &std::path::Path, server: &str, relays: &[Helper], now: i64) {
+    let mut all = read_saved(dir);
+    all.retain(|s| s.server != server);
+    all.insert(
+        0,
+        Saved {
+            server: server.to_string(),
+            at: now,
+            relays: relays.to_vec(),
+        },
+    );
+    all.truncate(MAX_SAVED);
+    if let Ok(json) = serde_json::to_vec(&all) {
+        let _ = std::fs::create_dir_all(dir);
+        let _ = setup::write_atomic(&dir.join(CACHE_FILE), &json);
+    }
+}
+
+/// `server`'s last list, when it's no older than [`SAVED_FOR`].
+fn saved(dir: &std::path::Path, server: &str, now: i64) -> Option<Vec<Helper>> {
+    read_saved(dir).into_iter().find(|s| s.server == server && now - s.at < SAVED_FOR).map(|s| s.relays)
+}
 
 /// The relay picked: where the game reaches its helper, and the port.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,11 +104,29 @@ pub async fn pick(server: String) -> Option<Picked> {
         }
     }
     let asked = server.clone();
-    let relays = tokio::task::spawn_blocking(move || setup::server_info::fetch(&asked, INFO_TIMEOUT).map(|i| i.relays))
+    let answer = tokio::task::spawn_blocking(move || setup::server_info::fetch(&asked, INFO_TIMEOUT).map(|i| i.relays))
         .await
         .ok()
-        .flatten()
-        .unwrap_or_default();
+        .flatten();
+    let now = identity::now();
+    let relays = match (answer, setup::app_data_dir()) {
+        (Some(relays), Some(dir)) => {
+            if !relays.is_empty() {
+                save(&dir, &server, &relays, now);
+            }
+            relays
+        }
+        (Some(relays), None) => relays,
+        // No answer: the relays it offered last (a player whose route to it fails).
+        (None, Some(dir)) => {
+            let last = saved(&dir, &server, now).unwrap_or_default();
+            if !last.is_empty() {
+                tracing::info!("relay: {server} didn't answer; its {} relays as it last offered them", last.len());
+            }
+            last
+        }
+        (None, None) => Vec::new(),
+    };
     let picked = if relays.is_empty() {
         None
     } else {
@@ -121,6 +184,22 @@ fn nearest(relays: &[Helper], pings: &[Option<u32>]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A server's relays are kept for when it doesn't answer, the newest list, for a while.
+    #[test]
+    fn a_servers_relays_are_kept_for_when_it_doesnt_answer() {
+        let dir = std::env::temp_dir().join(format!("fe-relays-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(saved(&dir, "mm.example", 0), None);
+        save(&dir, "mm.example", &[relay("syd")], 1000);
+        save(&dir, "other.example", &[relay("fra")], 1000);
+        save(&dir, "mm.example", &[relay("syd"), relay("fra")], 2000);
+        let kept = saved(&dir, "mm.example", 2000 + 3600).unwrap();
+        assert_eq!(kept.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["syd", "fra"], "the newest list");
+        assert_eq!(saved(&dir, "mm.example", 2000 + SAVED_FOR), None, "too old");
+        assert_eq!(saved(&dir, "other.example", 1000).unwrap()[0].id, "fra");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn relay(id: &str) -> Helper {
         Helper {

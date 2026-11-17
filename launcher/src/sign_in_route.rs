@@ -50,6 +50,16 @@ pub fn kept_or_chosen() -> bool {
     crate::prefs::Prefs::sign_in_via_relay() || crate::reach::here().is_some_and(|network| found(&crate::prefs::Prefs::via_relay_networks(), &network, identity::now()))
 }
 
+/// Takes the add-on's finding for the network this PC is on now: the launcher's own calls (its
+/// account check, friends) go through the relay from its first screen, not only once the game
+/// starts. A player whose route to the matchmaking server loses its answers would otherwise be
+/// stopped at "Server not answering" before the relay could help.
+pub fn take_finding(game_dir: &std::path::Path) {
+    if let Some(network) = crate::reach::here() {
+        take_game_finding(game_dir, &network);
+    }
+}
+
 /// The add-on's finding for `network` (the PC rarely changes networks between the game closing
 /// and the launcher reading this), when it's newer than what's kept.
 fn take_game_finding(game_dir: &std::path::Path, network: &str) {

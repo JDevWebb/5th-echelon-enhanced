@@ -48,7 +48,7 @@ pub fn app_data_dir() -> Option<std::path::PathBuf> {
 
 /// Writes `data` to `path` through a temporary file and a rename, so a crash
 /// never leaves half a file.
-pub(crate) fn write_atomic(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+pub fn write_atomic(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = std::path::PathBuf::from(tmp);

@@ -152,6 +152,13 @@ pub fn set_api_via(server: &str, relay: Option<&str>) {
     }
 }
 
+/// The relay the launcher's calls to `server` (a host name) go through, if any: its checks of the
+/// server reach it there.
+pub fn relay_for(server: &str) -> Option<String> {
+    let server = server.to_ascii_lowercase();
+    API_VIA.read().ok()?.iter().find(|(s, _)| *s == server).map(|(_, r)| r.clone())
+}
+
 /// The relay `url`'s API calls go through, if any.
 fn api_via(url: &str) -> Option<String> {
     let host = url::Url::parse(url).ok()?.host_str()?.to_ascii_lowercase();
@@ -416,6 +423,11 @@ pub async fn server_directory(coordinator: &str) -> Result<Browsed, String> {
     // A server that offers relays (a network's matchmaking server) shows the nearest relay's
     // ping: the game's traffic goes there, not to the server (players in Sydney play through
     // the Sydney relay, not Canada). The relays it offers, all at once and kept for the start.
+    // The game's finding that this network signs in through the relay (SR), first: the relay's
+    // pick below then routes the launcher's own calls through it too.
+    if let Some(game) = crate::prefs::Game::chosen_or_found() {
+        let _ = tokio::task::spawn_blocking(move || crate::sign_in_route::take_finding(&game)).await;
+    }
     let picks: Vec<_> = servers.iter().map(|s| tokio::spawn(crate::relays::pick(s.host.clone()))).collect();
     let mut pings = pings;
     for ((ping, pick), server) in pings.iter_mut().zip(picks).zip(&servers) {
