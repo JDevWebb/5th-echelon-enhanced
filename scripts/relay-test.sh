@@ -4,8 +4,10 @@
 # server trusting its passes. Test players sign in to the matchmaking server, register at the
 # relay with their passes, and the matchmaking server gives the relay's addresses for them; the
 # relay carries traffic only between players the matchmaking server put together
-# (tools/testbot's cross-relay). A second relay: players at the two reach each other, each
-# relay forwarding to the other (cross-relay-forward). Then the rest of the network around them:
+# (tools/testbot's cross-relay). Signing in through a relay (0.5.5's SR): a third relay behind
+# Caddy, as install-server.sh sets one up, passes the API on to the matchmaking server and its
+# tunnel carries the game's sign-in there (relay-sign-in). A second relay: players at the two
+# reach each other, each relay forwarding to the other (cross-relay-forward). Then the rest of the network around them:
 # a game without a session key (0.4.7) relayed by the matchmaking server's own helper (nat-relay),
 # a keyed one (nat-key), and an ordinary regional server in the same network, with friends across
 # it and the matchmaking server (federation).
@@ -18,7 +20,8 @@ bin=${1:?folder with dedicated_server, testbot and coordinator}
 image=${IMAGE:-fes-build:local}
 mount=${BIN_MOUNT:--v fes-target:/target:ro}
 net=fes-relay-test
-cleanup() { docker rm -f fes-relay-coord fes-relay-mm fes-relay-syd fes-relay-eu fes-relay-region >/dev/null 2>&1 || true; docker network rm "$net" >/dev/null 2>&1 || true; }
+here=$(cd "$(dirname "$0")/.." && pwd)
+cleanup() { docker rm -f fes-relay-coord fes-relay-mm fes-relay-syd fes-relay-eu fes-relay-region fes-relay-sr fes-relay-sr-caddy >/dev/null 2>&1 || true; docker network rm "$net" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 cleanup
 docker network create "$net" >/dev/null
@@ -53,19 +56,54 @@ server fes-relay-syd relay-test "\n[role]\nkind = \"relay\"\nticket_key = \"$key
 server fes-relay-eu relay-eu "\n[role]\nkind = \"relay\"\nticket_key = \"$key\"\n"
 server fes-relay-region region-test ''
 mm=$(ip fes-relay-mm) syd=$(ip fes-relay-syd) eu=$(ip fes-relay-eu) region=$(ip fes-relay-region)
+
+# A relay behind Caddy, as install-server.sh sets one up (0.5.5's SR): its web parts and API on
+# loopback, the tunnel on 127.0.0.1:21130, and Caddy's routes from the installer's own
+# site_routes, the API passed on to the matchmaking server (h2c here, its HTTPS name there).
+docker run -d --name fes-relay-sr --network "$net" $mount "$image" bash -c "
+  set -e; mkdir -p /srv/fe && cd /srv/fe && cp $bin/dedicated_server .
+  echo relay-sr > server-id.txt
+  ./dedicated_server >gen.log 2>&1 & gen=\$!
+  for _ in \$(seq 100); do [ -s service.toml ] && break; sleep 0.1; done
+  sleep 0.3; kill \$gen 2>/dev/null || true; wait \$gen 2>/dev/null || true
+  sed -i -E \
+    -e 's|^listen = \"0.0.0.0:80\"|listen = \"127.0.0.1:8080\"|' \
+    -e 's|^listen = \"0.0.0.0:8000\"|listen = \"127.0.0.1:8000\"|' \
+    -e 's|^api_server = .*|api_server = \"127.0.0.1:50051\"|' \
+    service.toml
+  if grep -q '^\[nat\]' service.toml; then sed -i '/^\[nat\]/a tunnel = \"127.0.0.1:21130\"' service.toml; else printf '\n[nat]\ntunnel = \"127.0.0.1:21130\"\n' >> service.toml; fi
+  printf '\n[federation]\ncoordinator = \"http://$coord:8700\"\njoin_token = \"$token\"\nname = \"relay-sr\"\nregion = \"Test\"\nallow_http = true\n[public]\nhost = \"fes-relay-sr\"\napi = 80\ncontent = 80\n[role]\nkind = \"relay\"\nticket_key = \"$key\"\n' >> service.toml
+  exec ./dedicated_server --public-address \$(hostname -i | cut -d' ' -f1) >server.log 2>&1
+" >/dev/null
+sr=$(ip fes-relay-sr)
+caddyfile=$(mktemp)
+# shellcheck disable=SC1090 # the installer's own routes
+eval "$(sed -n '/^site_routes() {/,/^}/p' "$here/scripts/install-server.sh")"
+{
+  printf '{\n\tservers :80 {\n\t\tprotocols h1 h2c\n\t}\n}\n:80 {\n'
+  site_routes mm.example.test | sed -e "s|reverse_proxy https://mm.example.test|reverse_proxy h2c://$mm:50051|" -e '/header_up Host mm.example.test/d'
+  printf '}\n'
+} >"$caddyfile"
+grep -q 'header_up X-5E-Relayed-For {remote_host}' "$caddyfile" || { echo "FAIL the installer's relay routes don't pass the player's address on"; exit 1; }
+docker create --name fes-relay-sr-caddy --network container:fes-relay-sr caddy:2 >/dev/null
+docker cp "$caddyfile" fes-relay-sr-caddy:/etc/caddy/Caddyfile >/dev/null
+rm -f "$caddyfile"
+# After the configured server is up: its first run, writing the defaults, holds port 80.
+for _ in $(seq 100); do docker exec fes-relay-sr test -s /srv/fe/server.log 2>/dev/null && break; sleep 0.2; done
+docker start fes-relay-sr-caddy >/dev/null
 for s in fes-relay-mm fes-relay-region; do
   for _ in $(seq 100); do docker exec "$s" bash -c 'exec 3<>/dev/tcp/127.0.0.1/50051' 2>/dev/null && break; sleep 0.2; done
 done
 
 client() { docker run --rm --network "$net" $mount "$image" "$@"; }
 rc=0
-echo "--- the directory lists both relays"
+echo "--- the directory lists the three relays"
 n=0
 for _ in $(seq 60); do
   n=$(client curl -sf "http://$coord:8700/v1/servers" | grep -o '"role":"relay"' | wc -l || true)
-  [ "$n" -ge 2 ] && break; sleep 2
+  [ "$n" -ge 3 ] && break; sleep 2
 done
-[ "$n" -ge 2 ] && echo "PASS both relays listed" || { echo "FAIL helpers: $n"; client curl -s "http://$coord:8700/v1/servers"; rc=1; }
+[ "$n" -ge 3 ] && echo "PASS the three relays listed" || { echo "FAIL helpers: $n"; client curl -s "http://$coord:8700/v1/servers"; rc=1; }
 # Links come with each member's next heartbeat (every 30 s) once both are listed.
 sleep 35
 echo "--- test players across the relay"
@@ -74,6 +112,8 @@ echo "--- test players at two relays, forwarded between them"
 client "$bin/testbot" --server "$mm" --other "$syd" --third "$eu" cross-relay-forward || rc=1
 echo "--- a guest relayed at one relay joining a host who's direct at another (0.5.4)"
 client "$bin/testbot" --server "$mm" --other "$syd" --third "$eu" cross-relay-direct-host || rc=1
+echo "--- signing in through a relay (0.5.5): the API through its Caddy, the game's sign-in through its tunnel"
+client "$bin/testbot" --server "$mm" --other "$sr" relay-sign-in || rc=1
 echo "--- a game without a session key (0.4.7), relayed by the matchmaking server's own helper"
 client "$bin/testbot" --server "$mm" nat-relay || rc=1
 echo "--- a keyed game (0.5.0) at the matchmaking server's own helper, with its relay pass"
@@ -98,6 +138,7 @@ for _ in $(seq 20); do
 done
 [ "$events" -ge 3 ] && echo "PASS the relay's registrations are in the matchmaking server's session events" || { echo "FAIL relay events: $events"; rc=1; }
 if [ $rc -ne 0 ]; then
-  for s in fes-relay-mm fes-relay-syd fes-relay-eu fes-relay-region; do echo "--- $s (last 40 lines)"; docker exec "$s" tail -40 /srv/fe/server.log; done
+  for s in fes-relay-mm fes-relay-syd fes-relay-eu fes-relay-region fes-relay-sr; do echo "--- $s (last 40 lines)"; docker exec "$s" tail -40 /srv/fe/server.log; done
+  echo "--- fes-relay-sr-caddy"; docker logs --tail 20 fes-relay-sr-caddy 2>&1 || true
 fi
 exit $rc

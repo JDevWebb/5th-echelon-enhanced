@@ -247,6 +247,27 @@ pub async fn present_pass(socket: &tokio::net::UdpSocket, nat: std::net::SocketA
     present_pass_with_key(socket, nat, name, pass, Some(&session_key(name))).await
 }
 
+/// A relay pass shown for `name` (a `TicketPresent`, signed with `key` when there is one), and its
+/// nonce: what the game sends a relay's helper, and the proof that opens a tunnel at a relay.
+pub fn pass_message(name: &str, pass: &[u8], key: Option<&identity::Identity>) -> Option<(u32, Vec<u8>)> {
+    let (Some(day), Some(signature)) = (pass.get(..4), pass.get(4..68)) else {
+        return None;
+    };
+    let nonce = rand::random::<u32>() | 1;
+    let day = u32::from_be_bytes(day.try_into().ok()?);
+    let present = nat_proto::Message::TicketPresent {
+        nonce,
+        name: name.into(),
+        day,
+        signature: signature.try_into().ok()?,
+    };
+    let mut data = present.encode();
+    if let Some(k) = key {
+        nat_proto::add_key(&mut data, &k.public_key(), &k.sign_bytes(&nat_proto::present_message(nonce, name, day)));
+    }
+    Some((nonce, data))
+}
+
 /// [`present_pass`] signed with the game's session key, as a 0.5.0 game shows it.
 pub async fn present_pass_with_key(
     socket: &tokio::net::UdpSocket,
@@ -255,21 +276,9 @@ pub async fn present_pass_with_key(
     pass: &[u8],
     key: Option<&identity::Identity>,
 ) -> Result<Option<nat_proto::Ticket>> {
-    let (Some(day), Some(signature)) = (pass.get(..4), pass.get(4..68)) else {
+    let Some((nonce, data)) = pass_message(name, pass, key) else {
         return Ok(None);
     };
-    let nonce = rand::random::<u32>() | 1;
-    let day = u32::from_be_bytes(day.try_into()?);
-    let present = nat_proto::Message::TicketPresent {
-        nonce,
-        name: name.into(),
-        day,
-        signature: signature.try_into()?,
-    };
-    let mut data = present.encode();
-    if let Some(k) = key {
-        nat_proto::add_key(&mut data, &k.public_key(), &k.sign_bytes(&nat_proto::present_message(nonce, name, day)));
-    }
     socket.send_to(&data, nat).await?;
     let mut buf = [0u8; 256];
     match tokio::time::timeout(std::time::Duration::from_millis(800), socket.recv_from(&mut buf)).await {
@@ -410,8 +419,17 @@ pub async fn api_sign_in_with_key(
 }
 
 async fn request_ticket(server: IpAddr, name: &str, password: &str) -> Result<(u32, SocketAddr, tg::RequestTicketResponse)> {
+    let (pid, secure, ticket) = request_ticket_at(SocketAddr::new(server, target(server).auth), name, password).await?;
+    // A server that names no address for its secure service: the one signed in to.
+    let secure = if secure.ip().is_unspecified() { SocketAddr::new(server, secure.port()) } else { secure };
+    Ok((pid, secure, ticket))
+}
+
+/// LoginEx and a ticket for the secure server, at the sign-in service at `login`: the secure
+/// server's address as the sign-in names it (0.0.0.0: the one signed in to).
+async fn request_ticket_at(login_at: SocketAddr, name: &str, password: &str) -> Result<(u32, SocketAddr, tg::RequestTicketResponse)> {
     // Auth server: LoginEx and a ticket for the secure server.
-    let (mut auth, _) = Conn::connect(SocketAddr::new(server, target(server).auth), vec![]).await?;
+    let (mut auth, _) = Conn::connect(login_at, vec![]).await?;
     let login = tg::LoginExRequest {
         str_user_name: name.into(),
         o_extra_data: Any::new(
@@ -432,7 +450,7 @@ async fn request_ticket(server: IpAddr, name: &str, password: &str) -> Result<(u
     )?;
     let pid = resp.pid_principal;
     let url = &resp.p_connection_data.url_regular_protocols;
-    let secure_addr = SocketAddr::new(if url.address == "0.0.0.0" { server } else { url.address.parse()? }, url.port);
+    let secure_addr = SocketAddr::new(url.address.parse()?, url.port);
     let ticket: tg::RequestTicketResponse = decode(
         &auth
             .call(
@@ -493,6 +511,14 @@ impl Bot {
     /// LoginEx on the auth server, a ticket for the secure server, and the secure connection.
     pub async fn login(server: IpAddr, name: &str, password: &str) -> Result<Bot> {
         Self::login_from(server, name, password, "0.0.0.0".parse()?).await
+    }
+
+    /// The game's sign-in (LoginEx, a ticket, the secure server) at the given addresses, after the
+    /// API sign-in the caller made (`api`, `signed_in`): through a tunnel's local sockets, as a
+    /// game signing in through its relay does (0.5.5's SR).
+    pub async fn login_with(api: Channel, signed_in: server_api::users::LoginResponse, name: &str, password: &str, login_at: SocketAddr, secure_at: SocketAddr) -> Result<Bot> {
+        let (pid, _, ticket) = request_ticket_at(login_at, name, password).await?;
+        Self::connect_secure(api, signed_in, name, pid, secure_at, ticket, "0.0.0.0:0".parse()?, None).await
     }
 
     /// Like [`Self::login`], but the secure connection comes from `secure_from`, another
@@ -1722,4 +1748,72 @@ impl ApiPlayer {
             .await?;
         Ok(())
     }
+}
+
+/// A tunnel to a server or relay, as the add-on opens one for a player whose UDP is blocked or
+/// who signs in through their relay (0.5.2's T, 0.5.5's SR): one WebSocket, its first message the
+/// proof of the name, then each datagram framed with its service. The game's sockets talk to the
+/// local ones here as they would to the services; what comes back goes to whoever last sent.
+pub struct Tunnel {
+    pub login: SocketAddr,
+    pub secure: SocketAddr,
+    pub helper: SocketAddr,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for Tunnel {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Opens a tunnel at `url` (`ws://HOST/tunnel`), proving the name with `proof` (a signed probe,
+/// or at a relay a signed relay pass: [`pass_message`]).
+pub async fn open_tunnel(url: &str, proof: &[u8]) -> Result<Tunnel> {
+    use futures_util::SinkExt;
+    use futures_util::StreamExt;
+    use nat_proto::tunnel;
+    use tokio_tungstenite::tungstenite::Message as Ws;
+    let (ws, _) = tokio_tungstenite::connect_async(url).await?;
+    let (mut sink, mut stream) = ws.split();
+    sink.send(Ws::Binary(tunnel::frame(tunnel::AUTH, proof).into())).await?;
+    let mut socks = Vec::new();
+    for _ in 0..3 {
+        socks.push(std::sync::Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await?));
+    }
+    let (login, secure, helper) = (socks[0].local_addr()?, socks[1].local_addr()?, socks[2].local_addr()?);
+    let services = [tunnel::LOGIN, tunnel::SECURE, tunnel::HELPER];
+    let task = tokio::spawn(async move {
+        let mut clients: [Option<SocketAddr>; 3] = [None; 3];
+        let (mut b0, mut b1, mut b2) = ([0u8; 2048], [0u8; 2048], [0u8; 2048]);
+        loop {
+            let (i, got) = tokio::select! {
+                message = stream.next() => {
+                    match message {
+                        Some(Ok(Ws::Binary(data))) => {
+                            if let Some((service, datagram)) = tunnel::parse(&data) {
+                                if let Some(i) = services.iter().position(|s| *s == service) {
+                                    if let Some(to) = clients[i] {
+                                        let _ = socks[i].send_to(datagram, to).await;
+                                    }
+                                }
+                            }
+                        }
+                        Some(Ok(_)) => {}
+                        _ => break,
+                    }
+                    continue;
+                }
+                r = socks[0].recv_from(&mut b0) => (0, r.map(|(n, from)| (b0[..n].to_vec(), from))),
+                r = socks[1].recv_from(&mut b1) => (1, r.map(|(n, from)| (b1[..n].to_vec(), from))),
+                r = socks[2].recv_from(&mut b2) => (2, r.map(|(n, from)| (b2[..n].to_vec(), from))),
+            };
+            let Ok((datagram, from)) = got else { continue };
+            clients[i] = Some(from);
+            if sink.send(Ws::Binary(tunnel::frame(services[i], &datagram).into())).await.is_err() {
+                break;
+            }
+        }
+    });
+    Ok(Tunnel { login, secure, helper, task })
 }

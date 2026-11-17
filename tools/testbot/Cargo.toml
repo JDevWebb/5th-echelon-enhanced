@@ -21,3 +21,6 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 tonic = { workspace = true, features = ["tls-ring", "tls-webpki-roots"] }
 eyre = { workspace = true }
+# The tunnel, as the add-on opens it (0.5.5's SR: signing in through a relay).
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

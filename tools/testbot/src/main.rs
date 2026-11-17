@@ -3542,6 +3542,79 @@ async fn cross_relay(ctx: &mut Ctx, relay: IpAddr) -> Result<()> {
 /// tells relay B where the host is (link Locate), so the guest's packets for the host's address
 /// go to relay A and on to the host. Before, relay B dropped them as "nobody's address" (ca1,
 /// 16 Nov 2026: Tea_bag at de1 joining John_Fisher, direct at us1).
+/// 0.5.5's SR, signing in through a relay, end to end: the API through the relay's Caddy (which
+/// passes it on to the matchmaking server with the player's address: its direct-connection test
+/// reaches this machine, not the relay), a tunnel at the relay opened with the relay pass that
+/// sign-in gave, the game's sign-in and secure service through the tunnel to the matchmaking
+/// server, and the game's registration at the relay's helper through it, relayed.
+async fn relay_sign_in(ctx: &mut Ctx, relay: IpAddr) -> Result<()> {
+    ctx.n += 1;
+    let name = format!("Faraway{}_{}", ctx.run, ctx.n);
+    Bot::register(ctx.server, &name, PASSWORD).await?;
+    // The relay's Caddy on port 80, as the launcher reaches it by the relay's name.
+    let mm = testbot::bot::target(ctx.server);
+    testbot::bot::set_target(
+        relay,
+        testbot::bot::Target {
+            host: relay.to_string(),
+            api: 80,
+            auth: testbot::bot::AUTH_PORT,
+            nat: nat_proto::DEFAULT_PORT,
+            api_tls: None,
+            identity_required: mm.identity_required,
+        },
+    );
+    let (api, signed_in) = testbot::bot::api_sign_in(relay, &name, PASSWORD, testbot::bot::GAME_CLIENT)
+        .await
+        .map_err(|e| eyre!("the API sign-in through the relay failed: {e}"))?;
+    ensure!(signed_in.relay_pass.len() >= 68, "the sign-in through the relay gave no relay pass");
+    let key = testbot::bot::session_key(&name);
+    let (_, proof) = testbot::bot::pass_message(&name, &signed_in.relay_pass, Some(&key)).ok_or_else(|| eyre!("an unreadable relay pass"))?;
+    let tunnel = testbot::bot::open_tunnel(&format!("ws://{relay}/tunnel"), &proof).await?;
+    let pass = signed_in.relay_pass.clone();
+    let mut bot = testbot::bot::Bot::login_with(api, signed_in, &name, PASSWORD, tunnel.login, tunnel.secure)
+        .await
+        .map_err(|e| eyre!("the game's sign-in through the relay's tunnel failed (the relay pass was taken: the matchmaking server saw the player's own address): {e}"))?;
+    // The secure service answers through it.
+    let game = bot.create_session(LOBBY).await?;
+    bot.add_participants(game, &[bot.pid], &[]).await?;
+    // The matchmaking server saw the player's own address through the relay's Caddy (X-5E-Relayed-
+    // For, believed from the network's relays): its direct test reaches this machine's 13000.
+    let socket = tokio::net::UdpSocket::bind("0.0.0.0:13000").await?;
+    let answer = tokio::spawn(async move {
+        let mut buf = [0u8; 256];
+        let (n, from) = socket.recv_from(&mut buf).await?;
+        let challenge = buf[..n].strip_prefix(b"P2P Test - ").ok_or_else(|| eyre!("not a challenge"))?.to_vec();
+        socket.send_to(&challenge, from).await?;
+        Ok::<_, eyre::Report>(challenge)
+    });
+    let challenge: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
+    let back = bot.test_direct(challenge.clone()).await.map_err(|e| {
+        eyre!(
+            "the matchmaking server didn't take the player's address from the relay (its direct test didn't reach here): {}",
+            e.message()
+        )
+    })?;
+    ensure!(back == challenge, "the challenge came back changed");
+    ensure!(tokio::time::timeout(Duration::from_secs(2), answer).await??? == challenge, "a different challenge arrived");
+    // The game's NAT traffic: the relay's helper, through the same tunnel.
+    let std::net::SocketAddr::V4(helper) = tunnel.helper else {
+        return Err(eyre!("the tunnel's helper socket isn't IPv4"));
+    };
+    let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
+    let ticket = testbot::bot::present_pass(&sock, helper, &name, &pass)
+        .await?
+        .ok_or_else(|| eyre!("the relay's helper didn't take the pass through the tunnel"))?;
+    let reg = testbot::bot::nat_register(&sock, helper, nat_proto::probe_flags::WANT_RELAY, &name, ticket).await?;
+    ensure!(
+        reg.relayed && IpAddr::V4(*reg.advertise.ip()) == relay,
+        "registered through the tunnel as {} (relayed: {})",
+        reg.advertise,
+        reg.relayed
+    );
+    Ok(())
+}
+
 /// 0.5.5's JC4 and JC2: two players' games name a direct host they couldn't reach. The host is
 /// relayed from its next probe, and again when it signs in anew from the same address after its
 /// registration lapsed: the move lasts on that network.
@@ -4549,6 +4622,7 @@ async fn run() -> Result<()> {
             "cross-relay-forward" => 60,
             "cross-relay-direct-host" => 60,
             "unreachable-peer" => 150,
+            "relay-sign-in" => 60,
             "chat" => 120,
             "reconnect" | "closing-note" => 180,
             // About a dozen players and three parts (private refusals, a public match, one
@@ -4665,6 +4739,10 @@ async fn run() -> Result<()> {
                 "cross-relay-forward" => match (other, third) {
                     (Some(a), Some(b)) => cross_relay_forward(&mut ctx, a, b).await,
                     _ => Err(eyre!("cross-relay-forward needs --other <a relay> --third <another relay>")),
+                },
+                "relay-sign-in" => match other {
+                    Some(relay) => relay_sign_in(&mut ctx, relay).await,
+                    None => Err(eyre!("relay-sign-in needs --other <the relay, behind its Caddy>")),
                 },
                 "cross-relay-direct-host" => match (other, third) {
                     (Some(a), Some(b)) => cross_relay_direct_host(&mut ctx, a, b).await,

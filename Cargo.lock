@@ -4779,6 +4779,7 @@ version = "0.2.5"
 dependencies = [
  "api",
  "eyre",
+ "futures-util",
  "hwid",
  "identity",
  "md-5",
@@ -4791,6 +4792,7 @@ dependencies = [
  "setup",
  "sha2",
  "tokio",
+ "tokio-tungstenite",
  "tonic",
 ]
 
