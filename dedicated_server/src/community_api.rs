@@ -279,9 +279,11 @@ fn info(cfg: CommunityApiConfig) -> Value {
 }
 
 /// `/api/info` on a relay alone: what it is, its id and coordinator, its host and the helper's
-/// port; no features, nothing a launcher could take for a place to sign in.
+/// port; none of the game server's features, nothing a launcher could take for a place to sign
+/// in, but `relay-sign-in` (0.5.5's SR): the launcher signs in through it only when it says so.
 fn relay_only_info(full: Value) -> Value {
-    let mut info = json!({ "name": full["name"], "version": full["version"], "revision": full["revision"], "role": "relay", "features": [] });
+    let features: Vec<Value> = full["features"].as_array().into_iter().flatten().filter(|f| *f == "relay-sign-in").cloned().collect();
+    let mut info = json!({ "name": full["name"], "version": full["version"], "revision": full["revision"], "role": "relay", "features": features });
     for key in ["id", "coordinator", "coordinator_seen", "matchmaking_seen", "moved_to", "maintenance", "host"] {
         if !full[key].is_null() {
             info[key] = full[key].clone();
@@ -548,6 +550,9 @@ mod tests {
                 "id": "abc", "host": "syd.example.net", "ports": { "nat": 21128 },
             })
         );
+        // One that passes its players' sign-in on (SR) says that, and only that.
+        let full = json!({ "name": "n", "version": "0.5.5", "revision": "r", "features": ["invites", "relay-sign-in"] });
+        assert_eq!(relay_only_info(full)["features"], json!(["relay-sign-in"]));
     }
 
     #[test]
