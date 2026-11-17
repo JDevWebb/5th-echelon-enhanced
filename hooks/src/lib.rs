@@ -707,6 +707,9 @@ fn init_log(target_dir: &Path) -> ReconfigurableLogger {
         subscriber_builder.finish().with(diagnostics::DiagnosticsLayer).init();
     }
     tracing::event!(tracing::Level::INFO, "attaching");
+    // Which release this run is, for its crashes reported at the next start (crash_log.rs):
+    // that one may be a newer release.
+    tracing::info!("{}{}", hooks_config::crash_log::RELEASE_LINE, env!("FE_RELEASE"));
 
     std::panic::set_hook(Box::new(|panic_info| {
         let mut expl = String::new();

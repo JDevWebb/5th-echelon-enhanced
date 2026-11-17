@@ -80,6 +80,7 @@ fn send(prev: &Path, username: &str) {
             doing: clean(&c.doing),
             fatal: c.fatal,
             release: env!("FE_RELEASE").into(),
+            run_release: c.release.clone().unwrap_or_default(),
         };
         match crate::api::crash(request) {
             Ok(()) => sent += 1,

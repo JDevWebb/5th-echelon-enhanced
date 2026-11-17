@@ -1237,6 +1237,13 @@ fn client_addr<T>(request: &Request<T>) -> Option<std::net::IpAddr> {
     crate::relays::relayed_client(crate::rate_limit::client_ip(request.remote_addr().map(|a| a.ip()), forwarded), relayed_for)
 }
 
+/// A crash's release as its log gave it: a release name ("0.5.4", "0.5.5-dev"), else none.
+fn crash_release(said: &str) -> Option<String> {
+    let said = said.trim();
+    (!said.is_empty() && said.len() <= 32 && said.starts_with(|c: char| c.is_ascii_digit()) && said.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+')))
+        .then(|| said.to_string())
+}
+
 #[tonic::async_trait]
 impl Users for MyUsers {
     /// Handles user login requests.
@@ -2276,9 +2283,11 @@ impl Misc for MyMisc {
         if !within(&CRASHES, user_id, 10, 3600) {
             return Ok(Response::new(misc::CrashResponse {}));
         }
-        // The release as the server saw the game sign in, not as the request says: the
-        // Crashes page tells a fixed crash come back by it.
-        let release = self
+        // The release of the run that crashed, from its log (0.5.5 add-ons), else the release as
+        // the server saw the game sign in: the Crashes page tells a fixed crash come back by it,
+        // and a crash is sent at the next start, which may be a newer release's (Glacio1, 17
+        // Nov 2026: a 0.5.3 crash reported by 0.5.4 looked like the fix had failed).
+        let signed_in = self
             .storage
             .last_client(user_id)
             .await
@@ -2286,6 +2295,10 @@ impl Misc for MyMisc {
             .flatten()
             .and_then(|c| c.strip_prefix("game/").map(str::to_string))
             .unwrap_or_default();
+        let from_log = crash_release(&r.run_release);
+        let release_from = if from_log.is_some() { "log" } else { "sign_in" };
+        let release = from_log.unwrap_or(signed_in);
+        let reported_after_s = (identity::now() - r.at).max(0);
         let place = printable(&r.place, 120);
         warn!(self.logger, "Crash from {user_id}: {} at {place}{}", r.kind, if r.fatal { " (fatal)" } else { "" });
         // The coordinator keeps strings of up to 200 characters and lists of up to 16: the
@@ -2312,6 +2325,8 @@ impl Misc for MyMisc {
                 "doing": printable(&r.doing, 190),
                 "fatal": r.fatal,
                 "release": printable(&release, 32),
+                "release_from": release_from,
+                "reported_after_s": reported_after_s,
             }),
         );
         Ok(Response::new(misc::CrashResponse {}))
@@ -2943,6 +2958,16 @@ impl tonic::transport::server::Connected for Limited {
 
 #[cfg(test)]
 mod tests {
+    /// A crash keeps its run's release as its log said it, when that's a release name.
+    #[test]
+    fn a_crash_release_is_a_release_name() {
+        assert_eq!(super::crash_release("0.5.3").as_deref(), Some("0.5.3"));
+        assert_eq!(super::crash_release(" 0.5.5-dev ").as_deref(), Some("0.5.5-dev"));
+        for not in ["", "latest", "0.5.3; drop table", "9.9.9.9.9.9.9.9.9.9.9.9.9.9.9.9.9.9.9"] {
+            assert_eq!(super::crash_release(not), None, "{not:?}");
+        }
+    }
+
     use super::check_username;
     use super::check_username_form;
 

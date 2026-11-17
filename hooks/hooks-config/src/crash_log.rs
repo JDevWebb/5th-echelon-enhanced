@@ -52,6 +52,9 @@ pub struct Crash {
     /// The game didn't carry on: nothing handled it, or the run ended soon after without
     /// closing normally.
     pub fatal: bool,
+    /// The add-on's release in the run that crashed ([`RELEASE_LINE`]), when its log says (from
+    /// 0.5.5): its crashes are sent at the next start, which may be a newer release's.
+    pub release: Option<String>,
 }
 
 impl Crash {
@@ -73,6 +76,8 @@ const CALLERS: &str = "hooks::crash: Crash callers: ";
 const UNHANDLED: &str = "hooks::crash: The game is closing on an unhandled exception";
 const FROZE: &str = "hooks::crash: The game froze: no frame for ";
 const CLOSING: &str = "The game is closing";
+/// The add-on's line after `attaching` that names its release (from 0.5.5).
+pub const RELEASE_LINE: &str = "5th Echelon add-on release ";
 /// The add-on's first line in a run (`hooks: 591: attaching`).
 fn starts_run(line: &str) -> bool {
     line.contains(" hooks: ") && line.trim_end().ends_with(": attaching")
@@ -101,12 +106,18 @@ fn in_run(lines: &[&str]) -> Vec<Crash> {
     let mut last_exception: Option<usize> = None;
     // The freeze being read: its drawing thread's line seen, waiting for the main thread's.
     let mut freeze: Option<usize> = None;
+    let mut release: Option<String> = None;
     for line in lines {
         let time = crate::diagnostics::line_time(line);
         if time.is_some() {
             last_time = time;
         }
-        if let Some(rest) = after(line, EXCEPTION) {
+        if let Some(rest) = after(line, RELEASE_LINE).filter(|_| line.contains(" hooks: ")) {
+            let rest = rest.trim();
+            if !rest.is_empty() && rest.len() <= 32 && rest.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+')) {
+                release = Some(rest.to_string());
+            }
+        } else if let Some(rest) = after(line, EXCEPTION) {
             if let Some(c) = exception(rest, time.unwrap_or(0)) {
                 found.push(c);
                 last_exception = Some(found.len() - 1);
@@ -151,6 +162,9 @@ fn in_run(lines: &[&str]) -> Vec<Crash> {
             closed = true;
         }
     }
+    for c in &mut found {
+        c.release.clone_from(&release);
+    }
     // Nothing handled them: those before the unhandled line are fatal (its last one, really).
     if let Some(n) = unhandled_after {
         if let Some(c) = found[..n].iter_mut().rev().find(|c| c.kind == Kind::Exception) {
@@ -192,6 +206,7 @@ fn exception(rest: &str, at: i64) -> Option<Crash> {
         callers: String::new(),
         doing: String::new(),
         fatal: false,
+        release: None,
     })
 }
 
@@ -215,6 +230,7 @@ fn froze(rest: &str, at: i64) -> Option<Crash> {
         callers: callers.trim().to_string(),
         doing: doing.trim().trim_end_matches('.').to_string(),
         fatal: false,
+        release: None,
     })
 }
 
@@ -241,6 +257,23 @@ mod tests {
         assert_eq!(c.stack, "Blacklist_DX11_game.exe+0xa94680, Blacklist_DX11_game.exe+0x9881ec");
         assert_eq!(c.at, crate::diagnostics::line_time("2026-11-04T21:14:32").unwrap());
         assert!(c.fatal, "the log ended 8 s later without closing");
+    }
+
+    /// A run's crashes carry its own release, which its log names after `attaching` (from 0.5.5);
+    /// a log before that names none.
+    #[test]
+    fn a_crash_carries_the_release_of_its_run() {
+        assert_eq!(crashes(ANGLED)[0].release, None, "a log before 0.5.5");
+        let log = ANGLED.replacen(
+            "hooks: 591: attaching\n",
+            &format!("hooks: 591: attaching\n2026-11-04T21:10:00.100000Z  INFO ThreadId(01) hooks: 712: {RELEASE_LINE}0.5.3\n"),
+            1,
+        );
+        assert_eq!(crashes(&log)[0].release.as_deref(), Some("0.5.3"));
+        // Two runs: each its own.
+        let two = format!("{log}{}", ANGLED.replace("21:1", "22:1"));
+        let c = crashes(&two);
+        assert_eq!((c[0].release.as_deref(), c[1].release.as_deref()), (Some("0.5.3"), None));
     }
 
     #[test]
