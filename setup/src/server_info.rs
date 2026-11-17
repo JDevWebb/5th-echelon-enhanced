@@ -90,6 +90,13 @@ pub fn fetch(server: &str, timeout: Duration) -> Option<ServerInfo> {
     fetch_on(server, crate::CONFIG_PORT, timeout)
 }
 
+/// The matchmaking server's `/api/info` as its relay at `relay` passes it on (`/mm/api/info`,
+/// 0.5.5's SR): for a launcher signing in through the relay, whose route to the server itself
+/// fails.
+pub fn fetch_through(relay: &str, timeout: Duration) -> Option<ServerInfo> {
+    parse_json(&get(relay, crate::CONFIG_PORT, "/mm/api/info", timeout)?)
+}
+
 fn fetch_on(server: &str, port: u16, timeout: Duration) -> Option<ServerInfo> {
     parse_json(&get(server, port, "/api/info", timeout)?)
 }

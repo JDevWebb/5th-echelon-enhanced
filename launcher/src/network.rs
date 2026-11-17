@@ -431,14 +431,21 @@ pub async fn server_directory(coordinator: &str) -> Result<Browsed, String> {
     let picks: Vec<_> = servers.iter().map(|s| tokio::spawn(crate::relays::pick(s.host.clone()))).collect();
     let mut pings = pings;
     for ((ping, pick), server) in pings.iter_mut().zip(picks).zip(&servers) {
+        let answered = ping.is_some();
         if let Some(relay) = pick.await.ok().flatten().filter(|p| p.ms > 0) {
             *ping = Some(relay.ms);
+            // The server doesn't answer from here, its relay does: through the relay (SR), for
+            // this run of the launcher.
+            crate::sign_in_route::server_answered(&server.host, answered);
             // Signing in through the relay on this network (SR): the launcher's own calls too.
-            if crate::sign_in_route::kept_or_chosen() {
+            if crate::sign_in_route::kept_or_chosen() || !answered {
                 let (host, relay_host) = (server.host.clone(), relay.host.clone());
                 if tokio::task::spawn_blocking(move || crate::sign_in_route::relay_can(&relay_host)).await.unwrap_or(false) {
                     set_api_via(&host, Some(&relay.host));
                 }
+            } else if relay_for(&server.host).is_some() {
+                // It answers again: straight to it.
+                set_api_via(&server.host, None);
             }
         }
     }

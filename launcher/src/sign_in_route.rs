@@ -17,6 +17,30 @@ const MAX_KEPT: usize = 16;
 /// What the player is told when the game signs in through the relay.
 pub const NOTICE: &str = "Your connection to the server kept losing its answers, so the game signs in through the relay near you instead.";
 pub const NOTICE_CHOSEN: &str = "The game signs in through the relay near you, as set in Settings › Network.";
+pub const NOTICE_UNREACHABLE: &str = "The server doesn't answer from here, but the relay near you does, so the game signs in through it.";
+
+/// Servers (host names) that didn't answer the launcher's ping while their relay did: until one
+/// answers again, this run of the launcher signs in to it through the relay. Not kept: a
+/// server that's down for everyone shouldn't send this PC through the relay for a week. Without
+/// it, a player whose route to the matchmaking server fails altogether was stopped at "Server not
+/// answering" and the game never ran to find it needed the relay.
+static UNREACHABLE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Whether `server` answered the launcher's ping just now (its relay answering either way).
+pub fn server_answered(server: &str, answered: bool) {
+    let server = server.to_ascii_lowercase();
+    let mut list = UNREACHABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    list.retain(|s| *s != server);
+    if !answered {
+        list.push(server);
+    }
+}
+
+/// Whether `server` didn't answer from here while its relay did.
+pub fn unreachable(server: &str) -> bool {
+    let server = server.to_ascii_lowercase();
+    UNREACHABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|s| *s == server)
+}
 
 /// Adds or refreshes `network` in `list`, the oldest going past [`MAX_KEPT`].
 pub fn remember(list: &mut Vec<(String, i64)>, network: &str, at: i64) {
@@ -34,14 +58,20 @@ pub fn found(list: &[(String, i64)], network: &str, now: i64) -> bool {
 }
 
 /// Why the game should sign in through the relay this start, if it should: the player chose it,
-/// or the game found it needed to on the network this PC is on (its finding taken first).
-pub fn wanted(game_dir: &std::path::Path) -> Option<&'static str> {
+/// the game found it needed to on the network this PC is on (its finding taken first), or
+/// `server` doesn't answer from here while its relay does.
+pub fn wanted(game_dir: &std::path::Path, server: &str) -> Option<&'static str> {
     if crate::prefs::Prefs::sign_in_via_relay() {
         return Some(NOTICE_CHOSEN);
     }
-    let network = crate::reach::here()?;
-    take_game_finding(game_dir, &network);
-    found(&crate::prefs::Prefs::via_relay_networks(), &network, identity::now()).then_some(NOTICE)
+    let network = crate::reach::here();
+    if let Some(network) = &network {
+        take_game_finding(game_dir, network);
+        if found(&crate::prefs::Prefs::via_relay_networks(), network, identity::now()) {
+            return Some(NOTICE);
+        }
+    }
+    unreachable(server).then_some(NOTICE_UNREACHABLE)
 }
 
 /// Whether this network signs in through the relay, from what's kept (no file read): the player
@@ -94,6 +124,17 @@ pub fn tunnel(server: &str, login: u16, secure: u16, relay_host: &str, relay_por
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_server_that_doesnt_answer_goes_through_the_relay_until_it_does() {
+        let server = "mm-unreachable.example";
+        assert!(!unreachable(server));
+        server_answered(server, false);
+        assert!(unreachable("MM-Unreachable.example"), "by its host name, any case");
+        assert!(!unreachable("other.example"), "only that server");
+        server_answered(server, true);
+        assert!(!unreachable(server), "it answers again");
+    }
 
     #[test]
     fn a_network_signs_in_through_the_relay_for_a_week() {

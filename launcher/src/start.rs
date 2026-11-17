@@ -54,7 +54,7 @@ pub fn start(game: &mut Game, notices: &mut Notices, mode: PlayMode, name_not_al
             // on (0.5.5's SR). Only with a relay that says it can.
             let via_relay = relay
                 .as_ref()
-                .and_then(|r| crate::sign_in_route::wanted(&game.dir).map(|why| (r, why)))
+                .and_then(|r| crate::sign_in_route::wanted(&game.dir, &profile.server).map(|why| (r, why)))
                 .filter(|(r, _)| crate::sign_in_route::relay_can(&r.host));
             let tunnel = if let Some((r, why)) = via_relay {
                 tracing::info!("Signing in to {} through the relay {} ({why})", profile.server, r.host);

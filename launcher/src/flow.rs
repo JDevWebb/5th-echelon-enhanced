@@ -321,7 +321,12 @@ pub fn offers(server: &str, feature: &str) -> bool {
             return offered;
         }
     }
-    let (good_for, offered) = match setup::server_info::fetch(server, crate::network::INFO_TIMEOUT) {
+    // Signing in through the relay (SR): the server is asked there, its route from here failing.
+    let info = match crate::network::relay_for(server) {
+        Some(relay) => setup::server_info::fetch_through(&relay, crate::network::INFO_TIMEOUT),
+        None => setup::server_info::fetch(server, crate::network::INFO_TIMEOUT),
+    };
+    let (good_for, offered) = match info {
         Some(info) => (Duration::from_secs(600), info.features.iter().any(|f| f == feature)),
         None => (Duration::from_secs(60), last.is_some_and(|(.., offered)| offered)),
     };
