@@ -1250,6 +1250,14 @@ impl Bot {
             .challenge)
     }
 
+    /// Names players this game couldn't reach, as the add-on does (0.5.5's JC4).
+    pub async fn unreachable_peers(&self, peers: Vec<server_api::misc::UnreachablePeer>) -> std::result::Result<(), tonic::Status> {
+        MiscClient::new(self.api.clone())
+            .unreachable_peers(self.authed(server_api::misc::UnreachablePeersRequest { peers }))
+            .await?;
+        Ok(())
+    }
+
     /// What the server saw of this player's last game session.
     pub async fn session_summary(&self) -> std::result::Result<server_api::misc::SessionSummaryResponse, tonic::Status> {
         Ok(MiscClient::new(self.api.clone())

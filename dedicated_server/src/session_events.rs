@@ -39,6 +39,11 @@
 //!   `ping_ms` and `host_ping_ms` (each one's round trip to this server, as their game
 //!   measured it), `relayed`, and for a relayed pair `relay_ms` (their round trip through
 //!   the relay) and `direct_ms` (the least a direct one could take, from where they are).
+//! - `unreachable` (0.5.5's JC4): the player's game couldn't reach another player: `found`;
+//!   when found, `peer`, `peer_id`, `at` (the address it tried), `relayed` (the peer's) and
+//!   `together` (in a session with them, or joining their public match: only then does it
+//!   count towards moving the peer to the relay); when not, `ip` (hex, as the game holds it),
+//!   `port` and `rvcid`.
 //! - `join_failed`: `room`, `code` (the game's error code, hex), `outcome` (`full`: the
 //!   lobby is full at its current size; `locked`; `closed`: the room had just been closed;
 //!   `data_mismatch`: different game data; `failed`: anything else). `own`: true when the

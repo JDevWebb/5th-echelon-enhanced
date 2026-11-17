@@ -1893,6 +1893,32 @@ impl Misc for MyMisc {
         Ok(Response::new(misc::JoinNeverGotInResponse {}))
     }
 
+    async fn unreachable_peers(&self, request: Request<misc::UnreachablePeersRequest>) -> Result<Response<misc::UnreachablePeersResponse>, Status> {
+        let user_id = caller(&request)?;
+        if !crate::rate_limit::game_requests().check(user_id) {
+            return Err(Status::resource_exhausted("Too many requests; slow down"));
+        }
+        let peers: Vec<crate::unreachable::Peer> = request
+            .into_inner()
+            .peers
+            .into_iter()
+            .take(crate::unreachable::MAX_PEERS)
+            .map(|p| crate::unreachable::Peer {
+                ip: p.ip,
+                port: p.port,
+                local_ip: p.local_ip,
+                local_port: p.local_port,
+                rvcid: p.rvcid,
+            })
+            .collect();
+        let storage = Arc::clone(&self.storage);
+        let logger = self.logger.clone();
+        tokio::task::spawn_blocking(move || crate::unreachable::reported(&storage, &logger, user_id, &peers))
+            .await
+            .map_err(internal)?;
+        Ok(Response::new(misc::UnreachablePeersResponse {}))
+    }
+
     async fn match_state(&self, request: Request<misc::MatchStateRequest>) -> Result<Response<misc::MatchStateResponse>, Status> {
         let user_id = caller(&request)?;
         if !crate::rate_limit::polls().check(user_id) {

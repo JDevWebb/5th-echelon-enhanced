@@ -3542,6 +3542,46 @@ async fn cross_relay(ctx: &mut Ctx, relay: IpAddr) -> Result<()> {
 /// tells relay B where the host is (link Locate), so the guest's packets for the host's address
 /// go to relay A and on to the host. Before, relay B dropped them as "nobody's address" (ca1,
 /// 16 Nov 2026: Tea_bag at de1 joining John_Fisher, direct at us1).
+/// 0.5.5's JC4 and JC2: two players' games name a direct host they couldn't reach. The host is
+/// relayed from its next probe, and again when it signs in anew from the same address after its
+/// registration lapsed: the move lasts on that network.
+async fn unreachable_peer(ctx: &mut Ctx) -> Result<()> {
+    let at = nat_addr(ctx.server, false)?;
+    let mut host = ctx.player("Unreached").await?;
+    let sock = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+    let first = testbot::bot::nat_register(&sock, at, 0, &host.name, host.nat_ticket).await?;
+    ensure!(!first.relayed, "the host should start direct here");
+    host.register_urls(&[&format!("prudp:/address={};port={};RVCID=5;hdrType=0;type=2", first.advertise.ip(), first.advertise.port())])
+        .await?;
+    let game = host.create_session(PUBLIC_MATCH).await?;
+    host.add_participants(game, &[host.pid], &[]).await?;
+    // As the game's memory may hold it: the address's bytes the other way round (the server
+    // tries both orders).
+    let peer = server_api::misc::UnreachablePeer {
+        ip: u32::from(*first.advertise.ip()).swap_bytes(),
+        port: u32::from(first.advertise.port()),
+        local_ip: 0,
+        local_port: 0,
+        rvcid: 5,
+    };
+    let one = ctx.player("Reporter").await?;
+    one.unreachable_peers(vec![peer]).await?;
+    let still = testbot::bot::nat_register(&sock, at, 0, &host.name, host.nat_ticket).await?;
+    ensure!(!still.relayed, "one player's word moved the host");
+    let two = ctx.player("Witness").await?;
+    two.unreachable_peers(vec![peer]).await?;
+    let moved = testbot::bot::nat_register(&sock, at, 0, &host.name, host.nat_ticket).await?;
+    ensure!(moved.relayed, "two players couldn't reach the host, but it's still direct ({})", moved.advertise);
+    // A new session, once the old registration has lapsed (90 s): relayed from the start.
+    let name = host.name.clone();
+    host.disconnect().await?;
+    tokio::time::sleep(Duration::from_secs(95)).await;
+    let host = Bot::login(ctx.server, &name, PASSWORD).await?;
+    let again = testbot::bot::nat_register(&sock, at, 0, &name, host.nat_ticket).await?;
+    ensure!(again.relayed, "signed in anew from the same address, the host is direct again ({})", again.advertise);
+    Ok(())
+}
+
 async fn cross_relay_direct_host(ctx: &mut Ctx, relay_a: IpAddr, relay_b: IpAddr) -> Result<()> {
     use nat_proto::Message;
     let (at_a, at_b) = (nat_addr(relay_a, false)?, nat_addr(relay_b, false)?);
@@ -4322,6 +4362,7 @@ const SCENARIOS: &[&str] = &[
     "lost-push",
     "nat-probe",
     "nat-relay",
+    "unreachable-peer",
     "relay-ping",
     "nat-public-address",
     "friends",
@@ -4507,6 +4548,7 @@ async fn run() -> Result<()> {
             "cross-relay" => 60,
             "cross-relay-forward" => 60,
             "cross-relay-direct-host" => 60,
+            "unreachable-peer" => 150,
             "chat" => 120,
             "reconnect" | "closing-note" => 180,
             // About a dozen players and three parts (private refusals, a public match, one
@@ -4531,6 +4573,7 @@ async fn run() -> Result<()> {
                 "duplicate-request" => duplicate_request(&mut ctx).await,
                 "lost-push" => lost_push(&mut ctx).await,
                 "nat-probe" => nat_probe_scenario(&mut ctx).await,
+                "unreachable-peer" => unreachable_peer(&mut ctx).await,
                 "nat-relay" => nat_relay(&mut ctx).await,
                 "relay-ping" => relay_ping(&mut ctx).await,
                 "nat-public-address" => nat_public_address(&mut ctx).await,

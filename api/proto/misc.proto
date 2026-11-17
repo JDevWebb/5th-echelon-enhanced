@@ -27,6 +27,10 @@ service Misc {
     // The game gave up on a join without reporting it (back to its own lobby, never in the
     // match): the server takes the player out of the room it sent them to, and tells them why.
     rpc JoinNeverGotIn(JoinNeverGotInRequest) returns (JoinNeverGotInResponse);
+    // The game couldn't reach these players (Storm gave up on a connection to a member of a
+    // session it's in or joining, "Unreachable"): the server finds who they are, notes it, and
+    // moves a player two others' games couldn't reach to the relay (0.5.5's JC4).
+    rpc UnreachablePeers(UnreachablePeersRequest) returns (UnreachablePeersResponse);
     // Who's in the player's match now, and who they played with in the last 30 minutes: who
     // they can report (F5).
     rpc MatchPlayers(MatchPlayersRequest) returns (MatchPlayersResponse);
@@ -134,6 +138,24 @@ message FairPlayCheckResponse {}
 
 message JoinNeverGotInRequest {}
 message JoinNeverGotInResponse {}
+
+message UnreachablePeersRequest {
+    // At most 8.
+    repeated UnreachablePeer peers = 1;
+}
+// A peer as the game knows it (its PeerDescriptor): addresses as the game holds them in memory,
+// the server tries both byte orders.
+message UnreachablePeer {
+    // Address A, the public one it advertises.
+    uint32 ip = 1;
+    uint32 port = 2;
+    // Address B, its local one.
+    uint32 local_ip = 3;
+    uint32 local_port = 4;
+    // The Quazal connection id the server gave its game.
+    uint32 rvcid = 5;
+}
+message UnreachablePeersResponse {}
 
 message MatchPlayersRequest {}
 message MatchPlayersResponse {
