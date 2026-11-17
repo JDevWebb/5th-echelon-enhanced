@@ -609,8 +609,9 @@ export component MatchesScreen inherits Rectangle {
                             }
                         }
                         if !selected.joinable && !selected.with-me: Btn {
-                            // Under way: a queue, joined by itself when the round's over. Full: a
-                            // seat watched for, and asked when one opens.
+                            // Full, or its free seats promised to the players waiting: a queue, joined
+                            // by itself when a seat is this player's. (Under way isn't a reason since
+                            // 0.5.5's JIP: a match under way with a seat is joined mid-round.)
                             // In line (the server's queue, or the launcher's alone on an older
                             // server): joined by itself when it can be. The place, when the server
                             // keeps one.
@@ -618,9 +619,8 @@ export component MatchesScreen inherits Rectangle {
                                 // The place, when the server keeps one (the note under it says the rest:
                                 // with it, the line ran past the button).
                                 ? (selected.queue-place > 0 ? "In the queue · " + selected.queue-place + " of " + selected.waiting
-                                    : narrow ? "In the queue" : selected.under-way ? "In the queue: you join when the round ends" : "In the queue: you join when a seat opens")
+                                    : narrow ? "In the queue" : "In the queue: you join when a seat opens")
                                 : selected.waiting >= 8 ? "Queue full"
-                                : selected.under-way ? "Join when this round ends"
                                 : selected.full ? "Join when a seat opens"
                                 : "Join the queue";
                             enabled: root.watching-room == selected.room || selected.waiting < 8;
@@ -632,7 +632,7 @@ export component MatchesScreen inherits Rectangle {
                         }
                         if !selected.with-me && root.watching-room == selected.room && !short: Text {
                             text: selected.under-way
-                                ? "The game's started now if it isn't running, so you're in the lobby before the next round. Press again to leave the queue."
+                                ? "The game's started now if it isn't running, and you join mid-round by yourself when a seat is yours. Press again to leave the queue."
                                 : "You join by yourself when a seat is yours. Press again to leave the queue.";
                             horizontal-alignment: center;
                             wrap: word-wrap;

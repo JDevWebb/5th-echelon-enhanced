@@ -788,7 +788,7 @@ impl Ui {
                 seen.queued = false;
                 seen.server_queue = false;
                 drop(seen);
-                self.core.lock().notices.info(format!("{label}: the round is over, joining it now."));
+                self.core.lock().notices.info(format!("{label}: a seat is yours, joining it now."));
                 self.core.changed(core::Changed::Activity);
                 self.show(|w| {
                     w.set_watching_room(-1);
@@ -1679,8 +1679,9 @@ fn wire(w: &AppWindow, ui: &Arc<Ui>) {
                 let mut seen = ui.seen();
                 let room = room as u32;
                 let leaving = seen.watching.as_ref().is_some_and(|(r, _)| *r == room);
-                // Under way: the queue (joined by itself when the round's over), with the game
-                // started now if it isn't, so it's ready in the short lobby between rounds.
+                // Under way (and full): the queue, joined by itself mid-round when a seat is
+                // this player's (0.5.5's JIP), with the game started now if it isn't, so it's
+                // ready when the seat opens.
                 let under_way = seen.lobbies.lobbies.iter().any(|l| l.room == room && l.under_way);
                 seen.watching = (!leaving).then(|| (room, label.to_string()));
                 seen.queued = !leaving && under_way;
