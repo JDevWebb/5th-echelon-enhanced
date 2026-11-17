@@ -140,6 +140,15 @@ pub unsafe fn guard_texture_uploads() {
         info!("texture-upload-fix: not needed with DirectX 9 (its video upload is another code)");
         return;
     }
+    // Not under Wine or Proton: the crash it stops is a Windows driver's (Intel's, on losing the
+    // focus), and there the memory check misreads DXVK's mapped textures. Major (Proton on
+    // Wayland, 17 Nov 2026): every upload of the title screen's and the SMI table's videos was
+    // cut short (1.3 million in one run), and both showed green with purple stripes; without 5th
+    // Echelon they were fine. Wine 11 staging with DXVK (the gamebox) cut none.
+    if hooks_config::running_under_wine() {
+        info!("texture-upload-fix: off under Wine/Proton (the crash it stops is a Windows driver's)");
+        return;
+    }
     let Some(image) = crate::game_image() else {
         warn!("texture-upload-fix: the game's sections weren't found -> skipped");
         return;
