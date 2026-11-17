@@ -72,7 +72,7 @@ docker run -d --name fes-relay-sr --network "$net" $mount "$image" bash -c "
     -e 's|^api_server = .*|api_server = \"127.0.0.1:50051\"|' \
     service.toml
   if grep -q '^\[nat\]' service.toml; then sed -i '/^\[nat\]/a tunnel = \"127.0.0.1:21130\"' service.toml; else printf '\n[nat]\ntunnel = \"127.0.0.1:21130\"\n' >> service.toml; fi
-  printf '\n[federation]\ncoordinator = \"http://$coord:8700\"\njoin_token = \"$token\"\nname = \"relay-sr\"\nregion = \"Test\"\nallow_http = true\n[public]\nhost = \"fes-relay-sr\"\napi = 80\ncontent = 80\n[role]\nkind = \"relay\"\nticket_key = \"$key\"\n' >> service.toml
+  printf '\n[federation]\ncoordinator = \"http://$coord:8700\"\njoin_token = \"$token\"\nname = \"relay-sr\"\nregion = \"Test\"\nallow_http = true\n[public]\nhost = \"fes-relay-sr\"\napi = 80\ncontent = 80\n[role]\nkind = \"relay\"\nticket_key = \"$key\"\nsign_in = true\n' >> service.toml
   exec ./dedicated_server --public-address \$(hostname -i | cut -d' ' -f1) >server.log 2>&1
 " >/dev/null
 sr=$(ip fes-relay-sr)
@@ -115,6 +115,10 @@ echo "--- a guest relayed at one relay joining a host who's direct at another (0
 client "$bin/testbot" --server "$mm" --other "$syd" --third "$eu" cross-relay-direct-host || rc=1
 echo "--- signing in through a relay (0.5.5): the API through its Caddy, the game's sign-in through its tunnel"
 client "$bin/testbot" --server "$mm" --other "$sr" relay-sign-in || rc=1
+echo "--- only a relay whose Caddy passes sign-in on says relay-sign-in ([role] sign_in, set by the installer)"
+says() { client curl -sf "http://$1/api/info" | python3 -c 'import json,sys; print("relay-sign-in" in json.load(sys.stdin).get("features",[]))' 2>/dev/null || echo error; }
+s_sr=$(says "$sr") s_syd=$(says "$syd")
+[ "$s_sr" = True ] && [ "$s_syd" = False ] && echo "PASS relay-sign-in: the SR relay True, the Sydney relay (no sign_in) False" || { echo "FAIL relay-sign-in: the SR relay '$s_sr', the Sydney relay '$s_syd'"; rc=1; }
 echo "--- the add-on's HTTP through the relay (SR): /mm/ on the relay is the matchmaking server's"
 mmid=$(client curl -sf "http://$sr/mm/api/info" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null || true)
 own=$(client curl -sf "http://$mm/api/info" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null || true)

@@ -1938,6 +1938,13 @@ fi
 if [ "$(checked_value role kind '^(game|relay)$')" = relay ] && [ -n "$mm_record" ]; then
   toml_put role moved_to "\"$mm_record\""
 fi
+# A relay whose Caddy passes sign-in on to the matchmaking server (0.5.5's SR, site_block's
+# upstream below): it says relay-sign-in only then, not merely on running 0.5.5.
+if [ "$(checked_value role kind '^(game|relay)$')" = relay ] && [ -n "$mm_record" ] && [ -n "$domain" ] && [ "$mm_record" != "$domain" ]; then
+  toml_put role sign_in true
+else
+  toml_set role sign_in false
+fi
 if [ -n "$ticket_key" ]; then
   toml_put role ticket_key "\"$ticket_key\""
   say "Takes the players of the matchmaking server with relay-pass key $ticket_key"

@@ -758,6 +758,9 @@ fn main() -> color_eyre::Result<()> {
     let relay_only = config.role.is_relay();
     if relay_only {
         community_api::publish_relay_only();
+        if config.role.sign_in {
+            community_api::publish_relay_sign_in();
+        }
         relays::set_relay_only();
         if let Some(host) = &config.role.moved_to {
             community_api::publish_moved_to(host);

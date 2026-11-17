@@ -455,6 +455,12 @@ pub struct RoleConfig {
     /// is on this server move there by themselves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moved_to: Option<String>,
+    /// A relay whose Caddy passes its players' sign-in, API and the game's HTTP on to the
+    /// matchmaking server (0.5.5's SR): set by install-server.sh when it writes those routes.
+    /// Only then does `/api/info` say `relay-sign-in` (a relay updated by its updater keeps its
+    /// old routes until the installer runs again).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sign_in: bool,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]

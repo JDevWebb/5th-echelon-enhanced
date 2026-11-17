@@ -86,6 +86,14 @@ pub fn publish_relay_only() {
     RELAY_ONLY.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// A relay whose Caddy passes sign-in on (`[role] sign_in`, 0.5.5's SR): `/api/info` says
+/// `relay-sign-in`, so launchers send players whose route to the matchmaking server fails here.
+static RELAY_SIGN_IN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn publish_relay_sign_in() {
+    RELAY_SIGN_IN.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Where this relay's players play now (`[role] moved_to`): `/api/info` says so.
 static MOVED_TO: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
@@ -218,8 +226,9 @@ fn info(cfg: CommunityApiConfig) -> Value {
         features.push("identity-required");
     }
     // A relay passes its players' sign-in and API on to the matchmaking server (0.5.5's SR):
-    // launchers send a player whose own route to it loses the answers this way.
-    if RELAY_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
+    // launchers send a player whose own route to it loses the answers this way. Only once its
+    // Caddy has the routes (the installer says so), not merely its release.
+    if RELAY_ONLY.load(std::sync::atomic::Ordering::Relaxed) && RELAY_SIGN_IN.load(std::sync::atomic::Ordering::Relaxed) {
         features.push("relay-sign-in");
     }
     let mut info = json!({
