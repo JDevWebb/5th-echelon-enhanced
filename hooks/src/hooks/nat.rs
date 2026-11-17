@@ -1521,7 +1521,9 @@ fn worker(host: String, port: u16) {
             st.server.filter(|_| st.reply.is_some() && st.rtt_at.is_none_or(|t| t.elapsed() >= KEEPALIVE))
         };
         if let Some(server) = measure {
-            let rtt = round_trip(server);
+            // Tunnelled, the helper is reached through the WebSocket: its ping is the round
+            // trip (0.5.5's T); UDP probes to it never come back.
+            let rtt = crate::tunnel::round_trip_for(server).unwrap_or_else(|| round_trip(server));
             let mut st = state();
             st.rtt_at = Some(Instant::now());
             if rtt.is_some() {

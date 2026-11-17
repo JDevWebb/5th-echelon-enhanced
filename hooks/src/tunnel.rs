@@ -72,6 +72,32 @@ fn own(ip: std::net::Ipv4Addr) -> bool {
     ip.is_loopback() || OWN.read().is_ok_and(|o| o.contains(&ip))
 }
 
+/// The tunnel's last round trip, in ms (a WebSocket ping to where it ends: the server, or the
+/// relay it opens at), with when it was measured. A tunnelled player's UDP probes to the NAT
+/// helper are what the tunnel is there for: they never come back, and the relay's ping went
+/// unshown (0.5.5's T).
+static RTT: Mutex<Option<(u16, std::time::Instant)>> = Mutex::new(None);
+
+/// How often the tunnel is pinged while open.
+const PING_EVERY: Duration = Duration::from_secs(15);
+
+/// The round trip to `server` (a NAT helper's address) if it goes through the tunnel: Some(the
+/// tunnel's ping in ms, measured in the last minute, if any); None when it doesn't go through.
+pub fn round_trip_for(server: SocketAddrV4) -> Option<Option<u16>> {
+    redirect(server)?;
+    Some(RTT.lock().ok().and_then(|r| *r).filter(|(_, at)| at.elapsed() < Duration::from_secs(60)).map(|(ms, _)| ms))
+}
+
+/// Notes a pong whose payload is `data`, against the ping sent with it at `sent`.
+fn note_pong(sent: &mut Option<([u8; 8], std::time::Instant)>, data: &[u8]) {
+    if let Some((_, at)) = sent.take_if(|(nonce, _)| nonce[..] == *data) {
+        let ms = u16::try_from(at.elapsed().as_millis()).unwrap_or(u16::MAX).max(1);
+        if let Ok(mut rtt) = RTT.lock() {
+            *rtt = Some((ms, std::time::Instant::now()));
+        }
+    }
+}
+
 /// Whether the game's traffic goes through the tunnel this run.
 pub fn on() -> bool {
     MAP.read().is_ok_and(|m| !m.is_empty())
@@ -209,8 +235,17 @@ async fn run(url: String, forwarders: Vec<Forwarder>) {
                 if down.send(Ws::Binary(tunnel::frame(tunnel::AUTH, &proof).into())).await.is_err() {
                     continue;
                 }
+                let mut ping = tokio::time::interval(PING_EVERY);
+                let mut sent: Option<([u8; 8], std::time::Instant)> = None;
                 loop {
                     tokio::select! {
+                        _ = ping.tick() => {
+                            let nonce = rand::random::<[u8; 8]>();
+                            sent = Some((nonce, std::time::Instant::now()));
+                            if down.send(Ws::Ping(nonce.to_vec().into())).await.is_err() {
+                                break;
+                            }
+                        }
                         out = from_game.recv() => {
                             let Some(out) = out else { return };
                             if down.send(Ws::Binary(out.into())).await.is_err() {
@@ -225,6 +260,7 @@ async fn run(url: String, forwarders: Vec<Forwarder>) {
                                     let _ = socket.send_to(datagram, to);
                                 }
                             }
+                            Some(Ok(Ws::Pong(data))) => note_pong(&mut sent, &data),
                             Some(Ok(Ws::Close(_))) | None | Some(Err(_)) => break,
                             Some(Ok(_)) => {}
                         }
@@ -264,6 +300,18 @@ fn connector() -> Option<tokio_tungstenite::Connector> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T: a pong for the ping in flight gives the round trip; another is ignored.
+    #[test]
+    fn a_pong_for_the_ping_sent_is_the_round_trip() {
+        let mut sent = Some(([1u8; 8], std::time::Instant::now() - Duration::from_millis(40)));
+        note_pong(&mut sent, &[2u8; 8]);
+        assert!(sent.is_some(), "not ours: still waiting");
+        note_pong(&mut sent, &[1u8; 8]);
+        assert!(sent.is_none());
+        let (ms, _) = RTT.lock().unwrap().unwrap();
+        assert!((40..1000).contains(&ms), "{ms}");
+    }
 
     #[test]
     fn a_forwarders_reply_is_known_by_its_port_from_this_pcs_own_addresses() {
