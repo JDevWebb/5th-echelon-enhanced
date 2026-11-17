@@ -159,9 +159,44 @@ fn started_at(room: u32, now: Instant) -> bool {
     }
 }
 
+/// Whether `room`'s host's game has been turning joiners away lately (its refusal marks, not the
+/// host's word that its round is under way): the one thing that keeps a player from joining it
+/// (0.5.5's JIP). A Spies vs Mercs round under way takes joiners: on ca1, 10-17 Nov 2026, 26 joins
+/// landed in a running round, up to 287 s in, and played; the locked refusals came from hosts
+/// busy matchmaking, not in a round.
+pub fn refusing(room: u32) -> bool {
+    refusing_at(room, Instant::now())
+}
+
+fn refusing_at(room: u32, now: Instant) -> bool {
+    let mut state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    let rooms = &mut state.rooms;
+    match rooms.get(&room) {
+        Some(at) if now.saturating_duration_since(*at) < FOR => true,
+        Some(_) => {
+            rooms.remove(&room);
+            false
+        }
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A round under way is shown as started but still taken joiners; a host turning them away
+    /// stops them (JIP).
+    #[test]
+    fn only_a_hosts_refusals_keep_joiners_out() {
+        let room = 3_100_777;
+        host_says(&[room], true);
+        assert!(started(room), "shown as under way");
+        assert!(!refusing(room), "but joinable");
+        assert!(refused(room, 3_100_778));
+        assert!(refusing(room), "its host turned someone away");
+        assert!(!refusing_at(room, Instant::now() + FOR), "forgotten after a while");
+    }
 
     #[test]
     fn a_hosts_word_holds_while_said_again() {

@@ -973,11 +973,12 @@ pub fn lobbies(core: &Core) -> launcher::matches::Lobbies {
                     map: r.map,
                     players,
                     seats,
-                    status: if r.started { "Under way" } else { "In lobby" }.into(),
+                    status: if r.started { "Under way: you join mid-round" } else { "In lobby" }.into(),
                     tone: if r.started || r.full { "warn" } else { "ok" },
                     under_way: r.started,
                     full: r.full,
-                    joinable: !r.started && !r.full,
+                    // A match under way takes joiners (0.5.5's JIP).
+                    joinable: !r.full,
                     ..Default::default()
                 }
             })

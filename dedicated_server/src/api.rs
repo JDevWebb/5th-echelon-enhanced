@@ -629,9 +629,10 @@ impl Friends for MyFriends {
         if self.storage.member_sessions_async(me).await.map_err(internal)?.iter().any(|s| s.session_id == room_id) {
             return Err(Status::invalid_argument("You're already in that game."));
         }
-        // A match its host's game has been turning joiners away from (match_started.rs).
-        if crate::match_started::started(room_id) {
-            return reply(JoinStatus::Started, "That player's match has started - you can join when it's over.");
+        // A match its host's game has been turning joiners away from (match_started.rs). One
+        // under way takes them (JIP): they come in mid-round.
+        if crate::match_started::refusing(room_id) {
+            return reply(JoinStatus::Started, "That player's match isn't taking players now - try again in a moment.");
         }
         // The invitation this queues is the one delivered as a requested join (its row says
         // so): another one already waiting for the caller goes out as the ordinary invitation
@@ -679,8 +680,8 @@ impl Friends for MyFriends {
             Relation::BlockedBy => return reply(JoinStatus::NotFound, GONE),
             _ => {}
         }
-        if crate::match_started::started(room) {
-            return reply(JoinStatus::Started, "That match has started - pick another, or start a new one.");
+        if crate::match_started::refusing(room) {
+            return reply(JoinStatus::Started, "That match isn't taking players now - pick another, or start a new one.");
         }
         // Players waiting for it (match_queue.rs) go first: only the first in line, as many as
         // it has free seats, and anyone beyond them.
@@ -744,7 +745,7 @@ impl Friends for MyFriends {
         let (waiting, place) = crate::match_queue::of(room, me, now);
         if place == 0 {
             let free = self.free_seats(room).await?;
-            if !crate::match_started::started(room) && free > waiting {
+            if !crate::match_started::refusing(room) && free > waiting {
                 return reply(QueueStatus::NotFound, 0, waiting, "That match can be joined now.");
             }
         }

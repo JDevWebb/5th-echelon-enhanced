@@ -403,11 +403,13 @@ pub fn lobbies_or_open(cfg: &Config) -> Lobbies {
                 map: r.map.clone(),
                 players,
                 seats,
-                status: if r.started { "Under way" } else { "In lobby" }.into(),
+                status: if r.started { "Under way: you join mid-round" } else { "In lobby" }.into(),
                 tone: if r.started || r.full { "warn" } else { "ok" },
                 under_way: r.started,
                 full: r.full,
-                joinable: !r.started && !r.full,
+                // A match under way takes joiners (0.5.5's JIP); the server says when its host
+                // isn't taking any.
+                joinable: !r.full,
                 ..Lobby::default()
             }
         })
@@ -453,11 +455,11 @@ pub fn from_response(resp: &server_api::friends::LobbiesResponse) -> Lobbies {
     }
 }
 
-/// Whether this player may join a match now: not under way, a seat free, and, with players
-/// waiting for it, theirs (they're among the first in line, as many as there are free seats) or
-/// beyond the queue's.
-fn joinable(under_way: bool, full: bool, seats: u32, players: usize, waiting: u32, place: u32) -> bool {
-    if under_way || full {
+/// Whether this player may join a match now: a seat free, and, with players waiting for it,
+/// theirs (they're among the first in line, as many as there are free seats) or beyond the
+/// queue's. Under way or not: a match under way takes joiners mid-round (0.5.5's JIP).
+fn joinable(_under_way: bool, full: bool, seats: u32, players: usize, waiting: u32, place: u32) -> bool {
+    if full {
         return false;
     }
     // Seats not said: the queue's place decides alone.
@@ -551,7 +553,8 @@ mod queue_tests {
         assert!(joinable(false, false, 8, 6, 1, 0), "one waiting leaves a seat");
         assert!(joinable(false, false, 8, 6, 3, 2), "second in line, two seats: in");
         assert!(!joinable(false, false, 8, 6, 3, 3), "third in line waits");
-        assert!(!joinable(true, false, 8, 2, 0, 1), "under way: nobody, first in line or not");
+        assert!(joinable(true, false, 8, 2, 0, 0), "under way: joinable mid-round (JIP)");
+        assert!(joinable(true, false, 8, 2, 0, 1), "and the first in line too");
         assert!(!joinable(false, true, 8, 8, 0, 1), "full: nobody");
         assert!(joinable(false, false, 0, 3, 2, 1), "seats not said: the place decides");
     }
@@ -792,7 +795,11 @@ mod lobby_tests {
         );
         assert_eq!(a.friends, vec!["Tank"]);
         assert!(!a.teams);
-        assert_eq!((b.status.as_str(), b.tone, b.joinable), ("Round 2 under way · 6 min", "warn", false));
+        assert_eq!(
+            (b.status.as_str(), b.tone, b.joinable),
+            ("Round 2 under way · 6 min", "warn", true),
+            "joinable mid-round (JIP)"
+        );
         assert!(b.teams);
         assert_eq!(
             b.settings,

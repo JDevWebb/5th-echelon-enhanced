@@ -146,15 +146,14 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
                 Some((session, attrs))
             })
             .collect();
-        // Nor a match under way (match_started.rs): its host's game turns the joiner away, or
-        // the joiner's game waits on it and never gives up, and the player restarts. With it
-        // answered, one started match kept every searcher of its mode from playing until it
-        // ended (eu1, 24-25 Oct: 178 stuck searches and 397 locked refusals in three days).
-        // Left out, they find nothing, host, and the next searcher finds them. An invitation
+        // Nor a match whose host's game has been turning joiners away (match_started.rs): with
+        // it answered, one such match kept every searcher of its mode from playing (eu1, 24-25
+        // Oct: 178 stuck searches and 397 locked refusals in three days). A match whose round is
+        // under way is answered (0.5.5's JIP): the game takes joiners mid-round. An invitation
         // goes where it was asked to.
         let (scanned, started): (Vec<_>, Vec<_>) = scanned
             .into_iter()
-            .partition(|(session, _)| invitation_search || !crate::match_started::started(session.session_id));
+            .partition(|(session, _)| invitation_search || !crate::match_started::refusing(session.session_id));
         let started = started.iter().filter(|(_, attrs)| answers(&req_attrs, attrs, false)).count();
         // Nor a match whose free seats are promised to the players waiting for it
         // (match_queue.rs): they're let in first. An invitation goes where it was asked to.

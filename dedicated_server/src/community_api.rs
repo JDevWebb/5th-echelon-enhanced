@@ -357,7 +357,7 @@ pub(crate) fn activity_of(name: &str, sessions: &[LiveSession]) -> Option<Activi
         game_mode: attribute_value(&best.attributes, ATTR_GAME_MODE),
         joinable: match attribute_value(&best.attributes, ATTR_ROOM_KIND) {
             Some(1) => !best.private,
-            Some(0) => !best.private && !crate::match_started::started(best.id),
+            Some(0) => !best.private && !crate::match_started::refusing(best.id),
             _ => false,
         },
     })
