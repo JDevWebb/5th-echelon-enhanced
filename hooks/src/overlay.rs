@@ -2669,17 +2669,19 @@ impl MyRenderLoop {
             }
             for m in open {
                 let full = m.seats > 0 && m.players >= m.seats;
-                let detail = if m.started {
-                    "Under way: you can join when it's over"
-                } else if full {
+                // A match under way takes joiners mid-round (0.5.5's JIP); the server says so if
+                // its host's game is turning players away.
+                let detail = if full {
                     "Full"
+                } else if m.started {
+                    "Under way: you join mid-round"
                 } else {
                     "Open"
                 };
                 let label = format!("Join##fe-room-{}", m.room);
                 let dot = if m.started || full { pal().warn } else { pal().ok };
                 self.row(ui, Some(dot), &m.line(), detail, w, || {
-                    if !m.started && !full && self.button(ui, &label, false) {
+                    if !full && self.button(ui, &label, false) {
                         crate::community::join_room(m.room, m.mode_name().to_string());
                     }
                 });

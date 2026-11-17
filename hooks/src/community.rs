@@ -771,7 +771,7 @@ fn join_now_impl(id: &str, name: &str) {
             JoinStatus::Offline => say(format!("{name} isn't in a game right now."), true),
             JoinStatus::Private => say(format!("{name} is in a private match - you need an invitation."), true),
             JoinStatus::NotFriendsWithHost => say(format!("{name} can't bring you in: the game's host doesn't have them as a friend."), true),
-            JoinStatus::Started => say(format!("{name}'s match has started - you can join when it's over."), true),
+            JoinStatus::Started => say(format!("{name}'s match isn't taking players now - try again in a moment."), true),
             _ => say(format!("Couldn't join {name}."), true),
         },
         Err(e) => {

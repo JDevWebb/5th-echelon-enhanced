@@ -143,18 +143,16 @@ pub fn other_mode_notice(mine: &str, theirs: &str, rooms: usize) -> (String, Str
 }
 
 /// The overlay's notice for a matchmaking search that found nothing because the `rooms` matches
-/// it would have found are under way: a round can't be joined once it's started, and the game
-/// only says it's searching (Iceman, 13 Nov: everyone online was in one match mid-round).
+/// it would have found have hosts whose games are turning joiners away (match_started.rs's
+/// refusals): the game only says it's searching. Since 0.5.5's JIP a match under way is found
+/// and joined mid-round, so that's no longer the reason (Iceman, 13 Nov, was told "under way").
 pub fn under_way_notice(rooms: usize) -> (String, String) {
     let (title, which) = if rooms == 1 {
-        ("The only match is under way".to_string(), "It can't be joined until its round ends")
+        ("The only match isn't taking players".to_string(), "Its host's game is turning joiners away for now")
     } else {
-        (format!("All {rooms} matches are under way"), "They can't be joined until their rounds end")
+        (format!("All {rooms} matches aren't taking players"), "Their hosts' games are turning joiners away for now")
     };
-    (
-        title,
-        format!("{which}: pick it in the overlay's Matches tab to go in when it does, or host and wait for others."),
-    )
+    (title, format!("{which}: try again in a few minutes, or host and wait for others."))
 }
 
 #[cfg(test)]
@@ -162,14 +160,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_search_says_when_every_match_is_under_way() {
+    fn a_search_says_when_no_match_is_taking_players() {
         let (title, text) = under_way_notice(1);
-        assert_eq!(title, "The only match is under way");
+        assert_eq!(title, "The only match isn't taking players");
         assert_eq!(
             text,
-            "It can't be joined until its round ends: pick it in the overlay's Matches tab to go in when it does, or host and wait for others."
+            "Its host's game is turning joiners away for now: try again in a few minutes, or host and wait for others."
         );
-        assert_eq!(under_way_notice(3).0, "All 3 matches are under way");
+        assert_eq!(under_way_notice(3).0, "All 3 matches aren't taking players");
     }
 
     #[test]
