@@ -4162,7 +4162,7 @@ async fn join_notice(ctx: &mut Ctx) -> Result<()> {
     joiner.report_failed_joins(&[(lobby, LOCKED)]).await?;
     let (title, text) = joiner.poll_notice(wait).await?.ok_or_else(|| eyre!("no notice for a locked session"))?;
     ensure!(title == "Couldn't join: the session is locked", "{title}");
-    ensure!(text.contains("match is already under way"), "{text}");
+    ensure!(text.contains("turning players away"), "{text}");
     ensure!(joiner.poll_notice(Duration::from_millis(600)).await?.is_none(), "the retry was a notice of its own");
     let summary = joiner.session_summary().await?;
     ensure!(
