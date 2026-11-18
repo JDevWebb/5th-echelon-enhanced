@@ -901,24 +901,13 @@ fn friends_empty(w: &AppWindow) {
     self::page(w, "friends", view);
 }
 
-/// What's new after an update, from the dialog's own builder.
+/// What's new after an update, from the dialog's own builder, with the newest release's real
+/// entry (its texts are the longest the dialog shows).
 fn whats_new(w: &AppWindow) {
     play_ready(w);
-    let v = serde_json::json!({
-        "from": "0.4.7",
-        "to": "0.5.0",
-        "headlines": 3,
-        "notes": ["Release notes", "https://example.org/notes"],
-        "releases": [{
-            "version": "0.5.0",
-            "thanks": "",
-            "new": [
-                {"title": "One matchmaking server for everyone", "text": "Quick match finds a match on the whole network.", "community": true},
-                {"title": "A new launcher", "text": "Faster, in dark and light, the same everywhere.", "community": false}
-            ],
-            "fixed": [["Stuck searching", ": started matches no longer show as open."]]
-        }]
-    });
+    let newest = launcher::whats_new::RELEASES.first().expect("a release in What's new");
+    let real = crate::whats_new::view(vec![newest], Some("0.5.4".into()), newest.version.to_string()).expect("a view");
+    let v = serde_json::to_value(real).expect("What's new as JSON");
     let view = crate::pages::dialogs::whats_new(&v);
     w.set_dialog_kicker(s(&view.page.kicker));
     w.set_dialog_title(s(&view.page.title));

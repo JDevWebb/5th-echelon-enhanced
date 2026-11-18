@@ -44,7 +44,7 @@ pub struct View {
     notes: (&'static str, String),
 }
 
-fn view(releases: Vec<&'static w::Release>, from: Option<String>, to: String) -> Option<View> {
+pub(crate) fn view(releases: Vec<&'static w::Release>, from: Option<String>, to: String) -> Option<View> {
     let newest = *releases.first()?;
     let notes = if releases.len() > 1 {
         ("All release notes", launcher::updater::RELEASES_PAGE.to_string())

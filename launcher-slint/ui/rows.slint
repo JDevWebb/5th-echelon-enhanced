@@ -308,8 +308,11 @@ export component RowItem inherits Rectangle {
         if item.kind == "item": Rectangle {
             border-radius: 6px;
             background: ita.has-hover ? Theme.control : (item.on ? Theme.selected : transparent);
+            // Its height from the layout at the card's width, so wrapped lines aren't cut off
+            // (What's new's longer texts lost their third line).
+            min-height: item-lay.preferred-height;
             ita := TouchArea {}
-            HorizontalLayout {
+            item-lay := HorizontalLayout {
                 padding: 10px;
                 padding-left: 12px;
                 spacing: 12px;
