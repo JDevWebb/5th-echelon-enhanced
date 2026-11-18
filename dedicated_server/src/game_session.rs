@@ -172,10 +172,11 @@ pub(crate) fn host_migrated_to(from: u32) -> Option<u32> {
     host_migrated().get(&from).filter(|(_, at)| at.elapsed() < SPLIT_AFTER_LEAVING).map(|(to, _)| *to)
 }
 
-/// The old host of `from` is gone and `by` hosts it as `to`: invitations and join targets
-/// that named `from` name `to` now.
+/// The old host of `from` is gone and `by` hosts it as `to`: invitations, joins asked for and
+/// join targets that named `from` name `to` now.
 fn carried_over(logger: &Logger, storage: &Storage, from: u32, to: u32, by: u32) {
     crate::join_targets::moved(from, to);
+    crate::join_now::moved(from, to, by);
     match storage.rebind_invites(from, to, by) {
         Ok(0) => {}
         Ok(n) => info!(logger, "{n} pending invitations to session {from} now name {to}"),
@@ -1472,6 +1473,14 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             );
             self.drop_other_invites(logger, user_id, request.game_session_key.session_id);
         }
+        // So is a join into a public match asked for without an invitation (join_now.rs), the
+        // room its friend search was answered with: done, and the invitations into other rooms
+        // go as they would after an invitation's.
+        let via_join_now = !via_invitation && targets.contains(&user_id) && crate::join_now::joined(user_id, session_id);
+        if via_join_now {
+            info!(logger, "User {user_id} joined session {session_id} it asked to join (via AddParticipants)");
+            self.drop_other_invites(logger, user_id, session_id);
+        }
         for &target in &targets {
             let there = members.as_ref().is_some_and(|(creator, participants)| *creator == target || participants.contains(&target));
             if let Some(leader) = (!there && self.is_private_room(request.game_session_key.type_id, session_id))
@@ -1491,6 +1500,8 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                     "party"
                 } else if via_invitation {
                     "invite"
+                } else if via_join_now {
+                    "join-now"
                 } else if self.is_private_room(request.game_session_key.type_id, session_id) {
                     "party"
                 } else {
@@ -1777,13 +1788,28 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             return Err(Error::AccessDenied);
         }
 
-        // Resolved before the search, because the answer depends on it.
-        let invited = rmc_err!(
-            self.storage
-                .find_pending_invited_session(user_id, request.game_session_type_id, request.participant_ids.0.as_slice()),
-            logger,
-            "error resolving invited room"
-        )?;
+        // Resolved before the search, because the answer depends on it. A join into a public
+        // match the player asked for (join_now.rs) is answered as an invitation would be: its
+        // game raised the accept event for that friend itself, and searches for them. It goes
+        // first, while it holds; otherwise the pending invitation.
+        let joining =
+            crate::join_now::target(user_id).filter(|target| target.session_type == request.game_session_type_id && target.searched_by(request.participant_ids.0.as_slice()));
+        let asked = match joining {
+            Some(target) => rmc_err!(self.storage.find_join_target_session(user_id, &target), logger, "error resolving the room asked to join")?,
+            None => None,
+        };
+        if let Some(room) = asked.as_ref() {
+            info!(logger, "Friend search of {user_id}: the public match {} it asked to join (no invitation)", room.session_id);
+        }
+        let invited = match asked {
+            Some(room) => Some(room),
+            None => rmc_err!(
+                self.storage
+                    .find_pending_invited_session(user_id, request.game_session_type_id, request.participant_ids.0.as_slice()),
+                logger,
+                "error resolving invited room"
+            )?,
+        };
 
         // The searching client is put into the room it was invited to before we answer.
         //
@@ -2488,6 +2514,12 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         if invited {
             info!(logger, "User {user_id} joined session {} through an invitation", key.session_id);
         }
+        // A public match asked to join without an invitation (join_now.rs): done. Nothing more
+        // is let in by it - a public match lets anyone in.
+        let asked = !invited && crate::join_now::joined(user_id, key.session_id);
+        if asked {
+            info!(logger, "User {user_id} joined session {} it asked to join", key.session_id);
+        }
         // A private match lets in whom its host invited, who is in it already (a host
         // migration's rejoin), and the members of an invited leader's party (escorts; the host's
         // friends or not: a party following its leader is the party's own business). Nobody
@@ -2520,7 +2552,17 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             }
             // Sessions' join event too, at the same pace: each is kept, and remembered for
             // ten minutes to match the join with how it went.
-            crate::session_events::joined(user_id, key.session_id, if invited { "invite" } else { "search" });
+            crate::session_events::joined(
+                user_id,
+                key.session_id,
+                if invited {
+                    "invite"
+                } else if asked {
+                    "join-now"
+                } else {
+                    "search"
+                },
+            );
         }
         // In the match's players (their matches played) only if they're in it: JoinSession
         // names any id, and a stranger's joins of a private match counted for them and the

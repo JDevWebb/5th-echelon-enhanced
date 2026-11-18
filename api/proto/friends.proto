@@ -13,6 +13,8 @@ service Friends {
     // in. Only a friend (or anyone, in "everyone" mode); a party its host made invite-only and
     // a private match, theirs or not, need a real invitation, and a match whose host's game is
     // turning joiners away can't be joined (one under way can, from 0.5.5). Servers that offer it list "join-now" in /api/info's features.
+    // A caller whose game starts the join itself (`direct`) joins a public match without the
+    // invitation (JoinNowResponse.direct says so; older servers queue it all the same).
     rpc JoinNow (JoinNowRequest) returns (JoinNowResponse);
     // Joins a public match picked from the lobby browser (its room id, from /api/playing), as
     // JoinNow does: the caller's running game joins it on its next event poll. NOT_FOUND when
@@ -255,11 +257,18 @@ message InviteResponse {
 message JoinNowRequest {
     // The friend to join (their account id).
     string id = 1;
+    // The caller's game starts the join itself (it raises the "invitation accepted" event for
+    // the friend once the server says OK): into a public match, the server queues no invitation
+    // then, and answers the game's search for the friend with the match (JoinNowResponse.direct).
+    // A party is joined with the invitation all the same. Older servers ignore it.
+    bool direct = 2;
 }
 
 message JoinRoomRequest {
     // The room (session id) to join.
     uint32 room = 1;
+    // As JoinNowRequest.direct: the game raises the accept event for the match's host itself.
+    bool direct = 2;
 }
 
 message QueueRoomRequest {
@@ -327,6 +336,10 @@ message JoinNowResponse {
     // JoinRoom's OK: the account id of the match's host, whose invitation the game is to take
     // as the requested join (the launcher's join request names it).
     string host_id = 3;
+    // OK without an invitation (the request's `direct`, into a public match): the caller's game
+    // is to raise the accept event for the friend (JoinRoom: for host_id) itself, within four
+    // minutes. False: an invitation was queued, delivered as the requested join (as before).
+    bool direct = 4;
 }
 message LobbiesRequest {}
 

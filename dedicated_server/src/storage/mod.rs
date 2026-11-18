@@ -1568,8 +1568,42 @@ impl Storage {
             .zip(senders.iter().map(Some).chain(std::iter::repeat(None)))
             .position(|(s, sender)| hosts.contains(&s.creator_id) || sender.is_some_and(|sender| hosts.contains(sender)))
             .unwrap_or(0);
-        let mut session = (!candidates.is_empty()).then(|| candidates.swap_remove(pick));
+        let session = (!candidates.is_empty()).then(|| candidates.swap_remove(pick));
+        self.invited_room_with_participants(session, receiver_id).await
+    }
 
+    /// The room a join asked for without an invitation ([`crate::join_now`]) leads into, as
+    /// [`Self::find_pending_invited_session`] answers for an invitation: while the invitation
+    /// it stands in for would hold (from `target`'s member joined through, else its host;
+    /// marked a join request, so only while the room is still a public match, the member in
+    /// it, and nobody blocked: [`invite_holds_sql`]), its host still in it.
+    pub fn find_join_target_session(&self, receiver_id: u32, target: &crate::join_now::Target) -> Result<Option<GameSession>> {
+        run(self.find_join_target_session_async(receiver_id, target))?
+    }
+
+    pub async fn find_join_target_session_async(&self, receiver_id: u32, target: &crate::join_now::Target) -> Result<Option<GameSession>> {
+        let session: Option<GameSession> = sqlx::query_as(&format!(
+            r"
+            SELECT g.type_id AS session_type, g.id AS session_id, g.creator_id, g.attributes
+            FROM (SELECT ?1 AS sender, ?2 AS receiver, ?3 AS session_type, ?4 AS session_id, 1 AS join_request) i
+            INNER JOIN game_sessions g ON g.id = i.session_id AND g.type_id = i.session_type
+            INNER JOIN participants p ON p.game_id = g.id AND p.user_id = g.creator_id
+            WHERE {holds}
+              AND g.destroyed_at IS NULL
+            ",
+            holds = invite_holds_sql("i")
+        ))
+        .bind(target.sender())
+        .bind(receiver_id)
+        .bind(target.session_type)
+        .bind(target.room)
+        .fetch_optional(&self.pool)
+        .await?;
+        self.invited_room_with_participants(session, receiver_id).await
+    }
+
+    /// `session` with its participants, and their addresses but `receiver_id`'s.
+    async fn invited_room_with_participants(&self, mut session: Option<GameSession>, receiver_id: u32) -> Result<Option<GameSession>> {
         {
             let Some(session) = session.as_mut() else {
                 return Ok(None);
@@ -2921,6 +2955,53 @@ pub(crate) mod tests {
             run(storage.member_parties_async(member)).unwrap().unwrap().is_empty(),
             "a guest isn't a member who may invite"
         );
+        drop(storage);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_join_without_an_invitation_holds_as_its_invitation_would() {
+        let (storage, dir) = temp_storage("join-now");
+        for (name, ubi) in [("Host", "HOST"), ("Member", "MEMBER"), ("Joiner", "JOINER")] {
+            storage.register_user(name, "pw", Some(ubi)).unwrap();
+        }
+        let id = |n: &str| storage.find_user_id_by_name(n).unwrap().unwrap();
+        let (host, member, joiner) = (id("Host"), id("Member"), id("Joiner"));
+        let game = storage.create_game_session(host, 1, "113 => 0;3 => 8;4 => 0".into()).unwrap();
+        storage.add_participants(1, game, vec![], vec![host]).unwrap();
+        storage.register_urls(host, vec!["prudp:/address=10.0.0.1;port=3074".into()]).unwrap();
+        let target = |via: Option<u32>| crate::join_now::Target {
+            session_type: 1,
+            room: game,
+            host,
+            via,
+            friend: via.unwrap_or(host),
+        };
+        let found = |via: Option<u32>| storage.find_join_target_session(joiner, &target(via)).unwrap();
+
+        let room = found(None).expect("the host's public match");
+        assert_eq!(room.session_id, game);
+        assert!(
+            room.participants.iter().any(|p| p.user_id == host && !p.station_urls.is_empty()),
+            "answered with the host's addresses: {:?}",
+            room.participants
+        );
+        assert!(!storage.is_invited(joiner, game).unwrap(), "no invitation was queued");
+        assert!(found(Some(member)).is_none(), "through someone who isn't in it");
+        storage.add_guest(game, member, false).unwrap();
+        assert!(found(Some(member)).is_some(), "through a guest of the public match (no trust needed)");
+        // Through a member, only while the host and the joiner haven't blocked each other (the
+        // host's own is checked when it's asked for, as JoinNow does before an invitation from
+        // the host); and only while it's still a public match.
+        run(storage.block(host, joiner)).unwrap().unwrap().unwrap();
+        assert!(found(Some(member)).is_none(), "the host blocked the joiner");
+        run(storage.unblock(host, joiner)).unwrap().unwrap();
+        storage.update_game_session(1, game, "113 => 0;3 => 0;4 => 8".into()).unwrap();
+        assert!(found(None).is_none(), "private seats only: a private match now");
+        storage.update_game_session(1, game, "113 => 0;3 => 8;4 => 0".into()).unwrap();
+        assert!(found(None).is_some(), "public again");
+        let other = crate::join_now::Target { session_type: 2, ..target(None) };
+        assert!(storage.find_join_target_session(joiner, &other).unwrap().is_none(), "another session type");
         drop(storage);
         let _ = std::fs::remove_dir_all(dir);
     }

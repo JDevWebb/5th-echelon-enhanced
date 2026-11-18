@@ -34,7 +34,8 @@
 //!   0.4.5 games do (Misc.Closing), ahead of its connection going: see [`closing`]).
 //! - `room`: `room` (the session id), made by the player.
 //! - `search`: `query` (8: Spies vs Mercs matchmaking or an invitation, 11: co-op), `found`.
-//! - `join`: `room`, `via` (`invite`, `party`: their host took them along, `search`); when the
+//! - `join`: `room`, `via` (`invite`, `party`: their host took them along, `search`,
+//!   `join-now`: a public match they asked to join without an invitation, join_now.rs); when the
 //!   NAT helper knows the guest, how their game reaches the host's (`nat_helper::Path`):
 //!   `ping_ms` and `host_ping_ms` (each one's round trip to this server, as their game
 //!   measured it), `relayed`, and for a relayed pair `relay_ms` (their round trip through
@@ -69,6 +70,8 @@
 //!   and `refusing` then), left (`left`), refused (`refused`: `full`), or what JoinRoom told one
 //!   in line (`told`: `let_in`, `wait` with `free`, `refusing`). The asks that keep a place
 //!   aren't noted.
+//! - `join-request`: `host`, `room`, `via` (the member joined through); `direct` when no
+//!   invitation was queued for it (a public match their game joins by itself, join_now.rs).
 //! - `stats`: the game wrote stats (it does at the end of a mission or match).
 //! - `fair_play`: `check` (`code`, `speed`; 0.5.2: `self`, the add-on's own code changed, and
 //!   `heartbeat`, its checks stopped reporting in a match), `detail`, `value`, `wine`.
