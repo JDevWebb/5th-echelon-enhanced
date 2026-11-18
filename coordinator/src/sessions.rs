@@ -72,6 +72,7 @@ const KINDS: &[&str] = &[
     "crash_fixes",
     "tunnel",
     "queue",
+    "unreachable",
 ];
 
 /// How long after a relay drop a player leaving their match counts as dropping out, and
@@ -866,10 +867,14 @@ fn describe(e: &Event) -> String {
             let found = e.detail["found"].as_i64().unwrap_or(0);
             let hidden = other_data(e).map_or_else(String::new, |hidden| format!(" ({hidden})"));
             // What the server left out, and why (0.5.0 servers).
-            let left_out: Vec<String> = [("started", "under way"), ("avoided", "with someone they blocked"), ("far", "with far hosts")]
-                .iter()
-                .filter_map(|(key, why)| e.detail[*key].as_i64().filter(|n| *n > 0).map(|n| format!("{n} {why}")))
-                .collect();
+            let left_out: Vec<String> = [
+                ("started", "with hosts turning joiners away"),
+                ("avoided", "with someone they blocked"),
+                ("far", "with far hosts"),
+            ]
+            .iter()
+            .filter_map(|(key, why)| e.detail[*key].as_i64().filter(|n| *n > 0).map(|n| format!("{n} {why}")))
+            .collect();
             let left_out = if e.detail["steered"] == "new" {
                 "; they asked for a new match".to_string()
             } else if left_out.is_empty() {
@@ -914,6 +919,18 @@ fn describe(e: &Event) -> String {
             None => "Invited someone".into(),
         },
         "invite_delivered" => format!("Got {}'s invitation", e.detail["from_name"].as_str().unwrap_or("an")),
+        "unreachable" => match e.detail["peer"].as_str() {
+            Some(peer) if e.detail["found"] == true => format!(
+                "Their game couldn't reach {peer} ({}){}",
+                if e.detail["relayed"] == true { "relayed" } else { "direct" },
+                if e.detail["together"] == true {
+                    ""
+                } else {
+                    "; not a player they were with, so nothing moved"
+                }
+            ),
+            _ => "Their game couldn't reach a player the server doesn't know at that address".into(),
+        },
         "queue" => {
             let place = e.detail["place"].as_u64().unwrap_or(0);
             let waiting = e.detail["waiting"].as_u64().unwrap_or(0);
@@ -974,7 +991,9 @@ fn describe(e: &Event) -> String {
             e.detail["relay"].as_str().unwrap_or("?")
         ),
         "tunnel" => {
-            if e.detail["open"] == true {
+            if e.detail["open"] == true && e.detail["relay"] == true {
+                "Signing in through the relay, over HTTPS (their route to the matchmaking server loses its answers)".into()
+            } else if e.detail["open"] == true {
                 "Playing through the HTTPS tunnel (their network blocks the game's UDP)".into()
             } else {
                 "The HTTPS tunnel closed".into()
@@ -989,6 +1008,8 @@ fn describe(e: &Event) -> String {
                 "double_nat" => " (their router is behind another router or the provider's NAT)",
                 "failed_joins" => " (moved: their joins kept failing as direct)",
                 "unreachable_mapping" => " (their forwarded port didn't let anything in)",
+                "split_ports" => " (their router forwards another port than the game sends from, and that one didn't let anything in)",
+                "unreachable_peer" => " (moved: other players' games couldn't reach them)",
                 _ => "",
             };
             if e.detail["relayed"].as_bool().unwrap_or(false) {
@@ -1138,7 +1159,7 @@ fn join_error(code: &str) -> String {
         "0xac2d801a" => "CONNECTION_TIMED_OUT: the host's game stopped answering",
         "0xe4aaebcd" => "SESSION_JOIN_TIMED_OUT: the host didn't let them in in time",
         "0xca473b80" => "TICKET_PENDING: the join was still waiting for the host",
-        "0x97182b1b" => "LOCKED_SESSION: the session was locked (its own party, or a match already under way)",
+        "0x97182b1b" => "LOCKED_SESSION: the session was locked (its own party, or a host turning joiners away)",
         "0xbb263fc5" => "PRIVATE_SESSION: invite only",
         "0xeea440ee" => "DATA_VERSION_MISMATCH: different game data (a mod)",
         "0x9bf4cf37" => "VERSION_MISMATCH: the host's answer couldn't be read (different game data)",
@@ -1187,7 +1208,7 @@ fn join_why(e: &Event) -> String {
     } else {
         let what = match outcome {
             "full" => "the lobby was full (at its current size)",
-            "locked" => "the session was locked (its own party, or a match already under way)",
+            "locked" => "the session was locked (its own party, or a host turning joiners away)",
             "closed" => "the room had just closed",
             "data_mismatch" => "different game data (a mod)",
             other => other,
@@ -2354,7 +2375,7 @@ mod tests {
             "Couldn't join tacit_danger's room (REFUSED: the host refused (the lobby was full at its current size), 0xcf964066)"
         );
         assert!(
-            texts[1].contains("its own party, or a match already under way") && !texts[1].contains("had started"),
+            texts[1].contains("its own party, or a host turning joiners away") && !texts[1].contains("had started"),
             "{}",
             texts[1]
         );
@@ -2491,7 +2512,7 @@ mod tests {
         let e = ev("na", 1000, 7, "Gyro", "search", json!({ "query": 8, "found": 3, "started": 1, "far": 4 }));
         assert_eq!(
             describe(&e),
-            "Searched for Spies vs Mercs (or an invited room): 3 found; left out 1 under way, 4 with far hosts"
+            "Searched for Spies vs Mercs (or an invited room): 3 found; left out 1 with hosts turning joiners away, 4 with far hosts"
         );
         let e = ev("na", 1000, 7, "Gyro", "search", json!({ "query": 8, "found": 0, "steered": "new", "avoided": 2 }));
         assert_eq!(describe(&e), "Searched for Spies vs Mercs (or an invited room): nothing found; they asked for a new match");

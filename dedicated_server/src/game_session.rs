@@ -2881,7 +2881,17 @@ pub(crate) fn move_to_relay(storage: &Storage, logger: &Logger, user: u32, why: 
         if remote { ", their relay told" } else { "" },
         if lasting.is_some() { ", for a week on this network" } else { "" }
     );
-    crate::reports::tell(user, crate::join_fallback::MOVED_TITLE.into(), crate::join_fallback::MOVED_TEXT.into(), None);
+    let text = if why == "unreachable_peer" {
+        crate::join_fallback::MOVED_UNREACHABLE_TEXT
+    } else {
+        crate::join_fallback::MOVED_TEXT
+    };
+    // "…go through the server, on this network for a week. If…" when the move lasts.
+    let text = match (lasting.is_some(), text.split_once(". ")) {
+        (true, Some((first, rest))) => format!("{first}{}. {rest}", crate::join_fallback::MOVED_FOR_A_WEEK),
+        _ => text.to_string(),
+    };
+    crate::reports::tell(user, crate::join_fallback::MOVED_TITLE.into(), text, None);
 }
 
 fn failed_join(storage: &Storage, user: u32, reported: u32, code: u32) -> FailedJoin {

@@ -200,6 +200,12 @@ pub fn joins() -> std::sync::MutexGuard<'static, Joins> {
 pub const MOVED_TITLE: &str = "Your games now go through the server";
 pub const MOVED_TEXT: &str =
     "Your joins kept failing, so your games now go through the server. If this keeps happening, choose Always through the server in the launcher's Settings › Network.";
+/// Added when the move lasts (JC2), after the first sentence.
+pub const MOVED_FOR_A_WEEK: &str = ", on this network for a week";
+/// The same for a player other players' games couldn't reach (0.5.5's JC4): they may never
+/// have joined anything (a host, a member), so it's not their joins.
+pub const MOVED_UNREACHABLE_TEXT: &str =
+    "Other players' games couldn't reach yours, so your games now go through the server. If this keeps happening, choose Always through the server in the launcher's Settings › Network.";
 
 #[cfg(test)]
 mod tests {

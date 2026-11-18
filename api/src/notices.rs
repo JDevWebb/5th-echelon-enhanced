@@ -83,7 +83,7 @@ pub fn join_notice(problem: JoinProblem, host: &str, mine: &str, theirs: &str) -
         ),
         JoinProblem::Locked => (
             "Couldn't join: the session is locked",
-            "It's a party of its own, or its match is already under way. Try another, or again once it's back in its lobby.".to_string(),
+            "It's a party of its own, or its host's game is turning players away for now. Try another, or again in a few minutes.".to_string(),
         ),
         JoinProblem::Closed => (
             "Couldn't join: that room had just closed",

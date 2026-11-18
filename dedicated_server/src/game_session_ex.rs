@@ -232,7 +232,12 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
                     .collect(),
             )
         };
-        let sessions: Vec<_> = sessions.into_iter().take(crate::game_session::MAX_SEARCH_RESULTS as usize).collect();
+        // Matches still in their lobby before those under way (0.5.5's JIP: both are answered, a
+        // fresh lobby first), each nearest first as above.
+        let (waiting, under_way): (Vec<_>, Vec<_>) = sessions
+            .into_iter()
+            .partition(|s| invitation_search || !crate::match_started::host_says_under_way(s.session_id));
+        let sessions: Vec<_> = waiting.into_iter().chain(under_way).take(crate::game_session::MAX_SEARCH_RESULTS as usize).collect();
         // The game QoS-pings the first hosts it got within 2 s (E3): their relays are told of the
         // pair now, so no ping waits on a relay asking the matchmaking server (G3).
         if !invitation_search && crate::relays::network_relays() {
@@ -255,7 +260,7 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
         info!(logger, "Found {} sessions", sessions.len());
         let mut detail = serde_json::json!({ "query": request.game_session_query.query_id, "found": sessions.len() });
         if started > 0 {
-            info!(logger, "Left out {started} matches under way");
+            info!(logger, "Left out {started} matches whose hosts are turning joiners away");
             detail["started"] = serde_json::json!(started);
         }
         if steered {

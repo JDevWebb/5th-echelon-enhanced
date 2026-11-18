@@ -794,7 +794,7 @@ fn join_room_now(room: u32, line: &str) {
             }
             JoinStatus::Ok => say(format!("Joining {line}: accept the invitation."), false),
             _ if !resp.detail.is_empty() => say(clip(&resp.detail, MAX_TEXT), true),
-            JoinStatus::Started => say(String::from("That match has started - pick another, or start a new one."), true),
+            JoinStatus::Started => say(String::from("That match isn't taking players now - pick another, or start a new one."), true),
             JoinStatus::NotFriends => say(String::from("You've blocked that match's host."), true),
             _ => say(String::from("That match isn't open any more."), true),
         },

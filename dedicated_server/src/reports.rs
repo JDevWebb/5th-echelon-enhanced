@@ -355,7 +355,7 @@ pub fn search_under_way(user: u32, rooms: usize) -> Option<u64> {
             return None;
         }
     }
-    Some(note(user, "search_under_way", format!("{rooms} matches under way, none open"), None))
+    Some(note(user, "search_under_way", format!("{rooms} matches turning joiners away, none open"), None))
 }
 
 /// The NAT helper registered `name`, relayed or not.

@@ -1,7 +1,8 @@
-//! Players waiting to join a public match that can't take them yet: under way (its host's game
-//! turns joiners away until the round is over) or full. The launcher's Matches puts a player in
-//! a match's queue ("Join when this round ends", "Join when a seat opens", QueueRoom) and keeps
-//! them there by asking again while it waits; when the match can take players, the first in
+//! Players waiting to join a public match that can't take them yet: full, or its host's game
+//! turning joiners away (since 0.5.5's JIP a match under way takes joiners mid-round, so being
+//! under way isn't a reason). The launcher's Matches puts a player in a match's queue ("Join when
+//! a seat opens", QueueRoom) and keeps them there by asking again while it waits; when the match
+//! can take players, the first in
 //! line, as many as it has free seats, are let in (JoinRoom), and everyone else's joins and
 //! quick-match searches leave it alone until the queue has gone through. Without it, everyone
 //! waiting tried at once when the round ended: the first in took the seats, the rest were told

@@ -11,17 +11,18 @@ service Friends {
     // member of (then the invitation counts as the friend's, like a member's invitation: it
     // holds while the party's host has the friend as a friend), or the public match they're
     // in. Only a friend (or anyone, in "everyone" mode); a party its host made invite-only and
-    // a private match, theirs or not, need a real invitation, and a match that has started
-    // can't be joined. Servers that offer it list "join-now" in /api/info's features.
+    // a private match, theirs or not, need a real invitation, and a match whose host's game is
+    // turning joiners away can't be joined (one under way can, from 0.5.5). Servers that offer it list "join-now" in /api/info's features.
     rpc JoinNow (JoinNowRequest) returns (JoinNowResponse);
     // Joins a public match picked from the lobby browser (its room id, from /api/playing), as
     // JoinNow does: the caller's running game joins it on its next event poll. NOT_FOUND when
     // it's gone, private, or its host blocked the caller (nobody learns they were blocked);
-    // NOT_FRIENDS when the caller blocked its host; STARTED when it's under way. Servers that
+    // NOT_FRIENDS when the caller blocked its host; STARTED when its host's game is turning
+    // joiners away (before 0.5.5, also when it was under way). Servers that
     // offer it list "choose-match" in /api/info's features.
     rpc JoinRoom (JoinRoomRequest) returns (JoinNowResponse);
-    // Puts the caller in line for a public match that can't take them yet (under way, or
-    // full), or keeps their place (the launcher asks again every few seconds while it waits; a
+    // Puts the caller in line for a public match that can't take them yet (full, or its host
+    // turning joiners away; before 0.5.5 also under way), or keeps their place (the launcher asks again every few seconds while it waits; a
     // place not asked for in 30 s goes), or takes them out (on = false). When it can take
     // players, the first in line, as many as it has free seats, may join it (JoinRoom); anyone
     // else's JoinRoom is QUEUED and quick-match searches leave it out until they're in. One
@@ -313,7 +314,8 @@ message JoinNowResponse {
         // member's invitation): its host doesn't have them as a friend, or they're only a
         // guest there.
         NOT_FRIENDS_WITH_HOST = 5;
-        // The friend's match has started: its host's game turns joiners away until it's over.
+        // The match isn't taking players: its host's game is turning joiners away (the name is
+        // 0.5.0's, when a match under way was refused too).
         STARTED = 6;
         // Players are waiting for the match's free seats (QueueRoom): the caller joins its
         // queue rather than go before them.

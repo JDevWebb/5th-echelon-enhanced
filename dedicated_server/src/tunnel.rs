@@ -12,8 +12,12 @@
 //! - A tunnelled player is always relayed: the helper sees them at a loopback address, which no
 //!   other player can reach, and relays them (no mapping).
 //! - Their real address (from Caddy's `X-Forwarded-For`, believed only from 127.0.0.1) is kept by
-//!   loopback port ([`real_ip`]) for the places that key on an address. Until those read it, the
-//!   per-address limits count every tunnelled player as 127.0.0.1: hence the low caps.
+//!   loopback port ([`real_ip`]) for the places that key on an address ([`source_ip`]: the
+//!   sign-in, the helper, the per-address limits).
+//! - The caps (0.5.5): signing in through a relay (SR) puts every such player's game in a tunnel
+//!   at their relay, players behind a carrier's NAT share an address, and the per-address limits
+//!   read the real address now, so 24 in all and 3 an address (0.5.2's, set while every tunnel
+//!   counted as 127.0.0.1) became 96 and 8.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -31,8 +35,8 @@ use slog::Logger;
 use tokio_tungstenite::tungstenite::Message as Ws;
 
 /// The most tunnels at once, and from one address.
-pub const MAX_TUNNELS: usize = 24;
-pub const MAX_PER_IP: usize = 3;
+pub const MAX_TUNNELS: usize = 96;
+pub const MAX_PER_IP: usize = 8;
 /// Each tunnel's bytes a second, both ways together, averaged over a few seconds.
 pub const BYTES_PER_SEC: f64 = 256.0 * 1024.0;
 /// Keepalive: carriers drop idle TCP too.
@@ -259,14 +263,21 @@ async fn handle(logger: &Logger, stream: tokio::net::TcpStream, peer: SocketAddr
         o.by_port.insert(port, ip);
         id
     };
+    // At a relay: signing in through it (0.5.5's SR), the sign-in passed on to the matchmaking
+    // server; elsewhere a player whose UDP is blocked.
+    let forwards = services.upstream == Upstream::Matchmaking;
     info!(
         logger,
-        "Tunnel: {name} from {ip} (their UDP is blocked); on 127.0.0.1:{port}{}",
+        "Tunnel: {name} from {ip} ({}); on 127.0.0.1:{port}{}",
+        if forwards { "signing in through this relay" } else { "their UDP is blocked" },
         if was_resumed { ", resumed" } else { "" }
     );
-    crate::session_events::note(crate::session_events::Who::Name(name.clone()), "tunnel", serde_json::json!({ "open": true }));
+    crate::session_events::note(
+        crate::session_events::Who::Name(name.clone()),
+        "tunnel",
+        serde_json::json!({ "open": true, "relay": forwards }),
+    );
     // At a relay: the matchmaking server is told whose sign-in comes from this port.
-    let forwards = services.upstream == Upstream::Matchmaking;
     if forwards {
         crate::relays::tunnelled(&name, port, ip, true);
     }

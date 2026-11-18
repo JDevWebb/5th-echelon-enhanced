@@ -106,7 +106,7 @@ pub fn join(cfg: &Config, game_dir: &Path, room: u32) -> Result<String, String> 
     match JoinStatus::try_from(resp.status).unwrap_or(JoinStatus::NotFound) {
         JoinStatus::Ok => {}
         _ if !resp.detail.is_empty() => return Err(hooks_config::text::clip(&resp.detail, 200)),
-        JoinStatus::Started => return Err("That match has started - pick another, or start a new one.".into()),
+        JoinStatus::Started => return Err("That match isn't taking players now - pick another, or start a new one.".into()),
         JoinStatus::NotFriends => return Err("You've blocked that match's host.".into()),
         JoinStatus::Queued => return Err("Players are waiting for this match: join its queue.".into()),
         _ => return Err("That match isn't open any more.".into()),

@@ -777,7 +777,7 @@ export component PlayScreen inherits Rectangle {
                                     text: "Join";
                                     kind: "fix";
                                     enabled: f.joinable && !info.connecting;
-                                    description: f.joinable ? "Join this friend's game" : f.activity != "" ? f.name + "'s match can't be joined now: it's a private match (you need an invitation), or it has started" : f.name + " isn't in a game right now";
+                                    description: f.joinable ? "Join this friend's game" : f.activity != "" ? f.name + "'s match can't be joined now: it's a private match (you need an invitation), or its host isn't taking players" : f.name + " isn't in a game right now";
                                     clicked => { root.join-friend(f.id, f.name); }
                                 }
                             }

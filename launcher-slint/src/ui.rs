@@ -40,8 +40,8 @@ struct Seen {
     picked: Option<u32>,
     /// The match watched for a seat, and its label.
     watching: Option<(u32, String)>,
-    /// The watched match was under way when watched: the player is in its queue, and joins by
-    /// themselves as soon as it can be joined (its round over), not asked first.
+    /// The player is in the watched match's queue, and joins by themselves as soon as a seat is
+    /// theirs (mid-round, since 0.5.5's JIP), not asked first.
     queued: bool,
     /// The server keeps the player's place in the watched match's line (its "match-queue"):
     /// asked again with every refresh while waiting, and joined by themselves when it's theirs,
@@ -767,7 +767,7 @@ impl Ui {
     }
 
     /// A watched match with a seat now: the line with Join, and the window asks for attention.
-    /// A match queued for (it was under way): joined at once, as soon as it can be.
+    /// A match queued for: joined at once, as soon as it can be (since 0.5.5's JIP, mid-round).
     fn check_watched(self: &Arc<Self>) {
         let mut seen = self.seen();
         let Some((room, label)) = seen.watching.clone() else { return };
