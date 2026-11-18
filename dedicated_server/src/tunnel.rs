@@ -272,11 +272,14 @@ async fn handle(logger: &Logger, stream: tokio::net::TcpStream, peer: SocketAddr
         if forwards { "signing in through this relay" } else { "their UDP is blocked" },
         if was_resumed { ", resumed" } else { "" }
     );
-    crate::session_events::note(
-        crate::session_events::Who::Name(name.clone()),
-        "tunnel",
-        serde_json::json!({ "open": true, "relay": forwards }),
-    );
+    // At a relay the matchmaking server notes it from the link's Tunnelled (relays.rs).
+    if !forwards {
+        crate::session_events::note(
+            crate::session_events::Who::Name(name.clone()),
+            "tunnel",
+            serde_json::json!({ "open": true, "relay": false }),
+        );
+    }
     // At a relay: the matchmaking server is told whose sign-in comes from this port.
     if forwards {
         crate::relays::tunnelled(&name, port, ip, true);
@@ -340,7 +343,10 @@ async fn handle(logger: &Logger, stream: tokio::net::TcpStream, peer: SocketAddr
         crate::relays::tunnelled(&name, port, ip, false);
     }
     info!(logger, "Tunnel: {name}'s closed");
-    crate::session_events::note(crate::session_events::Who::Name(name), "tunnel", serde_json::json!({ "open": false }));
+    // At a relay the matchmaking server notes it from the link's Tunnelled (relays.rs).
+    if !forwards {
+        crate::session_events::note(crate::session_events::Who::Name(name), "tunnel", serde_json::json!({ "open": false }));
+    }
     result
 }
 

@@ -239,6 +239,14 @@ pub fn on_link(data: &[u8], src: std::net::SocketAddrV4, socket: &std::net::UdpS
         // address (where the datagrams come from).
         crate::link::Body::Tunnelled { name, port, ip, open } if NETWORK_RELAYS.load(Ordering::Relaxed) && !link.matchmaking => {
             forwarded_note(std::net::SocketAddr::new(link.ip.into(), port), ip, &name, open, std::time::Instant::now());
+            // The player's Sessions row says they signed in through this relay (0.5.5's SR). Noted
+            // here from the relay's own word: an event it sent would come before it reports the
+            // player (the tunnel opens before the game registers), and be dropped.
+            crate::session_events::note(
+                crate::session_events::Who::Name(name),
+                "tunnel",
+                serde_json::json!({ "open": open, "relay": true, "at": link.id }),
+            );
         }
         crate::link::Body::Tunnelled { .. } => {}
         crate::link::Body::Reach { to, nonce } => {

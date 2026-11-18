@@ -1868,6 +1868,55 @@ mod tests {
     use super::Event;
     use super::MATCH_END_WITHIN;
 
+    /// The Sessions page's words for 0.5.5's events, from what a test network's servers sent
+    /// (testnet rc, 18 Nov 2026: the queue, a tunnel at a relay, the relay reasons, a search
+    /// answering a lobby before a match under way).
+    #[test]
+    fn the_0_5_5_events_read_right() {
+        let d = |kind: &str, detail: serde_json::Value| describe(&ev("mm", 0, 1, "gbox4", kind, detail));
+        let room = serde_json::json!({"game_mode":7,"host":1003,"host_name":"gbox1","mode":"svm","private":false,"room":5,"room_kind":"match"});
+        let with = |extra: serde_json::Value| {
+            let mut v = room.clone();
+            v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            v
+        };
+        assert_eq!(
+            d("queue", with(serde_json::json!({"place":1,"waiting":1,"why":{"free":0,"refusing":false}}))),
+            "Queued for match 5: place 1 of 1 (full)"
+        );
+        assert_eq!(
+            d("queue", with(serde_json::json!({"free":0,"place":1,"told":"wait","waiting":1}))),
+            "Told to wait for match 5: 0 free seat(s), 1 waiting, place 1"
+        );
+        assert_eq!(
+            d("queue", with(serde_json::json!({"free":1,"place":1,"told":"let_in","waiting":1}))),
+            "Let in from the queue for match 5 (was 1 of 1)"
+        );
+        assert_eq!(
+            d("tunnel", serde_json::json!({"at":"g2d2g5tbpz7465ol","open":true,"relay":true})),
+            "Signing in through the relay, over HTTPS (their route to the matchmaking server loses its answers)"
+        );
+        assert_eq!(
+            d("tunnel", serde_json::json!({"open":true,"relay":false})),
+            "Playing through the HTTPS tunnel (their network blocks the game's UDP)"
+        );
+        assert_eq!(
+            d("nat", serde_json::json!({"relayed":true,"why":"split_ports"})),
+            "Online play relayed by the server (their router forwards another port than the game sends from, and that one didn't let anything in)"
+        );
+        assert_eq!(
+            d("nat", serde_json::json!({"relayed":true,"why":"unreachable_peer"})),
+            "Online play relayed by the server (moved: other players' games couldn't reach them)"
+        );
+        assert_eq!(
+            d(
+                "unreachable",
+                serde_json::json!({"found":true,"peer":"gbox1","peer_id":1003,"at":"203.0.113.9:13000","relayed":false,"together":true})
+            ),
+            "Their game couldn't reach gbox1 (direct)"
+        );
+    }
+
     fn ev(server: &str, at: i64, player: i64, name: &str, kind: &str, detail: serde_json::Value) -> Event {
         Event {
             server: server.into(),
