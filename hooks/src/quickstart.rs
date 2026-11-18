@@ -168,7 +168,21 @@ static ABORT: AtomicU8 = AtomicU8::new(0);
 /// match's matchmaking): a click or key now would fight it, so the overlay holds the player's
 /// input back (`overlay_input`), says why, and Esc stops it ([`abort`]).
 pub fn navigating() -> bool {
-    ABORT.load(Ordering::Relaxed) == 0 && (NAVIGATING.load(Ordering::Relaxed) || NAV_BUSY.load(Ordering::Relaxed))
+    ABORT.load(Ordering::Relaxed) == 0 && (NAVIGATING.load(Ordering::Relaxed) || NAV_BUSY.load(Ordering::Relaxed) || enter_pending(now_ms()))
+}
+
+/// The lobby's Enter is out and the menu hasn't moved yet ([`LOBBY_ENTER`]): still navigating,
+/// so the player's input stays held and Esc stops it. On DX9 the first Enter is often not
+/// taken and it's pressed again, up to about 6 s after "done, in the lobby", past [`SETTLE`]:
+/// the player's presses then went on in the menus (TheFlash24AM, 18 Nov 2026). When its latest
+/// press went (milliseconds since the Unix epoch; 0: none waiting), counted for
+/// [`ENTER_PENDING_FOR`] at most, so a menu left before it's settled never holds input for good.
+static ENTER_PENDING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+const ENTER_PENDING_FOR: u64 = 10_000;
+
+fn enter_pending(now: u64) -> bool {
+    let at = ENTER_PENDING.load(Ordering::Relaxed);
+    at != 0 && now.saturating_sub(at) < ENTER_PENDING_FOR
 }
 
 /// How long the player's input stays held back after the quick start is done: presses made
@@ -667,6 +681,7 @@ unsafe fn navigate(mm: usize) {
                 }
                 *((col + COL_FOCUS) as *mut u32) = pos as u32;
                 if send_enter(true) {
+                    ENTER_PENDING.store(now_ms(), Ordering::Relaxed);
                     *LOBBY_ENTER.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(LobbyEnter {
                         mm,
                         col,
@@ -748,6 +763,19 @@ fn enter_next(waited: Duration, before: Option<u32>, now: Option<u32>, tries: u3
 unsafe fn check_lobby_enter(mm: usize) {
     let mut guard = LOBBY_ENTER.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(e) = guard.as_mut() else { return };
+    // Stopped by the player (Esc): no more tries, and a press still down is let go, or the
+    // game took the menus on by itself after the player had the game back (TheFlash24AM, DX9,
+    // 18 Nov 2026: "It kept going to different menus and I could not do anything"; on the
+    // gamebox the stopped quick start pressed Enter twice more and took the menu a page on).
+    if aborted() {
+        if e.up_at.is_none() {
+            send_enter(false);
+        }
+        info!("quickstart: +{} ms stopped: the lobby's Enter isn't tried again", ms());
+        *guard = None;
+        ENTER_PENDING.store(0, Ordering::Relaxed);
+        return;
+    }
     if e.mm != mm {
         return;
     }
@@ -765,10 +793,12 @@ unsafe fn check_lobby_enter(mm: usize) {
         EnterNext::Moved => {
             info!("quickstart: +{} ms the Enter took the menu from page {:?} to {now:?} (try {})", ms(), e.page, e.tries);
             *guard = None;
+            ENTER_PENDING.store(0, Ordering::Relaxed);
         }
         EnterNext::TryAgain if send_enter(true) => {
             info!("quickstart: +{} ms the Enter didn't move the menu (page {now:?}): pressed again", ms());
             e.tries += 1;
+            ENTER_PENDING.store(now_ms(), Ordering::Relaxed);
             e.down_at = Instant::now();
             e.ticks = 0;
             e.up_at = None;
@@ -781,6 +811,7 @@ unsafe fn check_lobby_enter(mm: usize) {
             );
             select_entry(mm, e.col, e.pos);
             *guard = None;
+            ENTER_PENDING.store(0, Ordering::Relaxed);
         }
     }
 }
@@ -1094,6 +1125,15 @@ fn watch() {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_pending_enter_holds_input_for_ten_seconds_at_most() {
+        assert!(!super::enter_pending(5_000), "none waiting");
+        super::ENTER_PENDING.store(1_000, std::sync::atomic::Ordering::Relaxed);
+        assert!(super::enter_pending(9_000), "just pressed");
+        assert!(!super::enter_pending(12_000), "a menu that never settled lets go");
+        super::ENTER_PENDING.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
     use super::*;
 
     #[test]
