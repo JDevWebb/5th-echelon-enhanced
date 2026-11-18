@@ -7,11 +7,22 @@
       <Stat :value="fmt.n(kills.length)" label="Kills" sub="credited where seen" />
     </template>
     <RouterLink to="/sessions" class="small">← Sessions</RouterLink>
+    <RouterLink v-if="!local" to="/replay/files" class="small">Open recording files</RouterLink>
+    <button v-if="files.length" type="button" class="small" @click="download">{{ files.length > 1 ? `Download the ${files.length} recordings` : 'Download the recording' }}</button>
   </PageTop>
 
   <div v-if="error" class="panel"><p class="err">{{ error }}</p></div>
-  <div v-else-if="!rec" class="panel"><div class="empty">{{ waiting }}</div></div>
-  <template v-else>
+  <section v-if="local && !rec" class="panel">
+    <header><h2>Open recordings</h2></header>
+    <p class="small">Match recordings (<span class="mono">.fer</span>) downloaded from this page, or from a player's
+      <span class="mono">5th-echelon\recordings</span> folder. Pick one, or several of the same match to replay them together.
+      They're read in this browser only: nothing is sent.</p>
+    <label class="btn file">Choose recording files…
+      <input type="file" accept=".fer" multiple @change="openFiles" />
+    </label>
+  </section>
+  <div v-else-if="!rec && !error" class="panel"><div class="empty">{{ waiting }}</div></div>
+  <template v-if="rec">
     <section class="panel">
       <header>
         <h2>{{ view === '3d' ? '3D' : 'Top down' }}</h2>
@@ -111,11 +122,15 @@ import Replay3D from '../components/Replay3D.vue';
 import Stat from '../components/Stat.vue';
 import { api, ApiError } from '../lib/api.js';
 import { fmt } from '../lib/fmt.js';
-import { keepMap, keptMap, readMap } from '../lib/mapgeo.js';
+import { keepMap, keptMap, mapFile, readMap, sameMap } from '../lib/mapgeo.js';
 import { findings, frameAt, index, merge, readRecording } from '../lib/replay.js';
 import { session } from '../lib/session.js';
 
-const props = defineProps({ server: { type: String, required: true }, player: { type: String, required: true }, id: { type: String, required: true } });
+const props = defineProps({ server: { type: String, default: '' }, player: { type: String, default: '' }, id: { type: String, default: '' } });
+// /replay/files: recordings opened from this computer, none fetched.
+const local = computed(() => !props.id);
+// The recordings' own bytes, to download: [{ name, bytes }].
+const files = ref([]);
 
 const rec = ref(null);
 const error = ref('');
@@ -138,13 +153,15 @@ const cutRange = computed(() => (rec.value?.box ? [rec.value.box.z0 - 200, rec.v
 const mapNote = computed(() => {
   if (view.value === 'top') return 'positions only: the map is drawn in 3D';
   if (map.value) return `the map from your game (${map.value.name}): drag to turn, scroll to zoom, right-drag to move`;
-  return `no map yet: make it with map-geometry from your game and load ${rec.value?.header.map || 'the map'}.femg`;
+  const want = mapFile(rec.value?.header.map);
+  return `no map yet: make it with map-geometry from your game and load ${want ? `${want}.femg (${rec.value.header.map})` : `the file for ${rec.value?.header.map || 'this map'}`}`;
 });
 async function useMap(bytes, keep) {
   try {
     const m = await readMap(bytes);
-    if (rec.value?.header.map && m.name.toLowerCase() !== rec.value.header.map.toLowerCase()) {
-      error.value = `That's ${m.name}; this recording is on ${rec.value.header.map}.`;
+    if (sameMap(rec.value?.header.map, m.name) === false) {
+      const want = mapFile(rec.value.header.map);
+      error.value = `That's ${m.name}; this recording is on ${rec.value.header.map}${want ? ` (${want})` : ''}.`;
       setTimeout(() => { error.value = ''; }, 4000);
       return;
     }
@@ -161,7 +178,7 @@ async function loadMap(e) {
 }
 watch(view, async v => {
   if (v === '3d' && !map.value && rec.value?.header.map) {
-    const kept = await keptMap(rec.value.header.map);
+    const kept = (await keptMap(mapFile(rec.value.header.map))) || (await keptMap(rec.value.header.map));
     if (kept) await useMap(kept, false);
   }
 });
@@ -169,7 +186,7 @@ watch(view, async v => {
 const title = computed(() => `${wanted.value.length > 1 ? 'Match replay' : 'Replay'}${rec.value?.header.map ? `: ${rec.value.header.map}` : ''}`);
 const sub = computed(() => {
   const h = rec.value?.header;
-  if (!h) return `Recording ${props.id} on ${props.server}`;
+  if (!h) return local.value ? 'Recordings from this computer' : `Recording ${props.id} on ${props.server}`;
   const when = h.started ? new Date(h.started * 1000).toLocaleString() : 'an unknown time';
   return `${(h.mode || 'unknown mode').replace(/^E|MatchManager$/g, '')} · recorded by ${h.recorder || '?'} at ${when} (their clock) · add-on ${h.build || '?'}`;
 });
@@ -241,7 +258,10 @@ async function fetchOne(w) {
   for (let tries = 0; tries < 60 && !stopped; tries++) {
     const resp = await fetch(`/api/recordings/${encodeURIComponent(w.server)}/${encodeURIComponent(w.id)}`, { credentials: 'same-origin' });
     if (resp.status === 401) { session.signedOut(); throw new Error('signed out'); }
-    if (resp.ok && resp.status === 200) return { ...(await readRecording(new Uint8Array(await resp.arrayBuffer()))), owner: asked.name || '' };
+    if (resp.ok && resp.status === 200) {
+      const bytes = new Uint8Array(await resp.arrayBuffer());
+      return { ...(await readRecording(bytes)), owner: asked.name || '', bytes, id: w.id };
+    }
     const body = await resp.json().catch(() => ({}));
     if (resp.status === 202 && (body.status === 'failed' || body.status === 'expired')) throw new Error(body.message || 'The server couldn\'t send it.');
     if (resp.status !== 202) throw new ApiError(resp.status, body);
@@ -251,11 +271,43 @@ async function fetchOne(w) {
 }
 
 async function load() {
+  if (local.value) return;
   const results = await Promise.allSettled(wanted.value.map(fetchOne));
   if (stopped) return;
   const got = results.filter(r => r.status === 'fulfilled').map(r => r.value);
-  const owners = got.map(g => g.owner);
   missing.value = results.map((r, i) => (r.status === 'rejected' ? `${wanted.value[i].id}: ${r.reason?.message || r.reason}` : null)).filter(Boolean);
+  await show(got);
+}
+/** Recordings picked on this computer: whose they are is the files' own word (their
+ * recorder), not the coordinator's. */
+async function openFiles(e) {
+  const picked = [...(e.target.files || [])];
+  e.target.value = '';
+  if (!picked.length) return;
+  error.value = '';
+  const results = await Promise.allSettled(picked.map(async f => {
+    const bytes = new Uint8Array(await f.arrayBuffer());
+    const r = await readRecording(bytes);
+    return { ...r, owner: r.header.recorder || '', bytes, id: f.name.replace(/\.fer$/i, '') };
+  }));
+  missing.value = results.map((r, i) => (r.status === 'rejected' ? `${picked[i].name}: ${r.reason?.message || r.reason}` : null)).filter(Boolean);
+  await show(results.filter(r => r.status === 'fulfilled').map(r => r.value));
+}
+/** Saves the recordings this page has (each as the server kept it), to open later with
+ * "Open recording files". */
+function download() {
+  files.value.forEach((f, i) => setTimeout(() => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([f.bytes], { type: 'application/octet-stream' }));
+    a.download = f.name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }, i * 300));
+}
+const fileName = g => `${[g.header.map, g.header.recorder, g.id].filter(Boolean).join(' - ').replace(/[^\w .()-]+/g, '_')}.fer`;
+async function show(got) {
+  const owners = got.map(g => g.owner);
+  files.value = got.map(g => ({ name: fileName(g), bytes: g.bytes }));
   if (!got.length) {
     error.value = missing.value.join('; ') || 'No recording came.';
     return;

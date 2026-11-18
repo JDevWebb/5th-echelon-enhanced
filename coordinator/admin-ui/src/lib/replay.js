@@ -82,15 +82,40 @@ export async function readRecording(bytes) {
   return { header, records };
 }
 
-/** What the viewer draws from: the characters, frames in time order, and the events. */
+/** Farther than this (game units, 100 a metre) from the middle of play is no place on a map:
+ * the largest Spies vs Mercs maps span about 20,000. */
+const FAR_OFF = 50_000;
+
+/** Which characters' samples to keep: a test for one `{ at }`. Recordings carry the odd
+ * sample read from a character's memory as it was torn down (2.5e27, or health 32767), and
+ * the odd single frame where a spy is 130-470 km away; either, kept, sizes the top-down view
+ * to the whole sky, so the players shrink to a dot. Kept: finite places within [`FAR_OFF`] of
+ * the median of every sample. */
+export function sane(records) {
+  const xs = [];
+  const ys = [];
+  const zs = [];
+  const finite = p => p.at.every(v => Number.isFinite(v) && Math.abs(v) < 1e7);
+  for (const r of records) {
+    if (r.kind !== 'frame') continue;
+    for (const p of r.pawns) if (finite(p)) { xs.push(p.at[0]); ys.push(p.at[1]); zs.push(p.at[2]); }
+  }
+  const median = a => (a.length ? a.sort((m, n) => m - n)[a.length >> 1] : 0);
+  const mid = [median(xs), median(ys), median(zs)];
+  return p => finite(p) && p.at.every((v, k) => Math.abs(v - mid[k]) <= FAR_OFF);
+}
+
+/** What the viewer draws from: the characters, frames in time order, and the events. Samples
+ * that are no place on the map are left out ([`sane`]). */
 export function index(records) {
   const pawns = new Map();
   const frames = [];
   const shots = [];
   const events = [];
+  const kept = sane(records);
   for (const r of records) {
     if (r.kind === 'pawn') pawns.set(r.id, { ...pawns.get(r.id), id: r.id, class: r.class, name: r.name || pawns.get(r.id)?.name || '', team: r.team });
-    else if (r.kind === 'frame') frames.push(r);
+    else if (r.kind === 'frame') frames.push({ ...r, pawns: r.pawns.filter(kept) });
     else if (r.kind === 'shot') shots.push(r);
     else events.push(r);
   }
@@ -117,18 +142,22 @@ export function index(records) {
       if (span >= 0.9) of(p.id).fastest = Math.max(of(p.id).fastest, across(p.at, q[0][1]) / span);
     }
   }
-  // The area played in (x and y), and the heights seen.
-  let box = null;
-  for (const f of frames) {
-    for (const p of f.pawns) {
-      const [x, y, z] = p.at;
-      if (!box) box = { x0: x, x1: x, y0: y, y1: y, z0: z, z1: z };
-      box.x0 = Math.min(box.x0, x); box.x1 = Math.max(box.x1, x);
-      box.y0 = Math.min(box.y0, y); box.y1 = Math.max(box.y1, y);
-      box.z0 = Math.min(box.z0, z); box.z1 = Math.max(box.z1, z);
-    }
-  }
-  return { pawns, frames, shots, events, duration, tally, box };
+  return { pawns, frames, shots, events, duration, tally, box: area(frames) };
+}
+
+/** The area played in (x and y) and the heights seen: all but the outermost thousandth of
+ * the samples each way, and a little room (a stray sample past it is drawn at the edge, and
+ * doesn't shrink everyone else to a corner). Null with no samples. */
+function area(frames, margin = 300) {
+  const axes = [[], [], []];
+  for (const f of frames) for (const p of f.pawns) for (let k = 0; k < 3; k++) axes[k].push(p.at[k]);
+  if (!axes[0].length) return null;
+  const [x, y, z] = axes.map(a => {
+    a.sort((m, n) => m - n);
+    const cut = Math.floor(a.length * 0.001);
+    return [a[cut] - margin, a[a.length - 1 - cut] + margin];
+  });
+  return { x0: x[0], x1: x[1], y0: y[0], y1: y[1], z0: z[0], z1: z[1] };
 }
 
 /** The last frame at or before `t` (binary search). */

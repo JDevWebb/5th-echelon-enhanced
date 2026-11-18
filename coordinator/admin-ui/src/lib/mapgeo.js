@@ -41,6 +41,38 @@ export async function readMap(bytes) {
   return { name, meshes, instances };
 }
 
+// A recording names its map as players see it ("Uranium Mine", the server's name for the
+// room's map); map-geometry names each file and map by the game's package (`ADV_04`). The
+// Spies vs Mercs maps' packages, from the game's MultiplayerData.xml (5ee-research
+// game/maps.md); a Classic version is the package with `_Classic`. Lost Bank and Presidential
+// Complex aren't known yet: any file is taken for them.
+const PACKAGES = {
+  'virus vault': 'ADV_01',
+  cartel: 'ADV_03',
+  'uranium mine': 'ADV_04',
+  silo: 'ADV_05',
+  'lebanese hospital': 'ADV_06',
+  'particle accelerator': 'ADV_07',
+};
+
+/** The map-geometry file name (no extension) for a recording's map, or null when unknown. */
+export function mapFile(map) {
+  const m = /^(.*?)\s*(\(classic\))?$/i.exec((map || '').trim());
+  const pkg = PACKAGES[m[1].toLowerCase()];
+  return pkg ? `${pkg}${m[2] ? '_Classic' : ''}` : null;
+}
+
+/** Whether a map file's name (map-geometry's, `ADV_04`) is a recording's map: the same name,
+ * or the package [`mapFile`] gives; `null` when it can't be told (an unknown map). */
+export function sameMap(recordingMap, fileMap) {
+  const a = (recordingMap || '').toLowerCase();
+  const b = (fileMap || '').toLowerCase();
+  if (!a || !b) return null;
+  if (a === b) return true;
+  const pkg = mapFile(recordingMap);
+  return pkg ? pkg.toLowerCase() === b : null;
+}
+
 // The browser's own store of map files, by map name (case ignored). Any failure (a private
 // window, storage turned off) only means the file is asked for again.
 const DB = 'fes-replay-maps';

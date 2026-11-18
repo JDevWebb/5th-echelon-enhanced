@@ -14,6 +14,7 @@
       <button v-for="sv in servers" :key="sv.id" type="button" :aria-pressed="String(server === sv.id)" @click="server = sv.id">{{ sv.name }}</button>
     </div>
     <RangePicker v-model="hours" :options="RANGES" />
+    <RouterLink to="/replay/files" class="small">Open recording files</RouterLink>
   </PageTop>
   <div v-if="error && !data" class="panel"><p class="err">{{ error }}</p></div>
   <div v-else-if="!data" class="empty">Loading…</div>
