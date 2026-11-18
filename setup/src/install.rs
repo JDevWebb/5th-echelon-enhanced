@@ -37,6 +37,12 @@ pub enum InstallError {
     OriginalLost,
     #[error("The game is running. Close Splinter Cell: Blacklist and try again.")]
     GameRunning,
+    /// Windows refused to replace the DLL and no game is running: the file is held by
+    /// something else, or can't be written.
+    #[error(
+        "Windows didn't let {DLL_NAME} in the game folder be replaced ({0}). Something else may have it open (an antivirus scan, a game update or file check in Steam or Ubisoft Connect), or the file may be read-only. Close that or wait for it to finish, then try again."
+    )]
+    Blocked(io::Error),
     #[error("{0}")]
     Io(#[from] io::Error),
 }
@@ -127,11 +133,7 @@ pub fn install(game_dir: &Path, bundled: &[u8]) -> Result<(), InstallError> {
     std::fs::write(&new, bundled)?;
     std::fs::rename(&new, &dll).map_err(|e| {
         let _ = std::fs::remove_file(&new);
-        if in_use(&e) {
-            InstallError::GameRunning
-        } else {
-            e.into()
-        }
+        refused(e)
     })
 }
 
@@ -152,12 +154,25 @@ pub fn uninstall(game_dir: &Path) -> Result<(), InstallError> {
     if !orig.exists() {
         return Ok(());
     }
-    std::fs::copy(&orig, game_dir.join(DLL_NAME)).map_err(|e| if in_use(&e) { InstallError::GameRunning } else { e.into() })?;
+    std::fs::copy(&orig, game_dir.join(DLL_NAME)).map_err(refused)?;
     std::fs::remove_file(orig)?;
     Ok(())
 }
 
-/// A file that can't be replaced because a running program has it open.
+/// The error for a DLL that couldn't be replaced: the game, when Windows refused and a game is
+/// running; otherwise what refused it, not the game (a player was told the game was running
+/// when a DLL left from a test build blocked the update, 18 Nov 2026).
+fn refused(e: io::Error) -> InstallError {
+    if !in_use(&e) {
+        e.into()
+    } else if crate::game::game_running() {
+        InstallError::GameRunning
+    } else {
+        InstallError::Blocked(e)
+    }
+}
+
+/// A file that can't be replaced because a running program has it open, or Windows refused.
 fn in_use(e: &io::Error) -> bool {
     // ERROR_SHARING_VIOLATION (32) and ERROR_LOCK_VIOLATION (33).
     e.kind() == io::ErrorKind::PermissionDenied || matches!(e.raw_os_error(), Some(32 | 33)) && cfg!(windows)

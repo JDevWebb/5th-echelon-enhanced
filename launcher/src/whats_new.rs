@@ -36,7 +36,7 @@ pub struct Release {
 pub const RELEASES: &[Release] = &[
     Release {
         version: "0.5.5",
-        thanks: &["Major", "Mumu", "Glacio1"],
+        thanks: &["Major", "Mumu", "Glacio1", "TheFlash24AM"],
         new: &[
             Item {
                 title: "Join a match under way",
@@ -71,6 +71,14 @@ pub const RELEASES: &[Release] = &[
             Fix {
                 lead: "Playing through HTTPS,",
                 rest: " your ping to the relay now shows in the overlay.",
+            },
+            Fix {
+                lead: "With the quick start on DirectX 9,",
+                rest: " keys pressed while it gets you into the lobby no longer go on in the menus afterwards (starting a quick match, leaving it, and searching again).",
+            },
+            Fix {
+                lead: "When the client can't be installed,",
+                rest: " the launcher says it's the game only when the game is running; otherwise it says what else may hold the file.",
             },
         ],
     },
