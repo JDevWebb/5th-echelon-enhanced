@@ -207,15 +207,19 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
             .filter(|(session, _)| invitation_search || !crate::game_session::lobby_is_dead(_client_registry, session.session_id, session.creator_id))
             .map(|(session, _)| session)
             .collect();
-        // Nearest first, and the far ones left out as `[matchmaking] far_ms` says (far_rooms.rs):
-        // before the cut, so the near ones are what the game gets.
+        // Nearest first, the fuller when as near, and the far ones left out as `[matchmaking]
+        // far_ms` says (far_rooms.rs): before the cut, so the near ones are what the game gets.
         // Each room's estimate and what it's from, for the search event (Sessions shows why a
         // room was picked or left out).
         let mut estimates: Vec<(u32, u32, &str)> = Vec::new();
-        let (sessions, far) = if invitation_search || !crate::far_rooms::enabled() {
+        let (sessions, far) = if invitation_search {
             (sessions, 0)
         } else {
             let me = crate::tunnel::source_ip(*ci.address());
+            let members = self.storage.member_counts(&sessions.iter().map(|s| s.session_id).collect::<Vec<_>>()).unwrap_or_else(|e| {
+                warn!(logger, "couldn't count the found sessions' players: {e}");
+                HashMap::new()
+            });
             crate::far_rooms::order(
                 sessions
                     .into_iter()
@@ -227,7 +231,11 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
                         if let Some(ms) = ms {
                             estimates.push((s.session_id, ms, if by_relays.is_some() { "relays" } else { "places" }));
                         }
-                        (s, ms)
+                        let found = crate::far_rooms::Found {
+                            ms,
+                            members: members.get(&s.session_id).copied().unwrap_or(0),
+                        };
+                        (s, found)
                     })
                     .collect(),
             )

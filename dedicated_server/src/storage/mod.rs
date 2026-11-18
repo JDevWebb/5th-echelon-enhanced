@@ -986,6 +986,24 @@ impl Storage {
         Ok(query.build_query_scalar().fetch_all(&self.pool).await?)
     }
 
+    /// How many are in each of these sessions (participants and guests, as a room's fullness
+    /// counts them), by session; a session not found isn't in it.
+    pub fn member_counts(&self, session_ids: &[u32]) -> Result<HashMap<u32, u32>> {
+        if session_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        run(async {
+            let mut query = sqlx::QueryBuilder::new(format!("SELECT g.id, {MEMBERS_SQL} FROM game_sessions g WHERE g.id IN ("));
+            let mut ids = query.separated(",");
+            for id in session_ids {
+                ids.push_bind(*id);
+            }
+            query.push(")");
+            let rows: Vec<(u32, i64)> = query.build_query_as().fetch_all(&self.pool).await?;
+            Ok::<_, eyre::Error>(rows.into_iter().map(|(id, n)| (id, u32::try_from(n.max(0)).unwrap_or(u32::MAX))).collect())
+        })?
+    }
+
     /// Which of these players host a live private match (a match room, `113 => 0`, with private
     /// seats only). A host's game goes on advertising its party while it hosts one (the gamebox,
     /// 2026-11-06: gbox1 advertised party 11 while hosting private match 14), so the friend
