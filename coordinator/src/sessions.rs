@@ -772,12 +772,22 @@ fn timelines(events: &[Event], sessions: &[(String, i64, i64, Option<i64>)], nam
                 if e.kind == "recording" {
                     m["recording"] = e.detail["id"].clone();
                 }
+                // The start of a run of plain witness reports (fold_witness).
+                if e.kind == "witness" && e.detail["over"].as_array().is_none_or(Vec::is_empty) {
+                    let (p, n) = (e.detail["pawns"].as_i64().unwrap_or(0), e.detail["named"].as_i64().unwrap_or(0));
+                    m["plain"] = json!(true);
+                    m["pawns"] = json!([p, p]);
+                    m["named"] = json!([n, n]);
+                }
                 m
             })
         });
         if let (Some(mark), Some(p)) = (mark, players.get_mut(&who)) {
             if mark["last_at"].as_i64().is_some_and(|t| t >= from) {
-                p["marks"].as_array_mut().expect("an array").push(mark);
+                let marks = p["marks"].as_array_mut().expect("an array");
+                if !fold_witness(marks, &mark, e) {
+                    marks.push(mark);
+                }
             }
         }
     }
@@ -837,6 +847,44 @@ fn timelines(events: &[Event], sessions: &[(String, i64, i64, Option<i64>)], nam
 }
 
 /// An event, said in a few words.
+/// A run of witness reports this close together is one line on a timeline.
+const WITNESS_RUN_GAP: i64 = 300;
+
+/// Folds a plain witness report (nobody too fast) into the player's last plain one, when it
+/// came within [`WITNESS_RUN_GAP`] of it: a game in a match sends one a minute, and each its
+/// own line buried the rest of the timeline. The line then says the run's range of characters
+/// and named ones, how many reports, and from when to when. A report of someone too fast is
+/// never folded. Answers whether it was folded (else it's a mark of its own).
+fn fold_witness(marks: &mut [Value], mark: &Value, e: &Event) -> bool {
+    let plain = |d: &Value| d["over"].as_array().is_none_or(Vec::is_empty);
+    if e.kind != "witness" || !plain(&e.detail) {
+        return false;
+    }
+    let pawns = e.detail["pawns"].as_i64().unwrap_or(0);
+    let named = e.detail["named"].as_i64().unwrap_or(0);
+    let Some(last) = marks.iter_mut().rev().find(|m| m["kind"] == "witness" && m["plain"] == true) else {
+        return false;
+    };
+    if mark["at"].as_i64().unwrap_or(0) - last["last_at"].as_i64().unwrap_or(0) > WITNESS_RUN_GAP {
+        return false;
+    }
+    let range = |v: &Value, x: i64| [v[0].as_i64().unwrap_or(x).min(x), v[1].as_i64().unwrap_or(x).max(x)];
+    let (p, n) = (range(&last["pawns"], pawns), range(&last["named"], named));
+    let count = last["count"].as_i64().unwrap_or(1) + e.count.max(1);
+    last["pawns"] = json!(p);
+    last["named"] = json!(n);
+    last["count"] = json!(count);
+    last["last_at"] = json!(mark["last_at"]);
+    let span = |[a, b]: [i64; 2]| if a == b { a.to_string() } else { format!("{a}-{b}") };
+    let minutes = (last["last_at"].as_i64().unwrap_or(0) - last["at"].as_i64().unwrap_or(0)) / 60;
+    last["text"] = json!(format!(
+        "Their game watched {} player characters ({} named): {count} reports over {minutes} min",
+        span(p),
+        span(n)
+    ));
+    true
+}
+
 fn describe(e: &Event) -> String {
     let times = if e.count > 1 { format!(" ({} times)", e.count) } else { String::new() };
     match e.kind.as_str() {
@@ -2237,6 +2285,35 @@ mod tests {
             ev("na", 900, 5, "Theusma", "signout", json!({ "how": "timed_out" })),
         ];
         assert_eq!(titles(&together), ["Theusma's game went quiet in a co-op match"]);
+    }
+
+    #[test]
+    fn a_run_of_witness_reports_is_one_line() {
+        let report = |at, pawns, named| ev("na", at, 5, "Gexiii", "witness", json!({ "pawns": pawns, "named": named, "over": [] }));
+        let mut events: Vec<Event> = (0..30).map(|i| report(100 + i * 60, 2 + i % 2, 1 + i % 2)).collect();
+        // Too fast: a line of its own, not folded, and not a break in the run.
+        events.push(ev("na", 1000, 5, "Gexiii", "witness", json!({ "pawns": 3, "named": 2, "over": ["Gbane"] })));
+        events.sort_by_key(|e| e.at);
+        // After a break of more than five minutes, a new run.
+        events.push(report(2400, 4, 4));
+        events.push(report(2460, 4, 4));
+        let sessions = vec![("na".to_string(), 5, 50, Some(3000))];
+        let t = super::timelines(&events, &sessions, &std::collections::HashMap::new(), 0, 4000);
+        let texts: Vec<&str> = t[0]["marks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["kind"] == "witness")
+            .map(|m| m["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                "Their game watched 2-3 player characters (1-2 named): 30 reports over 29 min",
+                "Their game watched 3 player characters (2 named): too fast, Gbane",
+                "Their game watched 4 player characters (4 named): 2 reports over 1 min",
+            ]
+        );
     }
 
     #[test]
