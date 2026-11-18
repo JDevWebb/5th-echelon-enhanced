@@ -232,12 +232,14 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
                     .collect(),
             )
         };
-        // Matches still in their lobby before those under way (0.5.5's JIP: both are answered, a
-        // fresh lobby first), each nearest first as above.
-        let (waiting, under_way): (Vec<_>, Vec<_>) = sessions
+        // Matches under way before those still in their lobby (0.5.5's JIP: both are answered),
+        // each nearest first as above. A match under way with a seat free (a full one isn't
+        // found) is joined mid-round: filling it beats one more lobby waiting for players, and a
+        // match short-handed for the rest of its round.
+        let (under_way, waiting): (Vec<_>, Vec<_>) = sessions
             .into_iter()
-            .partition(|s| invitation_search || !crate::match_started::host_says_under_way(s.session_id));
-        let sessions: Vec<_> = waiting.into_iter().chain(under_way).take(crate::game_session::MAX_SEARCH_RESULTS as usize).collect();
+            .partition(|s| !invitation_search && crate::match_started::host_says_under_way(s.session_id));
+        let sessions: Vec<_> = under_way.into_iter().chain(waiting).take(crate::game_session::MAX_SEARCH_RESULTS as usize).collect();
         // The game QoS-pings the first hosts it got within 2 s (E3): their relays are told of the
         // pair now, so no ping waits on a relay asking the matchmaking server (G3).
         if !invitation_search && crate::relays::network_relays() {

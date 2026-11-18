@@ -3283,15 +3283,16 @@ async fn match_state(ctx: &mut Ctx) -> Result<()> {
     ensure!(finds(&seeker.search_sessions(&open).await?), "someone else's word hid the host's match");
     host.match_state(true, "RoundState_Started").await?;
     ensure!(finds(&seeker.search_sessions(&open).await?), "a match under way wasn't offered (joining mid-round)");
-    // A second match, still in its lobby: offered before the one under way.
+    // A second match, still in its lobby: offered after the one under way (filling a match
+    // mid-round first).
     let mut lobby_host = ctx.player("Host").await?;
     lobby_host.register_urls(&["prudp:/address=127.0.0.1;port=3099;sid=15;type=3"]).await?;
     let lobby = lobby_host.create_session(&open).await?;
     lobby_host.add_participants(lobby, &[lobby_host.pid], &[]).await?;
     let order: Vec<u32> = seeker.search_sessions(&open).await?.iter().map(|(s, _)| *s).collect();
     ensure!(
-        order.iter().position(|s| *s == lobby) < order.iter().position(|s| *s == game) && order.contains(&game),
-        "a match under way was offered before one in its lobby: {order:?} (lobby {lobby}, under way {game})"
+        order.contains(&game) && order.contains(&lobby) && order.iter().position(|s| *s == game) < order.iter().position(|s| *s == lobby),
+        "a match in its lobby was offered before one under way: {order:?} (lobby {lobby}, under way {game})"
     );
     lobby_host.disconnect().await?;
     host.match_state(false, "RoundState_PreRound").await?;
