@@ -23,6 +23,7 @@ pub mod chat_relay;
 pub mod crash_fixes;
 pub mod engine_tables;
 pub mod host_migration;
+pub mod loadout_chooser;
 pub mod mouse_turn;
 pub mod patterns;
 pub mod quick_start;

@@ -57,6 +57,7 @@ mod gear_list_fix;
 mod hooks;
 mod host_migration;
 mod load_order_fix;
+mod loadout_chooser;
 mod macros;
 mod migrate_lobby;
 mod migration_fix;

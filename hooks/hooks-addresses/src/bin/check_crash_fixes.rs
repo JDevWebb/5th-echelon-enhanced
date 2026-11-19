@@ -28,6 +28,7 @@ use hooks_addresses::crash_fixes::voice_device;
 use hooks_addresses::crash_fixes::Image;
 use hooks_addresses::engine_tables;
 use hooks_addresses::host_migration;
+use hooks_addresses::loadout_chooser;
 use hooks_addresses::mouse_turn;
 use hooks_addresses::quick_start;
 use hooks_addresses::unreachable;
@@ -159,6 +160,10 @@ fn check(path: &Path) -> bool {
     report(
         "quick-start",
         quick_start::locate(&img).map(|s| format!("{s:#x?}").split_whitespace().collect::<Vec<_>>().join(" ")),
+    );
+    report(
+        "loadout-chooser",
+        loadout_chooser::locate(&img).map(|s| format!("compare {:#010x}, choice {:#010x}", s.check, s.choice)),
     );
     // Not a crash fix either: the host passing a player's chat on to the others (ChatRelay).
     report(

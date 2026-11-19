@@ -269,7 +269,7 @@ fn readable(at: usize, len: usize) -> bool {
     at >= 0x1_0000 && region::query_range(at as *const u8, len).is_ok_and(|mut r| r.all(|r| r.is_ok_and(|r| r.is_readable())))
 }
 
-fn read_u32(at: usize) -> Option<u32> {
+pub(crate) fn read_u32(at: usize) -> Option<u32> {
     // SAFETY: checked readable just before.
     readable(at, 4).then(|| unsafe { std::ptr::read_volatile(at as *const u32) })
 }
@@ -295,6 +295,17 @@ fn scene_state() -> Option<u32> {
 
 fn smi_state() -> Option<u32> {
     read_u32(exe().smi).filter(|&s| s != 0).and_then(|s| read_u32(s as usize + SMI_STATE))
+}
+
+/// The menu state machine's state (`UI::SMI+0x2b8`), once the quick start is in use.
+pub(crate) fn menu_state() -> Option<u32> {
+    SITES.get().and_then(|_| smi_state())
+}
+
+/// The quick start took this game online from the title, without the hub (its online startup
+/// done): the local player's game type is then not the hub's (`loadout_chooser`).
+pub(crate) fn online_from_title() -> bool {
+    ONLINE_DONE_AT.get().is_some() && !GAVE_UP.load(Ordering::Relaxed)
 }
 
 /// Installs everything (from `hooks::init`, in `DllMain`, before the game's code runs). An
@@ -327,6 +338,8 @@ pub unsafe fn install(lobby: QuickStartLobby) {
         }
     };
     let e = SITES.get_or_init(|| sites);
+    // Customize Gear in the online menu, which the hub would have set up (loadout_chooser.rs).
+    crate::loadout_chooser::install(&image);
 
     // 1. Boot videos: the gate's `jne` becomes a `jmp` to its own skip branch.
     let rel = (e.video_skip as u32).wrapping_sub(e.video_gate_jne as u32 + 5);
