@@ -634,6 +634,20 @@ impl Friends for MyFriends {
         if crate::match_started::refusing(room_id) {
             return reply(JoinStatus::Started, "That player's match isn't taking players now - try again in a moment.");
         }
+        // Full at its current size (as the invitee's search finds it, `full_for_invitee`): the
+        // join would only fail in the game, after a wait, with a "host has changed" or a
+        // connection error (players joining 8-seat matches from the overlay, ca1, Nov 2026).
+        // Said in the detail, which every client shows, under STARTED: a match not taking
+        // players now.
+        if let Some((members, seats)) = self.storage.room_seats_async(room_id).await.map_err(internal)?.filter(|&(m, s)| s > 0 && m >= s) {
+            info!(self.logger, "JoinNow: {me} not let into {host}'s session {room_id}: it's full ({members} in {seats} seats)");
+            let detail = if public_match.is_some_and(|game| game.session_id == room_id) {
+                "That player's match is full - try again when a seat opens."
+            } else {
+                "That player's party is full - try again when a place opens."
+            };
+            return reply(JoinStatus::Started, detail);
+        }
         // The invitation this queues is the one delivered as a requested join (its row says
         // so): another one already waiting for the caller goes out as the ordinary invitation
         // it is.

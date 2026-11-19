@@ -1804,14 +1804,20 @@ impl Storage {
     /// A live session's members (participants and guests) and its seats ([`seats_sql`]: 0
     /// when its host sent none), or None if there's no such session (or it has ended).
     pub fn room_seats(&self, session_id: u32) -> Result<Option<(u32, u32)>> {
+        run(self.room_seats_async(session_id))?
+    }
+
+    /// [`Storage::room_seats`], for async callers (the API's JoinNow).
+    pub async fn room_seats_async(&self, session_id: u32) -> Result<Option<(u32, u32)>> {
         // As i64: a host's attributes are whatever it sent, and a seat count past u32 must
         // read as a big lobby, not fail the invitee's search.
-        let row: Option<(i64, i64)> = run(sqlx::query_as(&format!(
+        let row: Option<(i64, i64)> = sqlx::query_as(&format!(
             "SELECT {MEMBERS_SQL}, {} FROM game_sessions g WHERE g.id = ? AND g.destroyed_at IS NULL",
             seats_sql()
         ))
         .bind(session_id)
-        .fetch_optional(&self.pool))??;
+        .fetch_optional(&self.pool)
+        .await?;
         let clamp = |n: i64| u32::try_from(n.max(0)).unwrap_or(u32::MAX);
         Ok(row.map(|(members, seats)| (clamp(members), clamp(seats))))
     }
