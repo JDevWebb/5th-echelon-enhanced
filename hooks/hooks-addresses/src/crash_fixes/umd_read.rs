@@ -136,6 +136,123 @@ pub fn locate(img: &Image) -> Result<Site, String> {
     })
 }
 
+/// The linear file manager (`FFileManagerLinear`): which files there are, and a reader for one.
+/// Both answer from the *current* slot's UMD only (its tracker's table of files, by the hash of the
+/// name): a package another UMD has isn't found while that one is current, and in linear mode
+/// that's a failed load (an async load with no linker: `exe+0x121efb`, reading `0x9c`).
+///
+/// Slot 6 (`FileSize(name, flags)`, DX11 VA `0x45e570`, DX9 `0x70c950`): the size, or -1. Its call
+/// at [`FILE_SIZE_THREAD_CALL`] is the per-thread switch that turns the UMDs off for a thread.
+pub const FILE_SIZE: &str = "55 8B EC 6A FF 68 ?? ?? ?? ?? ?? ?? ?? 00 00 00 50 83 EC 0C 56 57 A1 ?? ?? ?? ?? 33 C5 50 8D 45 \
+     ?? ?? ?? ?? 00 00 00 8B F1 ?? ?? ?? ?? 00 00 83 7C 86 2C 00 8B 7D 08 ?? ?? ?? ?? 00 00 E8 ?? ?? ?? ?? 85 C0 ?? ?? ?? \
+     ?? 00 00 ?? ?? ?? ?? ?? ?? ?? ?? 57 8D 4D E8 ?? ?? ?? ?? 2C E8 ?? ?? ?? ?? ?? ?? ?? ?? 00 00 00 83 78 04 00 ?? ?? ?? \
+     ?? EB 05 B8 ?? ?? ?? ?? 50 E8 ?? ?? ?? ?? 83 C4 04 89 45 08 C7 45 FC FF FF FF FF 8D 4D E8 ?? ?? ?? ?? ?? ?? ?? ?? ?? \
+     00 00 8B 4C 8E 2C 8D 45 08 50 E8 ?? ?? ?? ?? 85 C0 74 16 8B";
+pub const FILE_SIZE_THREAD_CALL: usize = 0x3d;
+/// The per-thread switch: `mov eax,[tls index]`, `mov ecx,fs:[0x2c]`, then the thread's block.
+pub const THREAD_SWITCH: &str = "A1 ?? ?? ?? ?? 64 8B 0D 2C 00 00 00 8B 14 81";
+
+/// Slot 4 (`CreateFileReader(name, flags, error, ?)`, DX11 VA `0x45ffc0`, DX9 `0x70e3a0`): a linear
+/// reader made with the game's allocator ([`READER_ALLOC`]: 0x20 bytes, tagged "notag") and the
+/// reader's constructor ([`READER_CTOR`]: `this`, then the manager, the size, the id and 2, or 0
+/// for a `game:` name), else the inner manager's reader for a loose file (the game has none).
+pub const CREATE_READER: &str = "55 8B EC 6A FF 68 ?? ?? ?? ?? ?? ?? ?? 00 00 00 50 83 EC 20 53 56 57 A1 ?? ?? ?? ?? 33 C5 \
+     50 8D 45 ?? ?? ?? ?? 00 00 00 8B F1 8B 5D 08 33 FF 53 8D 4D E0 89 7D F0 E8 ?? ?? ?? ?? 89 7D FC 39 3D ?? ?? ?? ?? ?? \
+     ?? ?? ?? 00 00 ?? ?? ?? ?? 00 00 39 7C 86 2C ?? ?? ?? ?? 00 00 E8 ?? ?? ?? ?? 85";
+/// `push 0 / push 0 / push 0x36 / push "notag" / push 0x20 / call alloc / add esp,0x14`.
+pub const READER_ALLOC: &str = "6A 00 6A 00 6A 36 68 ?? ?? ?? ?? 6A 20 E8 ?? ?? ?? ?? 83 C4 14";
+pub const CREATE_READER_ALLOC: usize = 0x182;
+/// `push ebx / push ecx / push edx / push esi / mov ecx,eax / call ctor`.
+pub const READER_CTOR: &str = "53 51 52 56 8B C8 E8";
+pub const CREATE_READER_CTOR: usize = 0x1a8;
+/// How far into the constructor it sets the reader's vtable (`mov dword [esi],vtable`).
+const CTOR_VTABLE_WITHIN: usize = 0x80;
+
+/// The file manager's vtable slots replaced.
+pub const SLOT_CREATE_READER: usize = 4;
+pub const SLOT_FILE_SIZE: usize = 6;
+
+/// Where the file manager's part goes.
+#[derive(Debug)]
+pub struct ManagerSite {
+    /// `FFileManagerLinear`'s vtable.
+    pub vtable: usize,
+    pub file_size: usize,
+    pub create_reader: usize,
+    /// `cdecl () -> u32`: nonzero when this thread reads loose files only.
+    pub thread_switch: usize,
+    /// `cdecl (size, tag, line, 0, 0) -> *mut u8`, and the tag it's given.
+    pub alloc: usize,
+    pub alloc_tag: usize,
+    /// `thiscall (this, manager, size, id, flag) -> this`.
+    pub reader_ctor: usize,
+}
+
+impl ManagerSite {
+    /// The address of vtable slot `i`.
+    pub fn slot(&self, i: usize) -> usize {
+        self.vtable + 4 * i
+    }
+}
+
+/// The file manager whose readers are the linear reader with vtable `reader_vtable`
+/// ([`Site::vtable`]).
+pub fn locate_manager(img: &Image, reader_vtable: usize) -> Result<ManagerSite, String> {
+    let file_size = find(img, "the linear file manager's FileSize", FILE_SIZE)?;
+    let create_reader = find(img, "the linear file manager's CreateFileReader", CREATE_READER)?;
+    let call = |at: usize| img.rel32_target(at).ok_or_else(|| format!("the call at {at:#010x}"));
+    let thread_switch = call(file_size + FILE_SIZE_THREAD_CALL + 1)?;
+    if !is_at(img, thread_switch, THREAD_SWITCH) {
+        return Err(format!("FileSize's first callee {thread_switch:#010x} isn't the per-thread switch"));
+    }
+    if !is_at(img, create_reader + CREATE_READER_ALLOC, READER_ALLOC) {
+        return Err(String::from("CreateFileReader doesn't allocate the reader where it should"));
+    }
+    let alloc_tag = img.u32(create_reader + CREATE_READER_ALLOC + 7).ok_or("the allocation's tag")?;
+    if img.bytes(alloc_tag, 6) != Some(b"notag\0") {
+        return Err(format!("the allocation's tag {alloc_tag:#010x} isn't \"notag\""));
+    }
+    let alloc = call(create_reader + CREATE_READER_ALLOC + 14)?;
+    if !is_at(img, create_reader + CREATE_READER_CTOR, READER_CTOR) {
+        return Err(String::from("CreateFileReader doesn't construct the reader where it should"));
+    }
+    let reader_ctor = call(create_reader + CREATE_READER_CTOR + 7)?;
+    let sets_vtable = img.bytes(reader_ctor, CTOR_VTABLE_WITHIN).is_some_and(|code| {
+        let mut want = vec![0xC7, 0x06];
+        want.extend_from_slice(&(reader_vtable as u32).to_le_bytes());
+        code.windows(want.len()).any(|w| w == want)
+    });
+    if !sets_vtable {
+        return Err(format!("the constructor {reader_ctor:#010x} doesn't make the linear reader"));
+    }
+    for at in [alloc, reader_ctor] {
+        if !img.text_range().contains(&at) {
+            return Err(format!("the callee {at:#010x} isn't the game's code"));
+        }
+    }
+    let mut found = Vec::new();
+    let rdata = img.rdata_range();
+    let mut at = rdata.start;
+    while at + 4 * (SLOT_FILE_SIZE + 1) <= rdata.end {
+        if img.u32(at + 4 * SLOT_CREATE_READER) == Some(create_reader) && img.u32(at + 4 * SLOT_FILE_SIZE) == Some(file_size) {
+            found.push(at);
+        }
+        at += 4;
+    }
+    let [vtable] = found[..] else {
+        return Err(format!("the linear file manager's vtable found {} times, not once", found.len()));
+    };
+    Ok(ManagerSite {
+        vtable,
+        file_size,
+        create_reader,
+        thread_switch,
+        alloc,
+        alloc_tag,
+        reader_ctor,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +315,53 @@ mod tests {
         let mut img = crate::crash_fixes::tests::image(&hooked, base, &rdata, 0x0299_3000);
         img.image = 0x0040_0000..0x0350_0000;
         assert!(locate(&img).unwrap_err().contains("isn't the read-sequence sync"));
+    }
+
+    /// The DX11 file manager (VA 0x45e570 FileSize, 0x45ffc0 CreateFileReader; the switch,
+    /// allocator and constructor moved nearer) in a fake `.text`, its vtable and the tag in
+    /// `.rdata`, the linear reader's vtable 0x0299351c.
+    #[test]
+    fn finds_the_file_manager_and_its_reader_maker() {
+        let base = 0x0045_0000usize;
+        let mut text = vec![0xCCu8; 0x20000];
+        let mut put = |va: usize, sig: &str, calls: &[(usize, usize)]| {
+            let bytes: Vec<u8> = parse(sig).iter().map(|b| b.unwrap_or(0)).collect();
+            text[va - base..va - base + bytes.len()].copy_from_slice(&bytes);
+            for &(at, target) in calls {
+                let rel = (target as u32).wrapping_sub((va + at + 4) as u32);
+                text[va + at - base..va + at - base + 4].copy_from_slice(&rel.to_le_bytes());
+            }
+        };
+        let (thread, alloc, ctor) = (0x46a000, 0x46b000, 0x46c000);
+        put(0x45e570, FILE_SIZE, &[(FILE_SIZE_THREAD_CALL + 1, thread)]);
+        put(0x45ffc0, CREATE_READER, &[]);
+        put(0x45ffc0 + CREATE_READER_ALLOC, READER_ALLOC, &[(14, alloc)]);
+        put(0x45ffc0 + CREATE_READER_CTOR, READER_CTOR, &[(7, ctor)]);
+        put(thread, THREAD_SWITCH, &[]);
+        put(ctor, "55 8B EC 8B F1 C7 06 1C 35 99 02", &[]);
+        text[0x45ffc0 + CREATE_READER_ALLOC + 7 - base..][..4].copy_from_slice(&0x0299_3100u32.to_le_bytes());
+        let mut rdata = vec![0u8; 0x200];
+        rdata[0x100..0x106].copy_from_slice(b"notag\0");
+        for (slot, f) in [(SLOT_CREATE_READER, 0x45ffc0u32), (SLOT_FILE_SIZE, 0x45e570)] {
+            rdata[0x40 + 4 * slot..0x40 + 4 * slot + 4].copy_from_slice(&f.to_le_bytes());
+        }
+        fn image<'a>(text: &'a [u8], rdata: &'a [u8]) -> Image<'a> {
+            let mut img = crate::crash_fixes::tests::image(text, 0x0045_0000, rdata, 0x0299_3000);
+            img.image = 0x0040_0000..0x0350_0000;
+            img
+        }
+        let site = locate_manager(&image(&text, &rdata), 0x0299_351c).unwrap();
+        assert_eq!(site.vtable, 0x0299_3040);
+        assert_eq!((site.file_size, site.create_reader), (0x45e570, 0x45ffc0));
+        assert_eq!((site.thread_switch, site.alloc, site.reader_ctor, site.alloc_tag), (thread, alloc, ctor, 0x0299_3100));
+        assert_eq!(site.slot(SLOT_FILE_SIZE), 0x0299_3040 + 24);
+
+        // A constructor that makes another kind of reader isn't this one.
+        assert!(locate_manager(&image(&text, &rdata), 0x0299_4000).unwrap_err().contains("doesn't make the linear reader"));
+        // Nor is a FileSize whose first call goes elsewhere.
+        let mut other = text.clone();
+        other[thread - base] = 0x90;
+        assert!(locate_manager(&image(&other, &rdata), 0x0299_351c).unwrap_err().contains("per-thread switch"));
     }
 
     /// load_order_fix patches the sync's first read of the cursor (0x32 into it, the crash's

@@ -146,6 +146,15 @@ fn check(path: &Path) -> bool {
             )
         }),
     );
+    report(
+        "umd-read-fix (file manager)",
+        umd_read::locate(&img).and_then(|s| umd_read::locate_manager(&img, s.vtable)).map(|m| {
+            format!(
+                "vtable {:#010x} (FileSize {:#010x}, CreateFileReader {:#010x}), switch {:#010x}, alloc {:#010x}, reader ctor {:#010x}",
+                m.vtable, m.file_size, m.create_reader, m.thread_switch, m.alloc, m.reader_ctor
+            )
+        }),
+    );
     // Not a crash fix, but found the same way: the quick start (QuickStartLobby).
     report(
         "quick-start",

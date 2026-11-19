@@ -89,6 +89,8 @@ unsafe extern "C" fn missing_linker(entry: *mut u8) -> u32 {
     if count == 1 {
         MISSING.fetch_add(1, Ordering::Relaxed);
         warn!("async-linker-fix: package {name:?} came back with no linker: trying again next frame (the game would have crashed)");
+        #[cfg(feature = "test-commands")]
+        info!("async-linker-fix: test: the file manager: {}", crate::umd_read_fix::slots_now());
     }
     if try_again(count, waited) {
         *(entry.add(CREATING) as *mut u32) = 0;

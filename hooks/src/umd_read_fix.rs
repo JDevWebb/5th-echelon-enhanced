@@ -25,6 +25,17 @@
 //! were, for the reads that do follow them. A read no UMD has is left to the game, as before. The
 //! bare sync and `Precache` skip the sync for such a read, so nothing ever empties the cursor.
 //!
+//! The file manager has the same gap one step earlier: `FileSize` and `CreateFileReader` answer
+//! only from the current slot's UMD (its table of files by name hash), so a package another UMD
+//! has isn't found at all while that one is current. After a match with gear the lobby's sequence
+//! didn't record (the reads above), Customize Gear asks for Sam's head (`CHARM-CCS-Sam.ukx`, in
+//! `PEC-Main.umd`) with `PEC-ADV.umd` current: no file, no linker, and the async load's crash
+//! (`exe+0x121efb`, reading `0x9c`; async_linker_fix only retries it). So those two slots are
+//! pointed here too: where the game finds nothing, a package (`.u*`) that every UMD listing it
+//! gives one id and size is answered with that size, and a reader is made for it the way the game
+//! makes its own (its allocator and constructor); its reads then miss the current sequence and are
+//! served from the UMD files as above. Anything the game finds itself goes as before.
+//!
 //! Matched by signatures unique in both executables (DX11 `Serialize` VA `0x450920`), cross-checked
 //! (who calls whom, the vtable holding all three); anything else leaves the game alone. Logged:
 //! the first reads served in full (which file, which UMD, why the sequence missed), then counts.
@@ -58,6 +69,11 @@ use tracing::warn;
 type SerializeFn = unsafe extern "thiscall" fn(*mut u8, *mut u8, i32);
 type SyncOnlyFn = unsafe extern "thiscall" fn(*mut u8) -> u32;
 type PrecacheFn = unsafe extern "thiscall" fn(*mut u8, i32) -> u32;
+type FileSizeFn = unsafe extern "thiscall" fn(*mut u8, *const u8, u32) -> i32;
+type CreateReaderFn = unsafe extern "thiscall" fn(*mut u8, *const u8, u32, usize, usize) -> *mut u8;
+type ThreadSwitchFn = unsafe extern "C" fn() -> u32;
+type AllocFn = unsafe extern "C" fn(u32, usize, u32, u32, u32) -> *mut u8;
+type ReaderCtorFn = unsafe extern "thiscall" fn(*mut u8, usize, u32, u32, u32) -> *mut u8;
 
 /// The game's functions and switches, set once before the vtable is rewritten.
 static SERIALIZE: AtomicUsize = AtomicUsize::new(0);
@@ -65,11 +81,23 @@ static SYNC_ONLY: AtomicUsize = AtomicUsize::new(0);
 static PRECACHE: AtomicUsize = AtomicUsize::new(0);
 static LINEAR_ON: AtomicUsize = AtomicUsize::new(0);
 static LINEAR_OFF: AtomicUsize = AtomicUsize::new(0);
+/// The file manager's: its FileSize and CreateFileReader, the per-thread switch, the allocator
+/// (and its tag), the reader's constructor.
+static FILE_SIZE: AtomicUsize = AtomicUsize::new(0);
+static CREATE_READER: AtomicUsize = AtomicUsize::new(0);
+static THREAD_SWITCH: AtomicUsize = AtomicUsize::new(0);
+static ALLOC: AtomicUsize = AtomicUsize::new(0);
+static ALLOC_TAG: AtomicUsize = AtomicUsize::new(0);
+static READER_CTOR: AtomicUsize = AtomicUsize::new(0);
 
 /// Reads served from the files, reads no UMD had, syncs skipped (bare sync and `Precache`).
 static SERVED: AtomicU32 = AtomicU32::new(0);
 static UNSERVED: AtomicU32 = AtomicU32::new(0);
 static SKIPPED: AtomicU32 = AtomicU32::new(0);
+/// Files the current UMD doesn't list, found (a size, or a reader) in the UMDs that have them.
+static OPENED: AtomicU32 = AtomicU32::new(0);
+/// The file manager the reads went through (the game has one), for [`slots_now`].
+static MANAGER: AtomicUsize = AtomicUsize::new(0);
 /// Reads logged in full; after these only the counts.
 const LOGGED_IN_FULL: u32 = 24;
 
@@ -196,6 +224,7 @@ unsafe fn look(this: *mut u8) -> Option<Read> {
     if manager == 0 {
         return None;
     }
+    MANAGER.store(manager, Ordering::Relaxed);
     let slot = rd(manager + M_SLOT);
     if slot >= SLOTS {
         return None;
@@ -287,6 +316,142 @@ unsafe extern "thiscall" fn precache(this: *mut u8, hint: i32) -> u32 {
     original(this, hint)
 }
 
+/// A file name as the game passes it to its file manager (narrow, or UTF-16 when the second byte
+/// is 0; a path), up to 260 characters.
+unsafe fn game_name(name: *const u8) -> Option<String> {
+    let at = name as usize;
+    if at < 0x10000 || !readable(at, 2) {
+        return None;
+    }
+    let wide = *name.add(1) == 0 && *name != 0;
+    let unit = if wide { 2 } else { 1 };
+    let mut text = String::new();
+    for i in 0..260 {
+        if !readable(at + i * unit, unit) {
+            return None;
+        }
+        let c = if wide { u32::from(*(name.add(i * 2) as *const u16)) } else { u32::from(*name.add(i)) };
+        if c == 0 {
+            return Some(text);
+        }
+        text.push(char::from_u32(c).unwrap_or('?'));
+    }
+    None
+}
+
+/// The file `name` (a path the game built) as some UMD lists it: (id, size), when the current
+/// slot's UMD doesn't and the game would fail to find it. Only packages (`.u*`), and only a name
+/// every UMD gives the same id and size.
+unsafe fn elsewhere(manager: *mut u8, name: *const u8) -> Option<(u32, u32, String)> {
+    if !linear_on() {
+        return None;
+    }
+    let manager = manager as usize;
+    let slot = rd(manager + M_SLOT);
+    if slot >= SLOTS || rd(manager + M_TRACKERS + 4 * slot) == 0 {
+        return None;
+    }
+    let switch: ThreadSwitchFn = std::mem::transmute(THREAD_SWITCH.load(Ordering::Relaxed));
+    if switch() != 0 {
+        return None;
+    }
+    let path = game_name(name)?;
+    let file = path.rsplit(['\\', '/']).next()?.to_ascii_lowercase();
+    if !file.rsplit_once('.').is_some_and(|(_, ext)| ext.starts_with('u')) {
+        return None;
+    }
+    let found = store().lock().ok()?.by_name(&file)?;
+    Some((found.0, found.1, file))
+}
+
+/// One file the current UMD didn't list, for the log (the first ones in full, then counts).
+unsafe fn opened(manager: *mut u8, what: &str, file: &str, id: u32, size: u32) {
+    let count = OPENED.fetch_add(1, Ordering::Relaxed) + 1;
+    if count <= LOGGED_IN_FULL {
+        let names = open_umds(manager as usize);
+        let current = names.first().map_or("?", |(_, n)| n.as_str());
+        info!("umd-read-fix: {file} isn't in the current UMD ({current}): {what} from the UMDs that have it ({id:#010x}, {size} bytes)");
+    }
+}
+
+/// The file manager's `FileSize(name, flags)` (vtable slot 6) in place of the game's: the game's
+/// answer, else the size a UMD has the file at.
+unsafe extern "thiscall" fn file_size(this: *mut u8, name: *const u8, flags: u32) -> i32 {
+    let original: FileSizeFn = std::mem::transmute(FILE_SIZE.load(Ordering::Relaxed));
+    let size = original(this, name, flags);
+    if size >= 0 {
+        return size;
+    }
+    match elsewhere(this, name) {
+        Some((id, found, file)) => {
+            opened(this, "its size", &file, id, found);
+            found as i32
+        }
+        None => size,
+    }
+}
+
+/// The file manager's `CreateFileReader(name, flags, error, ?)` (vtable slot 4) in place of the
+/// game's: the game's reader, else the linear reader the game makes for a file its UMD lists, here
+/// for one another UMD lists. Its reads then miss the current sequence and come from that UMD.
+unsafe extern "thiscall" fn create_reader(this: *mut u8, name: *const u8, flags: u32, error: usize, other: usize) -> *mut u8 {
+    let original: CreateReaderFn = std::mem::transmute(CREATE_READER.load(Ordering::Relaxed));
+    let reader = original(this, name, flags, error, other);
+    // 0x200: a reader for the UMD itself; 0x800000: not through the UMDs. As the game.
+    if !reader.is_null() || flags & 0x0080_0200 != 0 {
+        return reader;
+    }
+    let Some((id, size, file)) = elsewhere(this, name) else {
+        return reader;
+    };
+    let alloc: AllocFn = std::mem::transmute(ALLOC.load(Ordering::Relaxed));
+    let mem = alloc(0x20, ALLOC_TAG.load(Ordering::Relaxed), 0x36, 0, 0);
+    if mem.is_null() {
+        return reader;
+    }
+    // 2, or 0 for a "game:" name, as the game.
+    let flag = if game_name(name).is_some_and(|n| n.contains("game:")) { 0 } else { 2 };
+    let ctor: ReaderCtorFn = std::mem::transmute(READER_CTOR.load(Ordering::Relaxed));
+    let made = ctor(mem, this as usize, size, id, flag);
+    opened(this, "a reader", &file, id, size);
+    made
+}
+
+/// The file manager's slots as they are now, for a log line: the current one, and each open
+/// slot's UMD with its tracker's file count (`+0x10`) and sequence length.
+#[cfg(feature = "test-commands")]
+pub(crate) fn slots_now() -> String {
+    let manager = MANAGER.load(Ordering::Relaxed);
+    if manager == 0 {
+        return String::from("no file manager seen yet");
+    }
+    unsafe {
+        if !readable(manager, M_SLOT + 4) {
+            return String::from("the file manager isn't readable");
+        }
+        let current = rd(manager + M_SLOT);
+        // Only up to the current slot: the ones above it hold whatever was last there.
+        let slots: Vec<String> = (0..=current.min(SLOTS - 1))
+            .map(|i| {
+                let tracker = rd(manager + M_TRACKERS + 4 * i);
+                let archive = rd(manager + M_ARCHIVES + 4 * i);
+                let name = slot_name(manager + M_NAMES + M_NAME_STRIDE * i).unwrap_or_else(|| String::from("?"));
+                if tracker == 0 || !readable(tracker, T_PERSISTENT + 4) {
+                    format!("{i}:{name} (archive {archive:#x}, tracker {tracker:#x})")
+                } else {
+                    format!(
+                        "{i}:{name} (archive {archive:#x}, files {}, entries {}, persistent {})",
+                        rd(tracker + 0x10),
+                        rd(tracker + T_COUNT),
+                        rd(tracker + T_PERSISTENT)
+                    )
+                }
+            })
+            .collect();
+        format!("current slot {current}; slots [{}]", slots.join(", "))
+    }
+}
+
 /// The open slots' UMD file names (`lobby.umd`), the current one first.
 unsafe fn open_umds(manager: usize) -> Vec<(usize, String)> {
     let top = rd(manager + M_SLOT).min(SLOTS - 1);
@@ -373,6 +538,8 @@ struct Store {
     used: Vec<String>,
     /// Every UMD's files (id, size), once a read wasn't in the open ones.
     catalog: Option<Vec<(String, HashMap<u32, u32>)>>,
+    /// Every UMD's files by name (lowercase): (id, size), or `None` when UMDs disagree.
+    names: HashMap<String, Option<(u32, u32)>>,
 }
 
 struct Umd {
@@ -393,6 +560,7 @@ fn store() -> &'static Mutex<Store> {
             open: HashMap::new(),
             used: Vec::new(),
             catalog: None,
+            names: HashMap::new(),
         })
     })
 }
@@ -469,11 +637,18 @@ impl Store {
     fn catalog(&mut self) -> &[(String, HashMap<u32, u32>)] {
         if self.catalog.is_none() {
             let started = Instant::now();
-            let catalog = self.dir.as_deref().map(read_catalog).unwrap_or_default();
+            let (catalog, names) = self.dir.as_deref().map(read_catalog).unwrap_or_default();
             info!("umd-read-fix: listed the files of {} UMDs in {:.1?}", catalog.len(), started.elapsed());
             self.catalog = Some(catalog);
+            self.names = names;
         }
         self.catalog.as_deref().unwrap_or_default()
+    }
+
+    /// File `file` (a lowercase name) as every UMD that lists it has it: (id, size).
+    fn by_name(&mut self, file: &str) -> Option<(u32, u32)> {
+        self.catalog();
+        self.names.get(file).copied().flatten()
     }
 
     /// File `id`'s name, from the open UMDs or the catalog's.
@@ -489,10 +664,14 @@ impl Store {
     }
 }
 
-fn read_catalog(dir: &Path) -> Vec<(String, HashMap<u32, u32>)> {
+/// Every UMD's files by id, and by name (lowercase; `None` where two UMDs disagree on its id or
+/// size).
+type Catalog = (Vec<(String, HashMap<u32, u32>)>, HashMap<String, Option<(u32, u32)>>);
+
+fn read_catalog(dir: &Path) -> Catalog {
     let Ok(listing) = std::fs::read_dir(dir) else {
         warn!("umd-read-fix: couldn't list {}", dir.display());
-        return Vec::new();
+        return Catalog::default();
     };
     let mut names: Vec<String> = listing
         .filter_map(Result::ok)
@@ -500,19 +679,69 @@ fn read_catalog(dir: &Path) -> Vec<(String, HashMap<u32, u32>)> {
         .filter(|n| n.ends_with(".umd"))
         .collect();
     names.sort();
-    names
+    let mut by_name: HashMap<String, Option<(u32, u32)>> = HashMap::new();
+    let catalog = names
         .into_iter()
         .filter_map(|name| {
             let header = umd::UmdFile::open(&dir.join(&name)).and_then(|mut f| f.header());
             match header {
-                Ok(h) => Some((name, h.files.iter().map(|f| (f.id, f.size)).collect())),
+                Ok(h) => {
+                    for f in &h.files {
+                        let key = f.name.rsplit(['\\', '/']).next().unwrap_or(&f.name).to_ascii_lowercase();
+                        by_name
+                            .entry(key)
+                            .and_modify(|e| {
+                                if *e != Some((f.id, f.size)) {
+                                    *e = None;
+                                }
+                            })
+                            .or_insert(Some((f.id, f.size)));
+                    }
+                    Some((name, h.files.iter().map(|f| (f.id, f.size)).collect()))
+                }
                 Err(e) => {
                     warn!("umd-read-fix: {name}: {e}");
                     None
                 }
             }
         })
-        .collect()
+        .collect();
+    (catalog, by_name)
+}
+
+/// The file manager's part: a package the current UMD doesn't list is found and opened from the
+/// UMDs that do (its reads then served as above). Without it the reader part still stands.
+unsafe fn open_files_from_other_umds(image: &hooks_addresses::crash_fixes::Image, reader_vtable: usize) {
+    let m = match umd_read::locate_manager(image, reader_vtable) {
+        Ok(m) => m,
+        Err(what) => {
+            warn!("umd-read-fix: the file manager: {what} -> files only the current UMD lists, as before");
+            return;
+        }
+    };
+    FILE_SIZE.store(m.file_size, Ordering::Relaxed);
+    CREATE_READER.store(m.create_reader, Ordering::Relaxed);
+    THREAD_SWITCH.store(m.thread_switch, Ordering::Relaxed);
+    ALLOC.store(m.alloc, Ordering::Relaxed);
+    ALLOC_TAG.store(m.alloc_tag, Ordering::Relaxed);
+    READER_CTOR.store(m.reader_ctor, Ordering::Relaxed);
+    let slots = [
+        (umd_read::SLOT_FILE_SIZE, file_size as FileSizeFn as usize, m.file_size),
+        (umd_read::SLOT_CREATE_READER, create_reader as CreateReaderFn as usize, m.create_reader),
+    ];
+    for (done, &(slot, f, _)) in slots.iter().enumerate() {
+        if !crate::writemem(m.slot(slot) as *mut u8, &(f as u32).to_le_bytes()) {
+            for &(slot, _, game) in &slots[..done] {
+                let _ = crate::writemem(m.slot(slot) as *mut u8, &(game as u32).to_le_bytes());
+            }
+            warn!("umd-read-fix: the file manager's vtable couldn't be written -> files only the current UMD lists, as before");
+            return;
+        }
+    }
+    info!(
+        "umd-read-fix: a package the current UMD doesn't list is opened from the UMDs that do (file manager vtable {:#010x})",
+        m.vtable
+    );
 }
 
 /// Installs the fix. Safe to call once at startup; leaves an unrecognised build untouched.
@@ -549,11 +778,12 @@ pub unsafe fn serve_reads_off_the_sequence() {
             return;
         }
     }
-    crate::fix_stats::installed("umd-read-fix", &[&SERVED]);
+    crate::fix_stats::installed("umd-read-fix", &[&SERVED, &OPENED]);
     info!(
         "umd-read-fix: linear package reads (vtable {:#010x}, sync {:#010x}) now take what their UMD read sequence can't serve from the UMD files",
         site.vtable, site.sync
     );
+    open_files_from_other_umds(&image, site.vtable);
 
     // Every UMD's file list, read now in the background (about a second), so a read the open
     // UMDs don't have doesn't wait for it while a level loads.
@@ -564,14 +794,19 @@ pub unsafe fn serve_reads_off_the_sequence() {
     });
 
     std::thread::spawn(|| {
-        let mut logged = (0, 0, 0);
+        let mut logged = (0, 0, 0, 0);
         loop {
             std::thread::sleep(Duration::from_secs(10));
-            let now = (SERVED.load(Ordering::Relaxed), UNSERVED.load(Ordering::Relaxed), SKIPPED.load(Ordering::Relaxed));
+            let now = (
+                SERVED.load(Ordering::Relaxed),
+                UNSERVED.load(Ordering::Relaxed),
+                SKIPPED.load(Ordering::Relaxed),
+                OPENED.load(Ordering::Relaxed),
+            );
             if now != logged {
                 info!(
-                    "umd-read-fix: {} reads off the UMD sequence served from the files, {} no UMD had, {} syncs skipped (so far)",
-                    now.0, now.1, now.2
+                    "umd-read-fix: {} reads off the UMD sequence served from the files, {} no UMD had, {} syncs skipped, {} files opened from other UMDs (so far)",
+                    now.0, now.1, now.2, now.3
                 );
                 logged = now;
             }
