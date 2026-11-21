@@ -309,11 +309,13 @@ pub async fn player_action(api_url: String, token: &str, action: PlayerAction, i
     }
 }
 
-/// Asks the server to join a friend's game (`JoinNow`): it queues an invitation for the caller's
-/// game, marked as a join they asked for. `friend_id` is the friend's account id.
+/// Asks the server to join a friend's game (`JoinNow`) for a game that starts the join itself
+/// (`direct`): into a public match the server queues nothing and says so (`direct` in the
+/// answer); otherwise it queues an invitation for the caller's game, marked as a join they asked
+/// for. `friend_id` is the friend's account id.
 pub async fn join_now(api_url: String, token: &str, friend_id: String) -> Result<server_api::friends::JoinNowResponse, Error> {
     let (mut client, token) = friends_client(&api_url, token).await?;
-    match client.join_now(authed(server_api::friends::JoinNowRequest { id: friend_id }, &token)).await {
+    match client.join_now(authed(server_api::friends::JoinNowRequest { id: friend_id, direct: true }, &token)).await {
         Ok(resp) => Ok(resp.into_inner()),
         Err(status) if status.code() == tonic::Code::Unauthenticated => Err(Error::InvalidPassword),
         // The server's own words for a refusal (already in that game, too many requests),
@@ -343,12 +345,12 @@ fn refusal(status: tonic::Status) -> Error {
 }
 
 /// Joins a public match picked from the lobby browser by its room (`JoinRoom`): as
-/// [`join_now`], an invitation from its host marked as a join the caller asked for; the answer
-/// names the host (`host_id`) for the game's join request.
+/// [`join_now`], for a game that starts the join itself (an older server queues an invitation
+/// from its host instead); the answer names the host (`host_id`) for the game's join request.
 pub async fn join_room(api_url: String, token: &str, room: u32) -> Result<server_api::friends::JoinNowResponse, Error> {
     let (mut client, token) = friends_client(&api_url, token).await?;
     client
-        .join_room(authed(server_api::friends::JoinRoomRequest { room }, &token))
+        .join_room(authed(server_api::friends::JoinRoomRequest { room, direct: true }, &token))
         .await
         .map(tonic::Response::into_inner)
         .map_err(refusal)

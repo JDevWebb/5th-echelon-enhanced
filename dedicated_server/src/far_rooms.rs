@@ -1,10 +1,12 @@
 //! Far rooms in quick match (the 0.5.0 plan's G3): with one matchmaking server for the world, a
 //! search finds hosts on every continent. The game QoS-pings the results and prefers the near
 //! ones (E3), but it joins a far one when nothing nearer answers, and only the first
-//! [`crate::game_session::MAX_SEARCH_RESULTS`] reach it at all. So with `[matchmaking] far_ms`
-//! set, a searcher's results come nearest first, and rooms whose host is estimated farther than
-//! that (a round trip) are left out while a nearer one matches; with `far_strict`, always, so
-//! a far player hosts their own match instead.
+//! [`crate::game_session::MAX_SEARCH_RESULTS`] reach it at all. So a searcher's results come
+//! nearest first ([`order`]), the fuller room first when two are as near, and the hosts it can't
+//! place last. That is all a search does by default: far hosts come later, none is turned away.
+//! With `[matchmaking] far_ms` set (a round trip; 0, the default: off), rooms whose host is
+//! estimated farther than that are also left out while a nearer one matches; with `far_strict`,
+//! always, so a far player hosts their own match instead.
 //!
 //! The estimate, best first:
 //! - **Through the relays** (0.5.0 games): each game's sign-in carries the launcher's round trip
@@ -34,8 +36,6 @@ static STRICT: AtomicBool = AtomicBool::new(false);
 const KM_PER_RTT_MS: f64 = 100.0;
 /// The players' own lines and the routes' detours, added to the distance's share.
 const BASE_MS: u32 = 20;
-/// Hosts within this of each other count as equally near, so newer rooms keep their place.
-const BAND_MS: u32 = 30;
 
 /// Each account's game's round trips to the relays (relay id, ms), from its last sign-in.
 static PINGS: Mutex<Option<HashMap<u32, Vec<(String, u32)>>>> = Mutex::new(None);
@@ -89,33 +89,31 @@ fn from_km(km: f64) -> u32 {
     (km / KM_PER_RTT_MS).round() as u32 + BASE_MS
 }
 
-/// `rooms` (with each one's estimated round trip to the searcher, None if unknown) nearest first,
-/// in bands of [`BAND_MS`] and otherwise as they came; the far ones left out as configured. Also
-/// how many were left out. Off, `rooms` as they came.
-pub fn order<T>(rooms: Vec<(T, Option<u32>)>) -> (Vec<T>, usize) {
+/// A room a search found, as [`order`] weighs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Found {
+    /// The estimated round trip between the searcher and its host (ms), None if unknown.
+    pub ms: Option<u32>,
+    /// Who's in it (participants and guests).
+    pub members: u32,
+}
+
+/// `rooms` nearest first, the fuller first when as near, and those it can't place last (never
+/// left out); the far ones (past `[matchmaking] far_ms`) left out as configured. Also how many
+/// were left out. Rooms that tie keep the order they came in (newest first).
+pub fn order<T>(rooms: Vec<(T, Found)>) -> (Vec<T>, usize) {
     order_with(rooms, u32::from(FAR_MS.load(Ordering::Relaxed)), STRICT.load(Ordering::Relaxed))
 }
 
-/// Whether far rooms are looked at at all (the caller can skip estimating them).
-pub fn enabled() -> bool {
-    FAR_MS.load(Ordering::Relaxed) > 0
-}
-
-fn order_with<T>(rooms: Vec<(T, Option<u32>)>, far_ms: u32, strict: bool) -> (Vec<T>, usize) {
-    if far_ms == 0 {
-        return (rooms.into_iter().map(|(r, _)| r).collect(), 0);
-    }
-    let far = |ms: &Option<u32>| ms.is_some_and(|ms| ms > far_ms);
+fn order_with<T>(rooms: Vec<(T, Found)>, far_ms: u32, strict: bool) -> (Vec<T>, usize) {
+    let far = |f: &Found| far_ms > 0 && f.ms.is_some_and(|ms| ms > far_ms);
     let mut rooms = rooms;
-    // Near ones by band, then those it can't place, then the far ones nearest first.
-    rooms.sort_by_key(|(_, ms)| match ms {
-        Some(ms) if *ms <= far_ms => (0, ms / BAND_MS),
-        None => (1, 0),
-        Some(ms) => (2, *ms),
-    });
-    let near = rooms.iter().filter(|(_, ms)| !far(ms)).count();
+    rooms.sort_by_key(|(_, f)| (f.ms.is_none(), f.ms.unwrap_or(0), std::cmp::Reverse(f.members)));
+    let near = rooms.iter().filter(|(_, f)| !far(f)).count();
     let left_out = if strict || near > 0 { rooms.len() - near } else { 0 };
-    rooms.truncate(rooms.len() - left_out);
+    if left_out > 0 {
+        rooms.retain(|(_, f)| !far(f));
+    }
     (rooms.into_iter().map(|(r, _)| r).collect(), left_out)
 }
 
@@ -141,29 +139,42 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn off_keeps_everything_in_order() {
-        let (rooms, left_out) = order_with(vec![(1, Some(300)), (2, Some(40)), (3, None)], 0, true);
-        assert_eq!((rooms, left_out), (vec![1, 2, 3], 0));
+    fn room(ms: Option<u32>, members: u32) -> Found {
+        Found { ms, members }
     }
 
     #[test]
-    fn nearest_first_by_band_and_far_left_out_while_a_near_one_matches() {
-        // 2 and 4 share a band (30-59 ms): they keep their order (newest first, as given).
-        let rooms = vec![(1, Some(280)), (2, Some(55)), (3, None), (4, Some(31)), (5, Some(12))];
-        assert_eq!(order_with(rooms, 150, false), (vec![5, 2, 4, 3], 1));
+    fn nearest_first_the_fuller_first_when_as_near_and_ties_keep_their_order() {
+        let rooms = vec![
+            (1, room(Some(50), 2)),
+            (2, room(None, 7)),
+            (3, room(Some(50), 5)),
+            (4, room(Some(50), 2)),
+            (5, room(Some(51), 8)),
+            (6, room(Some(12), 1)),
+        ];
+        assert_eq!(order_with(rooms, 120, true), (vec![6, 3, 1, 4, 5, 2], 0), "no bands: 51 ms is farther than 50");
     }
 
     #[test]
-    fn far_ones_stay_when_nothing_nearer_matches_unless_strict() {
-        let rooms = || vec![(1, Some(280)), (2, Some(190))];
-        assert_eq!(order_with(rooms(), 150, false), (vec![2, 1], 0));
-        assert_eq!(order_with(rooms(), 150, true), (vec![], 2));
+    fn past_the_cutoff_rooms_are_left_out_but_never_one_it_cant_place() {
+        let rooms = vec![(1, room(Some(121), 7)), (2, room(Some(120), 1)), (3, room(None, 1)), (4, room(Some(400), 3))];
+        assert_eq!(order_with(rooms, 120, true), (vec![2, 3], 2));
+        // Strict: left out even when nothing nearer matches; not strict, kept then.
+        let far = || vec![(1, room(Some(280), 1)), (2, room(Some(190), 1))];
+        assert_eq!(order_with(far(), 120, true), (vec![], 2));
+        assert_eq!(order_with(far(), 120, false), (vec![2, 1], 0));
+        assert_eq!(
+            order_with(vec![(1, room(Some(280), 1)), (2, room(None, 1))], 120, false),
+            (vec![2], 1),
+            "one it can't place counts as near"
+        );
     }
 
     #[test]
-    fn a_room_it_cant_place_counts_as_near() {
-        assert_eq!(order_with(vec![(1, Some(280)), (2, None)], 150, false), (vec![2], 1));
+    fn off_leaves_nothing_out_but_still_orders() {
+        let rooms = vec![(1, room(Some(300), 1)), (2, room(Some(40), 1)), (3, room(None, 1))];
+        assert_eq!(order_with(rooms, 0, true), (vec![2, 1, 3], 0));
     }
 
     #[test]

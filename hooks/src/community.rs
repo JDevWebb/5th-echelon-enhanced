@@ -412,8 +412,29 @@ fn forget_join_request(id: &str) {
     }
 }
 
+/// Starts the join of the game of `id` (account id) ourselves, for a join the server answered
+/// without an invitation (`JoinNowResponse.direct`: into a public match): the game's "invitation
+/// accepted" event for them, as accepting their invitation raises. The game then searches for
+/// them, and the server answers with the match it kept for us.
+fn start_join(id: &str) {
+    // No invitation comes for it: one from them later is an ordinary one.
+    forget_join_request(id);
+    info!("Joining {id} without an invitation: the game's accept event, raised by us");
+    crate::uplay_r1_loader::queue_event(crate::overlay::invite_accept_event(id.to_string()));
+}
+
+/// The launcher's join request, while the game runs: taken as soon as it's there (one look a
+/// second, from the event poll), since a direct one brings no invitation to take it up. Not
+/// before the overlay is up: the game's events go through it.
+pub fn poll_launcher_join_request() {
+    if ACTIONS.get().is_none() || !folder().is_some_and(|d| d.join(join_request::FILE).exists()) {
+        return;
+    }
+    take_launcher_join_request();
+}
+
 /// Takes the launcher's join request file, if there is one, as a request of ours: deleted
-/// once read, so it's good for one join only.
+/// once read, so it's good for one join only. A direct one starts the join now.
 fn take_launcher_join_request() {
     let Some(path) = folder().map(|d| d.join(join_request::FILE)) else { return };
     let Ok(bytes) = std::fs::read(&path) else { return };
@@ -421,13 +442,17 @@ fn take_launcher_join_request() {
         warn!("Couldn't delete the launcher's join request {}: {e}", path.display());
     }
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-    let (id, age) = match join_request::read(&bytes, now) {
+    let join_request::Asked { id, age, direct } = match join_request::read(&bytes, now) {
         Ok(request) => request,
         Err(join_request::Refused::Unreadable) => return warn!("The launcher's join request can't be read; ignored"),
         Err(join_request::Refused::Invalid) => return warn!("The launcher's join request isn't a valid one; ignored"),
         Err(join_request::Refused::Stale(age)) => return info!("The launcher's join request is stale ({}s old); ignored", age.as_secs()),
     };
-    info!("The launcher asked to join {id}");
+    info!("The launcher asked to join {id}{}", if direct { " (no invitation)" } else { "" });
+    if direct {
+        start_join(&id);
+        return;
+    }
     // Dated when the launcher wrote it, so its time runs from the click, not from here.
     let at = Instant::now().checked_sub(age).unwrap_or_else(Instant::now);
     let mut requested = JOIN_REQUESTED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -557,7 +582,8 @@ pub fn invite(id: String, name: String) {
 }
 
 /// Joins a friend's game without an invitation (the overlay's "Join"). Remembered as asked
-/// for, so the invitation it brings is taken without a click (see [`requested_join`]).
+/// for, so the invitation it brings is taken without a click (see [`requested_join`]); into a
+/// public match the server brings none, and the join is started here once it says so.
 pub fn join(id: String, name: String) {
     note_join_request(&id);
     send(Action::Join { id, name });
@@ -763,6 +789,12 @@ fn join_now_impl(id: &str, name: &str) {
     use server_api::friends::join_now_response::Status as JoinStatus;
     match crate::api::join_friend(id) {
         Ok(resp) => match JoinStatus::try_from(resp.status).unwrap_or(JoinStatus::Offline) {
+            // Into a public match: no invitation comes, we start the join.
+            JoinStatus::Ok if resp.direct => {
+                say(format!("Joining {name}..."), false);
+                start_join(id);
+                return;
+            }
             JoinStatus::Ok => {
                 say(format!("Joining {name}..."), false);
                 return;
@@ -787,6 +819,11 @@ fn join_room_now(room: u32, line: &str) {
     use server_api::friends::join_now_response::Status as JoinStatus;
     match crate::api::join_room(room) {
         Ok(resp) => match JoinStatus::try_from(resp.status).unwrap_or(JoinStatus::NotFound) {
+            // No invitation (the server kept the match for our search): we start the join.
+            JoinStatus::Ok if resp.direct && !resp.host_id.is_empty() => {
+                say(format!("Joining {line}..."), false);
+                start_join(&resp.host_id);
+            }
             // The invitation comes on a later poll: the host it's from is the join asked for.
             JoinStatus::Ok if !resp.host_id.is_empty() => {
                 note_join_request(&resp.host_id);
@@ -1274,13 +1311,13 @@ mod tests {
         let file = dir.join(join_request::FILE);
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
 
-        std::fs::write(&file, join_request::contents("friend-1", now - 10)).unwrap();
+        std::fs::write(&file, join_request::contents("friend-1", now - 10, false)).unwrap();
         assert!(!requested_join("someone-else"), "another sender's invitation isn't the join asked for");
         assert!(!file.exists(), "read, so deleted");
         assert!(requested_join("friend-1"), "the friend asked for");
         assert!(!requested_join("friend-1"), "once");
 
-        std::fs::write(&file, join_request::contents("friend-1", now - join_request::GOOD_FOR.as_secs() as i64)).unwrap();
+        std::fs::write(&file, join_request::contents("friend-1", now - join_request::GOOD_FOR.as_secs() as i64, false)).unwrap();
         assert!(!requested_join("friend-1"), "a stale request is ignored");
         assert!(!file.exists(), "and deleted");
 
@@ -1289,6 +1326,14 @@ mod tests {
         assert!(!requested_join("friend-2"), "the overlay's request, forgotten");
         note_join_request("friend-2");
         assert!(requested_join("friend-2"), "and the overlay's, taken");
+
+        // A direct one (no invitation comes) starts the join when it's read, and leaves no
+        // request behind for a later invitation from that friend.
+        note_join_request("friend-3");
+        std::fs::write(&file, join_request::contents("friend-3", now - 10, true)).unwrap();
+        take_launcher_join_request();
+        assert!(!file.exists(), "read, so deleted");
+        assert!(!requested_join("friend-3"), "a later invitation from them is an ordinary one");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

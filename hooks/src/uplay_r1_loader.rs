@@ -319,6 +319,9 @@ unsafe extern "cdecl" fn UPLAY_Startup(uplay_id: usize, game_version: usize, lan
                         let mut failures = 0;
                         loop {
                             tokio::time::sleep(Duration::from_secs(1)).await;
+                            // A join the launcher asked for while the game runs: a direct one
+                            // brings no invitation to take it up.
+                            crate::community::poll_launcher_join_request();
                             let event = crate::api::event().await.map(|resp| {
                                 // A friend request or an accepted one: a notice in the overlay.
                                 if let Some(friend) = resp.friend.as_ref() {
