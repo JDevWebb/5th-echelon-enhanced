@@ -631,6 +631,14 @@ pub(crate) fn mode_size(attributes: &str) -> Option<u32> {
     })
 }
 
+/// Whether a match has more seats (attributes 3 and 4) than its mode is made for
+/// ([`mode_size`]): a host raised it with the overlay's "Most players". False for a lobby, or a
+/// mode not known here.
+pub(crate) fn past_mode_size(attributes: &str) -> bool {
+    let seats = attribute_value(attributes, 3).unwrap_or(0).saturating_add(attribute_value(attributes, 4).unwrap_or(0));
+    mode_size(attributes).is_some_and(|size| seats > size)
+}
+
 /// Presents a private room as if its slots were public.
 ///
 /// Attribute 3 counts public slots, attribute 4 private ones - a private match reserves all
@@ -3739,6 +3747,20 @@ mod tests {
         assert_eq!(mode_size("113 => 0;102 => 9"), Some(6));
         assert_eq!(mode_size("113 => 1;3 => 8;4 => 0;102 => 7"), None, "a lobby");
         assert_eq!(mode_size("113 => 0;102 => 42"), None, "a mode not known here");
+    }
+
+    #[test]
+    fn a_match_raised_past_its_modes_size_says_so() {
+        use super::past_mode_size;
+        assert!(!past_mode_size("113 => 0;3 => 8;4 => 0;102 => 7;103 => 0"), "Blacklist at its 8");
+        assert!(!past_mode_size("113 => 0;3 => 0;4 => 6;102 => 7;103 => 0"), "fewer seats than its mode");
+        assert!(past_mode_size("113 => 0;3 => 10;4 => 0;102 => 7;103 => 0"), "raised to 10");
+        assert!(
+            past_mode_size("113 => 0;3 => 4;4 => 1;102 => 8;103 => 2165463540"),
+            "Classic: public and private seats count"
+        );
+        assert!(!past_mode_size("113 => 0;3 => 16;4 => 0;102 => 42"), "a mode not known here: no limit");
+        assert!(!past_mode_size("113 => 1;3 => 16;4 => 0;102 => 7"), "a lobby");
     }
 
     /// An invitee isn't put into a room whose members have taken every seat it has now;

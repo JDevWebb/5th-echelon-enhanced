@@ -3270,7 +3270,8 @@ async fn nat_key(ctx: &mut Ctx) -> Result<()> {
 /// turning a joiner away (a locked refusal of the room the search offered) leaves it out.
 async fn match_state(ctx: &mut Ctx) -> Result<()> {
     let map = 920_000 + ctx.run;
-    let open = format!("113 => 0;103 => 1;3 => 8;4 => 0;102 => 8;101 => {map}");
+    // Blacklist's game mode (7): made for 8, as many seats as it has.
+    let open = format!("113 => 0;103 => 1;3 => 8;4 => 0;102 => 7;101 => {map}");
     let mut host = ctx.player("Host").await?;
     host.register_urls(&["prudp:/address=127.0.0.1;port=3097;sid=15;type=3"]).await?;
     let game = host.create_session(&open).await?;
@@ -3294,6 +3295,21 @@ async fn match_state(ctx: &mut Ctx) -> Result<()> {
         order.contains(&game) && order.contains(&lobby) && order.iter().position(|s| *s == game) < order.iter().position(|s| *s == lobby),
         "a match in its lobby was offered before one under way: {order:?} (lobby {lobby}, under way {game})"
     );
+    // A third, under way but raised past its mode's 8 (the overlay's "Most players"): still
+    // offered, but after the lobby. The search names no seats, so it finds all three.
+    let mut raised_host = ctx.player("Host").await?;
+    raised_host.register_urls(&["prudp:/address=127.0.0.1;port=3100;sid=15;type=3"]).await?;
+    let raised = raised_host.create_session(&format!("113 => 0;103 => 1;3 => 10;4 => 0;102 => 7;101 => {map}")).await?;
+    raised_host.add_participants(raised, &[raised_host.pid], &[]).await?;
+    raised_host.match_state(true, "RoundState_Started").await?;
+    let any_seats = format!("113 => 0;103 => 1;102 => 7;101 => {map}");
+    let order: Vec<u32> = seeker.search_sessions(&any_seats).await?.iter().map(|(s, _)| *s).collect();
+    let at = |room: u32| order.iter().position(|s| *s == room);
+    ensure!(
+        at(game).is_some() && at(game) < at(lobby) && at(lobby) < at(raised) && at(raised).is_some(),
+        "a match under way past its mode's size wasn't offered after the lobby: {order:?} (under way {game}, lobby {lobby}, raised {raised})"
+    );
+    raised_host.disconnect().await?;
     lobby_host.disconnect().await?;
     host.match_state(false, "RoundState_PreRound").await?;
     ensure!(finds(&seeker.search_sessions(&open).await?), "the host said it's joinable, but it isn't found");

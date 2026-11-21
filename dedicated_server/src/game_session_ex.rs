@@ -241,13 +241,16 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
             )
         };
         // Matches under way before those still in their lobby (0.5.5's JIP: both are answered),
-        // each nearest first as above. A match under way with a seat free (a full one isn't
-        // found) is joined mid-round: filling it beats one more lobby waiting for players, and a
-        // match short-handed for the rest of its round.
-        let (under_way, waiting): (Vec<_>, Vec<_>) = sessions
+        // each nearest first as above (a stable sort). A match under way with a seat free (a
+        // full one isn't found) is joined mid-round: filling it beats one more lobby waiting for
+        // players, and a match short-handed for the rest of its round. Not one raised past its
+        // mode's size, though: it comes after the lobbies (search_rank).
+        let mut ranked: Vec<_> = sessions
             .into_iter()
-            .partition(|s| !invitation_search && crate::match_started::host_says_under_way(s.session_id));
-        let sessions: Vec<_> = under_way.into_iter().chain(waiting).take(crate::game_session::MAX_SEARCH_RESULTS as usize).collect();
+            .map(|s| (search_rank(!invitation_search && crate::match_started::host_says_under_way(s.session_id), &s.attributes), s))
+            .collect();
+        ranked.sort_by_key(|(rank, _)| *rank);
+        let sessions: Vec<_> = ranked.into_iter().map(|(_, s)| s).take(crate::game_session::MAX_SEARCH_RESULTS as usize).collect();
         // The game QoS-pings the first hosts it got within 2 s (E3): their relays are told of the
         // pair now, so no ping waits on a relay asking the matchmaking server (G3).
         if !invitation_search && crate::relays::network_relays() {
@@ -386,6 +389,18 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
     }
 }
 
+/// Where a quick match search puts a room it found, first to last: a match under way (joined
+/// mid-round), then the rooms still in their lobby, then a match under way that its host raised
+/// past its mode's size ([`crate::game_session::past_mode_size`]: above it some players' games
+/// can crash or freeze). Such a match is still found, only not ahead of the rest.
+fn search_rank(under_way: bool, attributes: &str) -> u8 {
+    match (under_way, crate::game_session::past_mode_size(attributes)) {
+        (true, false) => 0,
+        (false, _) => 1,
+        (true, true) => 2,
+    }
+}
+
 /// Whether a session's attributes answer a search's: every one the search names but 112
 /// (the search says 1 where the room says 2: no idea what it means, and we'd like those rooms
 /// found) and, with `any_data`, the game data ([`PROPERTY_DATA_VERSION`]).
@@ -517,5 +532,23 @@ mod tests {
         let coop_search = attrs(&[(106, 3_564_829), (107, STOCK), (103, 0)]);
         assert_eq!(other_mode(&coop_search, [&blacklist].into_iter()), None, "only a Spies vs Mercs search");
         assert_eq!(other_mode(&search, [&classic].into_iter()), None);
+    }
+
+    /// A Blacklist match (made for 8) under way first, then the lobbies, and one raised to 10
+    /// under way after them: still found, each group in the order it came (nearest first).
+    #[test]
+    fn a_match_under_way_past_its_modes_size_comes_after_the_lobbies() {
+        let at_8 = "113 => 0;3 => 8;4 => 0;102 => 7;103 => 4008726265";
+        let at_10 = "113 => 0;3 => 10;4 => 0;102 => 7;103 => 4008726265";
+        let unknown = "113 => 0;3 => 16;4 => 0;102 => 42";
+        let found = [(1, true, at_10), (2, false, at_8), (3, true, at_8), (4, false, at_10), (5, true, unknown), (6, true, at_8)];
+        let mut ranked: Vec<_> = found.iter().map(|(id, under_way, a)| (search_rank(*under_way, a), *id)).collect();
+        ranked.sort_by_key(|(rank, _)| *rank);
+        assert_eq!(
+            ranked.into_iter().map(|(_, id)| id).collect::<Vec<_>>(),
+            vec![3, 5, 6, 2, 4, 1],
+            "a lobby raised past its size keeps its place; a mode not known here has no limit"
+        );
+        assert_eq!(search_rank(false, at_10), search_rank(false, at_8), "only a match under way is moved");
     }
 }
