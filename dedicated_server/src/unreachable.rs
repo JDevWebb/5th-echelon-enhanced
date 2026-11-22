@@ -52,6 +52,23 @@ pub fn candidates(ip: u32, port: u32) -> Vec<SocketAddrV4> {
 pub fn reported(storage: &Storage, logger: &Logger, reporter: u32, peers: &[Peer]) {
     let now = Instant::now();
     for peer in peers.iter().take(MAX_PEERS) {
+        // A housemate's LAN address this server gave the reporter's game: their LAN doesn't
+        // carry the game, so they meet at the relay from now on.
+        let lan = candidates(peer.ip, peer.port)
+            .into_iter()
+            .chain(candidates(peer.local_ip, peer.local_port))
+            .filter(|a| nat_proto::is_private(*a.ip()))
+            .find_map(|a| crate::game_session::house_lan_unreachable(reporter, a).map(|user| (a, user)));
+        if let Some((address, user)) = lan {
+            let name = storage.find_username_by_user_id(user).ok().flatten().unwrap_or_default();
+            info!(logger, "{reporter}'s game couldn't reach its housemate {name} on their LAN ({address}); they meet at the relay from now on");
+            crate::session_events::note(
+                crate::session_events::Who::Id(reporter),
+                "unreachable",
+                serde_json::json!({ "found": true, "peer": name, "peer_id": user, "at": address.to_string(), "house": true }),
+            );
+            continue;
+        }
         let found = candidates(peer.ip, peer.port)
             .into_iter()
             .find_map(|a| crate::nat_helper::who_advertises(a).map(|user| (a, user)));

@@ -799,24 +799,92 @@ pub(crate) fn note_house_urls(user: u32, observed: std::net::IpAddr, local: Vec<
     map.insert(user, (observed, local));
 }
 
+/// How long a pair of housemates whose LAN failed get each other only at the relay.
+const HOUSE_LAN_FAILED_FOR: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+/// The most pairs kept in [`HOUSE_LAN`]; full, the stale ones go, then it starts again.
+const MAX_HOUSE_PAIRS: usize = 20_000;
+
+/// What [`with_house_urls`] gave, and what came of it, by (viewer, housemate).
+#[derive(Default)]
+struct HouseLan {
+    /// The housemate's LAN addresses the viewer's game was given, and when.
+    given: std::collections::HashMap<(u32, u32), (Vec<std::net::SocketAddrV4>, std::time::Instant)>,
+    /// Pairs (lower id first) whose LAN path failed, and when: each gets the other at the relay
+    /// only. GhostReacher and moontukaria, two PCs behind one router, both relayed at de1 (19
+    /// Nov 2026): moontukaria's game was given GhostReacher's LAN address, couldn't reach it
+    /// (most likely Windows' firewall or a Public network profile) and failed 9 joins, where the
+    /// relay, which they shared, would have carried them.
+    failed: std::collections::HashMap<(u32, u32), std::time::Instant>,
+}
+
+fn house_lan() -> std::sync::MutexGuard<'static, HouseLan> {
+    static HOUSE_LAN: std::sync::LazyLock<std::sync::Mutex<HouseLan>> = std::sync::LazyLock::new(Default::default);
+    HOUSE_LAN.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn pair(a: u32, b: u32) -> (u32, u32) {
+    (a.min(b), a.max(b))
+}
+
+/// The address and port of a station URL, when it names an IPv4 address.
+fn station_address(url: &str) -> Option<std::net::SocketAddrV4> {
+    let (_, params) = station_url_parts(url)?;
+    let value = |key: &str| params.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
+    Some(std::net::SocketAddrV4::new(value("address")?.parse().ok()?, value("port")?.parse().ok()?))
+}
+
+/// `viewer`'s game couldn't reach `address`: when it's a housemate's LAN address this server gave
+/// that game, their LAN doesn't carry the game, and from now on (for [`HOUSE_LAN_FAILED_FOR`])
+/// neither is given the other's LAN addresses, so their games meet at the relay. Returns the
+/// housemate. Only addresses given to this very viewer count: a report can't touch anyone else.
+pub(crate) fn house_lan_unreachable(viewer: u32, address: std::net::SocketAddrV4) -> Option<u32> {
+    let mut lan = house_lan();
+    let housemate = lan
+        .given
+        .iter()
+        .find(|((v, _), (addrs, at))| *v == viewer && at.elapsed() < HOUSE_LAN_FAILED_FOR && addrs.contains(&address))
+        .map(|((_, h), _)| *h)?;
+    if lan.failed.len() >= MAX_HOUSE_PAIRS {
+        lan.failed.retain(|_, at| at.elapsed() < HOUSE_LAN_FAILED_FOR);
+        if lan.failed.len() >= MAX_HOUSE_PAIRS {
+            lan.failed.clear();
+        }
+    }
+    lan.failed.insert(pair(viewer, housemate), std::time::Instant::now());
+    Some(housemate)
+}
+
 /// `sessions` as `viewer`, connecting from `viewer_ip`, gets them: a relayed participant's LAN
 /// URLs added back where the viewer connects from the same public address (their housemate),
-/// to the URLs that were read for them (none read: none added).
+/// to the URLs that were read for them (none read: none added). Not for a pair whose LAN
+/// failed lately ([`house_lan_unreachable`]): they meet at the relay.
 pub(crate) fn with_house_urls(mut sessions: Vec<crate::storage::GameSession>, viewer: u32, viewer_ip: std::net::IpAddr) -> Vec<crate::storage::GameSession> {
     let map = HOUSE_URLS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if map.is_empty() {
         return sessions;
     }
+    let mut lan = house_lan();
     for p in sessions.iter_mut().flat_map(|s| s.participants.iter_mut()) {
         if p.user_id == viewer || p.station_urls.is_empty() {
             continue;
         }
         if let Some((_, local)) = map.get(&p.user_id).filter(|(ip, _)| *ip == viewer_ip) {
+            if lan.failed.get(&pair(viewer, p.user_id)).is_some_and(|at| at.elapsed() < HOUSE_LAN_FAILED_FOR) {
+                continue;
+            }
             for url in local {
                 if !p.station_urls.contains(url) {
                     p.station_urls.push(url.clone());
                 }
             }
+            if lan.given.len() >= MAX_HOUSE_PAIRS && !lan.given.contains_key(&(viewer, p.user_id)) {
+                lan.given.retain(|_, (_, at)| at.elapsed() < HOUSE_LAN_FAILED_FOR);
+                if lan.given.len() >= MAX_HOUSE_PAIRS {
+                    lan.given.clear();
+                }
+            }
+            let addresses = local.iter().filter_map(|u| station_address(u)).collect();
+            lan.given.insert((viewer, p.user_id), (addresses, std::time::Instant::now()));
         }
     }
     sessions
@@ -3450,6 +3518,49 @@ mod tests {
         assert_eq!(seen(7002, "203.0.113.140", &[relayed, lan]), vec![relayed, lan], "never twice");
         super::note_house_urls(7001, home, Vec::new());
         assert_eq!(seen(7002, "203.0.113.140", &[relayed]), vec![relayed], "not relayed any more: forgotten");
+    }
+
+    #[test]
+    fn housemates_whose_lan_failed_meet_at_the_relay() {
+        use crate::storage::GameSession;
+        use crate::storage::Participant;
+        let room = |host: u32, urls: &[&str]| GameSession {
+            session_type: 1,
+            session_id: 10,
+            creator_id: host,
+            attributes: String::new(),
+            participants: vec![Participant {
+                user_id: host,
+                name: "host".into(),
+                station_urls: urls.iter().map(|u| (*u).to_string()).collect(),
+            }],
+        };
+        let relayed = "prudp:/address=139.99.73.120;port=40001;type=2";
+        let lan = "prudp:/address=192.168.0.106;port=51250";
+        let home: std::net::IpAddr = "203.0.113.150".parse().unwrap();
+        let (host, mate, stranger) = (7101, 7102, 7103);
+        super::note_house_urls(host, home, vec![lan.into()]);
+        let seen = |viewer: u32| {
+            super::with_house_urls(vec![room(host, &[relayed])], viewer, home)
+                .remove(0)
+                .participants
+                .remove(0)
+                .station_urls
+        };
+        let lan_at: std::net::SocketAddrV4 = "192.168.0.106:51250".parse().unwrap();
+        // Someone not given that address can't report it.
+        assert_eq!(super::house_lan_unreachable(stranger, lan_at), None);
+        assert_eq!(seen(mate), vec![relayed, lan], "given the LAN address");
+        // Another address than the one given changes nothing.
+        assert_eq!(super::house_lan_unreachable(mate, "192.168.0.107:51250".parse().unwrap()), None);
+        assert_eq!(super::house_lan_unreachable(mate, lan_at), Some(host));
+        assert_eq!(seen(mate), vec![relayed], "the relay only, once their LAN failed");
+        // Both ways: the host isn't given the mate's LAN address either.
+        super::note_house_urls(mate, home, vec!["prudp:/address=192.168.0.120;port=13000".into()]);
+        let host_sees = super::with_house_urls(vec![room(mate, &[relayed])], host, home).remove(0).participants.remove(0).station_urls;
+        assert_eq!(host_sees, vec![relayed]);
+        super::note_house_urls(host, home, Vec::new());
+        super::note_house_urls(mate, home, Vec::new());
     }
     use super::NotificationEvent;
     use super::Subnet;
