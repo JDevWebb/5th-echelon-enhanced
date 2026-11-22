@@ -3009,17 +3009,19 @@ impl ImguiRenderLoop for MyRenderLoop {
 static ALT_ENTER_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The first Alt+Enter of a run on DX9: a warning that it can freeze the game. It isn't stopped:
-/// the freeze is the game's own (a deadlock in its DX9 window-mode change; reproduced on the
-/// Surface on 23 Nov 2026 with the overlay on and off), it doesn't happen every time, and players
-/// who use it should keep it. Once a run, after the key, so a player who never presses it never
-/// sees it.
+/// the freeze isn't ours (reproduced on the Surface on 23 Nov 2026 with the overlay on and off),
+/// it doesn't happen every time, and players who use it should keep it. With every thread logged,
+/// the Surface's was a stall of about a minute inside Intel's DX9 driver during the window-mode
+/// change's Reset (the main thread in `igdumdim32` from d3d9, seven threads busy compiling in
+/// `igc32`, no Reset failing), after which the game carried on. Once a run, after the key, so a
+/// player who never presses it never sees it.
 fn alt_enter_warning() {
     if !matches!(Engine::detect(), Some(Engine::DX9)) || ALT_ENTER_WARNED.swap(true, Ordering::SeqCst) {
         return;
     }
     community::tell(
         "Alt+Enter on DirectX 9",
-        "Switching between windowed and fullscreen with Alt+Enter can freeze the game on DirectX 9. That's a bug in the game itself. If it freezes, close it in Task Manager. Changing the window mode in the game's video settings, or playing on DirectX 11, avoids it.",
+        "Switching between windowed and fullscreen with Alt+Enter can freeze the game on DirectX 9 for a minute or more while the graphics driver catches up. If it freezes, give it a couple of minutes before closing it. Playing on DirectX 11, or keeping your graphics driver up to date, helps.",
     );
 }
 
