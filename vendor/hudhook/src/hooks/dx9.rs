@@ -116,7 +116,19 @@ unsafe extern "system" fn dx9_reset_impl(
         RENDER_LOOP.set(render_loop).map_err(|_| ()).expect("Render loop cell should be empty");
     }
 
-    dx9_reset(this, present_params)
+    // 5th Echelon patch: a failed Reset is logged (the first, then every 1000th). The game retries
+    // a failed Reset in a loop on its main thread (`UD3DRenderDevice` slot 27, DX9 0xd19720,
+    // from 0x7d98b0), and a DX9 Alt+Enter freeze spins there; the HRESULTs say why.
+    let hr = dx9_reset(this, present_params);
+    if hr.is_err() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static FAILED: AtomicU32 = AtomicU32::new(0);
+        let n = FAILED.fetch_add(1, Ordering::Relaxed) + 1;
+        if n == 1 || n % 1000 == 0 {
+            tracing::warn!("IDirect3DDevice9::Reset failed: {:#010x} ({n} so far)", hr.0 as u32);
+        }
+    }
+    hr
 }
 
 fn get_target_addrs() -> (Dx9PresentType, Dx9ResetType) {

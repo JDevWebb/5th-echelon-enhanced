@@ -324,6 +324,22 @@ mod tests {
     }
 
     #[test]
+    fn the_other_threads_at_a_freeze_are_no_crashes_of_their_own() {
+        let log = "\
+2026-11-23T10:00:00.000000Z  INFO ThreadId(01) hooks: 591: attaching
+2026-11-23T10:00:42.988000Z ERROR hooks::crash: The game froze: no frame for 11 s; the thread that draws (thread 14928) is at ntdll.dll+0x7a08c. On the stack: d3d9.dll+0x13db0d, Blacklist_game.exe+0x15d626b
+2026-11-23T10:00:42.989000Z ERROR hooks::crash: The game froze: no frame for 11 s; the main thread (thread 16372) is at ntdll.dll+0x7826c. On the stack: Blacklist_game.exe+0x3bea0e
+2026-11-23T10:00:42.990000Z  WARN hooks::crash: At the freeze, thread 9000 is at win32u.dll+0x373c. On the stack: d3d9.dll+0x41d90
+2026-11-23T10:00:42.991000Z  WARN hooks::crash: At the freeze, thread 9004 is at ntdll.dll+0x7826c. On the stack: KERNELBASE.dll+0x15e808
+2026-11-23T10:00:42.993654Z  WARN      freeze-watch ThreadId(02) hooks::crash: 419: The game froze: no frame for 11 s with its window in front (where its threads were is above)
+";
+        let c = crashes(log);
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].place, "Blacklist_game.exe+0x15d626b");
+        assert!(c[0].stack.contains("main thread at ntdll.dll+0x7826c"));
+    }
+
+    #[test]
     fn each_run_is_read_on_its_own() {
         // The run that crashed, then a run that closed at once added to the same file.
         let log =

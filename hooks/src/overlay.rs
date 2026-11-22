@@ -2989,6 +2989,9 @@ impl ImguiRenderLoop for MyRenderLoop {
         // own thread as a close would.
         let alt = lparam.0 & (1 << 29) != 0;
         let repeat = lparam.0 & (1 << 30) != 0;
+        if umsg == WM_SYSKEYDOWN && wparam.0 == usize::from(VK_RETURN.0) && alt && !repeat {
+            alt_enter_warning();
+        }
         if (matches!(self.ui_state, UiState::Show) || crate::quickstart::navigating()) && umsg == WM_SYSKEYDOWN && wparam.0 == usize::from(VK_F4.0) && alt && !repeat {
             unsafe {
                 let _ = PostMessageW(
@@ -3000,6 +3003,24 @@ impl ImguiRenderLoop for MyRenderLoop {
             }
         }
     }
+}
+
+/// Whether this run warned about Alt+Enter on DX9 ([`alt_enter_warning`]).
+static ALT_ENTER_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The first Alt+Enter of a run on DX9: a warning that it can freeze the game. It isn't stopped:
+/// the freeze is the game's own (a deadlock in its DX9 window-mode change; reproduced on the
+/// Surface on 23 Nov 2026 with the overlay on and off), it doesn't happen every time, and players
+/// who use it should keep it. Once a run, after the key, so a player who never presses it never
+/// sees it.
+fn alt_enter_warning() {
+    if !matches!(Engine::detect(), Some(Engine::DX9)) || ALT_ENTER_WARNED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    community::tell(
+        "Alt+Enter on DirectX 9",
+        "Switching between windowed and fullscreen with Alt+Enter can freeze the game on DirectX 9. That's a bug in the game itself. If it freezes, close it in Task Manager. Changing the window mode in the game's video settings, or playing on DirectX 11, avoids it.",
+    );
 }
 
 fn init_hudhook<T: hudhook::Hooks + 'static>(invites: crossbeam_channel::Receiver<Result<Option<InviteEvent>, crate::api::Error>>) -> anyhow::Result<()> {

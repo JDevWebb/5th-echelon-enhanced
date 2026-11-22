@@ -16,6 +16,10 @@ copy):
 - When drawing failed, `?` returned before `StateBackup::restore`, leaving the game's D3D9 device
   state as the overlay set it. The state is now restored on every path after the backup.
 
+`src/hooks/dx9.rs`:
+- `dx9_reset_impl` logs a failed `Reset` (the first, then every 1000th) with its HRESULT, for the
+  DX9 Alt+Enter freeze (the game retries a failed Reset in a loop on its main thread).
+
 `src/hooks/dx11.rs`:
 - `check()`: whether the dummy device and swap chain the hook needs can be made, so the caller
   can run without the overlay instead of `ImguiDx11Hooks::new` panicking (mpw, 2026-10-18).

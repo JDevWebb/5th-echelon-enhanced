@@ -404,7 +404,8 @@ unsafe fn readable_until(address: usize) -> Option<usize> {
     (info.state == MEM_COMMIT && info.protect & (PAGE_NOACCESS | PAGE_GUARD) == 0 && info.protect != 0).then(|| info.base + info.size)
 }
 
-unsafe fn readable(address: usize, length: usize) -> bool {
+/// Whether `length` bytes at `address` are committed and readable (one region).
+pub(crate) unsafe fn readable(address: usize, length: usize) -> bool {
     readable_until(address).is_some_and(|end| address.checked_add(length).is_some_and(|last| last <= end))
 }
 
@@ -541,6 +542,49 @@ extern "system" {
     fn SuspendThread(thread: isize) -> u32;
     fn ResumeThread(thread: isize) -> u32;
     fn GetThreadContext(thread: isize, context: *mut ThreadContext) -> i32;
+    fn CreateToolhelp32Snapshot(flags: u32, process: u32) -> isize;
+    fn Thread32First(snapshot: isize, entry: *mut ThreadEntry) -> i32;
+    fn Thread32Next(snapshot: isize, entry: *mut ThreadEntry) -> i32;
+}
+
+/// `THREADENTRY32`.
+#[repr(C)]
+struct ThreadEntry {
+    size: u32,
+    usage: u32,
+    thread: u32,
+    process: u32,
+    base_priority: i32,
+    delta_priority: i32,
+    flags: u32,
+}
+
+/// `TH32CS_SNAPTHREAD`.
+const SNAP_THREADS: u32 = 0x4;
+/// The most other threads written at a freeze.
+const MOST_OTHER_THREADS: usize = 64;
+
+/// The game's threads besides `skip`, at most [`MOST_OTHER_THREADS`] (none if Windows won't say).
+unsafe fn other_threads(skip: &[u32]) -> ([u32; MOST_OTHER_THREADS], usize) {
+    let mut found = [0u32; MOST_OTHER_THREADS];
+    let mut n = 0;
+    let snapshot = CreateToolhelp32Snapshot(SNAP_THREADS, 0);
+    if snapshot == -1 || snapshot == 0 {
+        return (found, 0);
+    }
+    let me = GetCurrentProcessId();
+    let mut entry = ThreadEntry { size: std::mem::size_of::<ThreadEntry>() as u32, usage: 0, thread: 0, process: 0, base_priority: 0, delta_priority: 0, flags: 0 };
+    let mut more = Thread32First(snapshot, &mut entry) != 0;
+    while more && n < MOST_OTHER_THREADS {
+        if entry.process == me && !skip.contains(&entry.thread) {
+            found[n] = entry.thread;
+            n += 1;
+        }
+        entry.size = std::mem::size_of::<ThreadEntry>() as u32;
+        more = Thread32Next(snapshot, &mut entry) != 0;
+    }
+    CloseHandle(snapshot);
+    (found, n)
 }
 
 #[link(name = "user32")]
@@ -622,6 +666,13 @@ pub fn watch_for_freezes() {
                 if main != drawing {
                     where_is(main, "the main thread", quiet, false);
                 }
+                // Every other thread too: a freeze is often two threads each waiting on the other,
+                // or on a lock a third holds (DX9's Alt+Enter: the drawing thread waits on
+                // Direct3D's lock, the main thread on the drawing thread; the Surface, 23 Nov 2026).
+                let (others, n) = other_threads(&[main, drawing, GetCurrentThreadId()]);
+                for &id in &others[..n] {
+                    where_is(id, "", quiet, false);
+                }
             }
             tracing::warn!(
                 "The game froze: no frame for {} s with its window in front (where its threads were is above)",
@@ -645,7 +696,7 @@ fn in_front() -> bool {
     }
 }
 
-/// Writes where thread `id` is: suspended only while its registers and stack are read (into a
+/// Writes where thread `id` (`which` thread; empty for one of the others) is: suspended only while its registers and stack are read (into a
 /// line on this thread's stack: nothing is allocated, nor waited on, while it's held).
 unsafe fn where_is(id: u32, which: &str, quiet: std::time::Duration, with_doing: bool) {
     if id == 0 {
@@ -657,11 +708,17 @@ unsafe fn where_is(id: u32, which: &str, quiet: std::time::Duration, with_doing:
     }
     let mut line = Line::new();
     timestamp(&mut line);
-    let _ = write!(
-        line,
-        " ERROR hooks::crash: The game froze: no frame for {} s; {which} (thread {id}) is at ",
-        quiet.as_secs()
-    );
+    // Another thread (no `which`): a line of its own kind, which the crash log's reader
+    // (hooks_config::crash_log) doesn't take for a freeze of its own.
+    let _ = if which.is_empty() {
+        write!(line, " WARN hooks::crash: At the freeze, thread {id} is at ")
+    } else {
+        write!(
+            line,
+            " ERROR hooks::crash: The game froze: no frame for {} s; {which} (thread {id}) is at ",
+            quiet.as_secs()
+        )
+    };
     if SuspendThread(thread) != u32::MAX {
         let mut context = ThreadContext { bytes: [0; 0x2CC] };
         context.bytes[..4].copy_from_slice(&CONTEXT_CONTROL.to_le_bytes());
