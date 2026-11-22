@@ -11,6 +11,7 @@ pub mod load_order;
 pub mod migration;
 pub mod particle;
 pub mod perception;
+pub mod ragdoll;
 pub mod scheme_pool;
 pub mod storm;
 pub mod tagging_device;

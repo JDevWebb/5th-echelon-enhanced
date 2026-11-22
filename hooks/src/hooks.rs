@@ -809,6 +809,7 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
             "voice-device-fix",
             "tagging-device-fix",
             "perception-fix",
+            "ragdoll-fix",
             "gear-list-fix",
             "disruption-fix",
             "load-order-fix",
@@ -829,6 +830,7 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
         crate::voice_device_fix::guard_voice_devices();
         crate::tagging_device_fix::guard_tagging_devices();
         crate::perception_fix::guard_perception();
+        crate::ragdoll_fix::guard_ragdoll_parts();
         crate::gear_list_fix::guard_gear_list();
         crate::disruption_fix::guard_disruption();
         crate::texture_upload_fix::guard_texture_uploads();
