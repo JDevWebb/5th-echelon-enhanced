@@ -49,6 +49,14 @@ fn put(user: u32, offer: Offer) {
     all.insert(user, (offer, Instant::now()));
 }
 
+/// `user`'s game signed in: a new run of the game, given nothing yet. What the last one was
+/// given isn't this one's to fail: a game restarted with an offer fresh, then busy setting up
+/// its party, had that counted as a failed join into the old offer's room, and was taken out
+/// of it (Nefrius and JPTAILS on ca1, 20 and 22 Nov 2026).
+pub fn signed_in(user: u32) {
+    offers().remove(&user);
+}
+
 /// `user`'s search for an invitation was answered with room `session`.
 pub fn invited(user: u32, session: u32) {
     put(user, Offer::Room(session, false));
@@ -169,6 +177,18 @@ mod tests {
         probed(user, 1010);
         assert_eq!(target(user, |host| (host == 1010).then_some(233)), Some(233));
         assert_eq!(target(user, |_| None), None, "the host has no live room");
+    }
+
+    #[test]
+    fn a_sign_in_forgets_the_last_games_offer() {
+        let user = 7_100_006;
+        invited(user, 8);
+        signed_in(user);
+        assert_eq!(target(user, |_| None), None);
+        assert_eq!(searched_target(user, |_| None), None);
+        // Given something after signing in, it's the target as before.
+        searched(user, [(9, 1012)]);
+        assert_eq!(target(user, |_| None), Some(9));
     }
 
     #[test]

@@ -1384,6 +1384,7 @@ impl Users for MyUsers {
             crate::clients::note_files(user_id, &files, &other_files);
             crate::far_rooms::note_pings(user_id, relay_pings.iter().map(|p| (p.relay.as_str(), p.ms)));
             crate::nat_helper::game_nat_off(&username, nat_off);
+            crate::join_targets::signed_in(user_id);
         }
         // Over TLS with the password: the game's ticket is good from this address too.
         if let Some(ip) = peer {

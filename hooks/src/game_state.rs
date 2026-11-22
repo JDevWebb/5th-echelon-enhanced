@@ -16,14 +16,21 @@ use tracing::info;
 
 /// Saves written within this of the last one are the same checkpoint.
 const SAVE_EVERY: Duration = Duration::from_secs(15);
+/// A lobby locked for less than this, then unlocked without a match, is the game's own session
+/// churn, not a join given up. A started or restarted game locks and unlocks its lobby for 2 to
+/// 3 s as it sets up its party (Nefrius and JPTAILS on ca1, 20 and 22 Nov 2026, each counted as
+/// a failed join into the room the server had sent the game before it restarted). A join that
+/// gives up waits out its connection first: Flom_03's lock lasted 13 s (22 Nov).
+const JOIN_LOCK_AT_LEAST: Duration = Duration::from_secs(5);
 
 struct State {
     session: Option<(u32, bool)>,
     saved: Option<Instant>,
     achievements: BTreeSet<usize>,
     online: Option<Online>,
-    /// The game is getting into a match: its lobby session locked, not in a match yet.
-    joining: bool,
+    /// The game is getting into a match: its lobby session locked (since then), not in a
+    /// match yet.
+    joining: Option<Instant>,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -31,7 +38,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     saved: None,
     achievements: BTreeSet::new(),
     online: None,
-    joining: false,
+    joining: None,
 });
 
 /// The game's own view of its online sessions (read by `migration_fix`'s tick): whether its
@@ -123,19 +130,26 @@ pub fn online(now: Online) {
     // A join the game gave up on: its lobby session locked to get into a match, then unlocked
     // (back to its own lobby) without its ever being in it. The game doesn't always report
     // that (a connection that never came up), and the server kept the player in the room.
-    let gave_up = if now.in_match {
-        st.joining = false;
-        false
+    let locked_for = if now.in_match {
+        st.joining = None;
+        None
     } else if now.lobby_session == Some(true) {
-        st.joining = true;
-        false
+        st.joining.get_or_insert_with(Instant::now);
+        None
     } else {
-        std::mem::take(&mut st.joining)
+        st.joining.take().map(|since| since.elapsed())
     };
     drop(st);
-    if gave_up {
-        info!("Online sessions: its lobby unlocked without its getting into a match (a join given up, or a party joined); telling the server, which checks for a match it was sent to");
-        std::thread::spawn(crate::api::join_never_got_in);
+    match locked_for {
+        Some(locked) if gave_up(locked) => {
+            info!("Online sessions: its lobby unlocked without its getting into a match (a join given up, or a party joined); telling the server, which checks for a match it was sent to");
+            std::thread::spawn(crate::api::join_never_got_in);
+        }
+        Some(locked) => info!(
+            "Online sessions: its lobby unlocked {:.1} s after locking, without a match: the game's own session churn, not a join given up",
+            locked.as_secs_f32()
+        ),
+        None => {}
     }
     if first
         && now
@@ -160,6 +174,12 @@ pub fn online(now: Online) {
     );
 }
 
+/// Whether a lobby locked for `locked`, then unlocked without a match, was a join given up
+/// ([`JOIN_LOCK_AT_LEAST`]).
+fn gave_up(locked: Duration) -> bool {
+    locked >= JOIN_LOCK_AT_LEAST
+}
+
 /// The game earned achievement `id` (once each).
 pub fn achievement(id: usize) {
     if state().achievements.insert(id) {
@@ -170,4 +190,19 @@ pub fn achievement(id: usize) {
 /// The overlay's panel opened or closed (with the key that did it).
 pub fn overlay(open: bool, key: &str) {
     info!("Overlay {} ({key})", if open { "opened" } else { "closed" });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_short_lock_is_the_games_own_churn() {
+        // Nefrius's and JPTAILS's restarts (2.0 s and 3.0 s) weren't joins given up.
+        assert!(!gave_up(Duration::from_millis(2_000)));
+        assert!(!gave_up(Duration::from_millis(3_000)));
+        // Flom_03's join that never came up (13 s), and the gamebox's.
+        assert!(gave_up(Duration::from_secs(13)));
+        assert!(gave_up(JOIN_LOCK_AT_LEAST));
+    }
 }
