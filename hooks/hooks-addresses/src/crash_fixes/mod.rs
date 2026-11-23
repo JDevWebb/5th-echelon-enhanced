@@ -9,6 +9,7 @@ pub mod disruption;
 pub mod gear_list;
 pub mod load_order;
 pub mod migration;
+pub mod movement;
 pub mod particle;
 pub mod perception;
 pub mod ragdoll;

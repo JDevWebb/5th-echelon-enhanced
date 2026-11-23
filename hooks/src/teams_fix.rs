@@ -107,7 +107,7 @@ mod tests {
         assert_eq!(&code[13..18], &REPLACED);
         assert_eq!(code[18], 0xE9);
         let rel = u32::from_le_bytes(code[19..23].try_into().unwrap());
-        assert_eq!(stub + 23 + rel, cont, "back after the replaced bytes");
+        assert_eq!(stub.wrapping_add(23).wrapping_add(rel), cont, "back after the replaced bytes");
         assert_eq!(&code[23..26], &[0xF0, 0xFF, 0x05]);
         assert_eq!(&code[30..], &[0xC2, 0x10, 0x00], "ret 0x10, as the function");
     }

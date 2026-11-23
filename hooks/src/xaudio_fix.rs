@@ -137,9 +137,9 @@ mod tests {
         let call = 15;
         assert_eq!(code[call], 0xE8);
         let r = u32::from_le_bytes(code[call + 1..call + 5].try_into().unwrap());
-        assert_eq!(stub + call as u32 + 5 + r, release);
+        assert_eq!(stub.wrapping_add(call as u32 + 5).wrapping_add(r), release);
         let back = u32::from_le_bytes(code[code.len() - 4..].try_into().unwrap());
-        assert_eq!(stub + code.len() as u32 + back, cont);
+        assert_eq!(stub.wrapping_add(code.len() as u32).wrapping_add(back), cont);
         assert_eq!(&code[run - 3..run], &[0xC2, 0x04, 0x00], "ret 4 before run");
     }
 }

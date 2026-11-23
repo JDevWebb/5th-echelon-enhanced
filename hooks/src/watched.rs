@@ -54,6 +54,7 @@ struct Watched {
     class: u32,
     props: Vec<Prop>,
     base: Option<Vec<u32>>,
+    based_at: Option<Instant>,
     read_at: Option<Instant>,
     said: bool,
 }
@@ -84,7 +85,12 @@ fn props_of(class: usize) -> Vec<Prop> {
                 None => return,
             },
         };
-        let name = read_u32(o + 0x20).and_then(rs::name_text).unwrap_or_else(|| format!("+{offset}"));
+        // Unnamed in this build's name table (most of the manager's are, as its round state):
+        // by its place.
+        let name = read_u32(o + 0x20).and_then(rs::name_text).filter(|n| !n.is_empty()).unwrap_or_else(|| match kind {
+            Kind::Bool(mask) => format!("+{offset}.b{}", mask.trailing_zeros()),
+            _ => format!("+{offset}"),
+        });
         out.push(Prop { name, offset, kind });
     });
     out.sort_by_key(|p| p.offset);
@@ -113,12 +119,22 @@ fn expected(name: &str) -> bool {
     EXPECTED.contains(&name) || EXPECTED_PARTS.iter().any(|part| name.contains(part))
 }
 
-/// The changes between `base` and `now`, not expected: "name before→after".
-fn changes(props: &[Prop], base: &[u32], now: &[u32]) -> Vec<String> {
+/// Whether a float moved by about `elapsed` seconds either way: a clock the game keeps (the
+/// gamebox, 23 Nov: two of the manager's, unnamed, rose with the round's time).
+fn clock(p: &Prop, b: u32, n: u32, elapsed: f32) -> bool {
+    p.kind == Kind::Float && {
+        let d = f32::from_bits(n) - f32::from_bits(b);
+        d.is_finite() && (d.abs() - elapsed).abs() <= 3.0
+    }
+}
+
+/// The changes between `base` and `now` (`elapsed` seconds apart), not expected: "name
+/// before→after".
+fn changes(props: &[Prop], base: &[u32], now: &[u32], elapsed: f32) -> Vec<String> {
     props
         .iter()
         .zip(base.iter().zip(now))
-        .filter(|(p, (b, n))| b != n && !expected(&p.name))
+        .filter(|(p, (b, n))| b != n && !expected(&p.name) && !clock(p, **b, **n, elapsed))
         .map(|(p, (b, n))| format!("{} {}→{}", p.name, shown(p, *b), shown(p, *n)))
         .collect()
 }
@@ -134,16 +150,29 @@ pub fn tick(object: Option<usize>, under_way: bool) {
     if guard.as_ref().is_none_or(|w| w.object != object || w.class != class) {
         let props = props_of(class as usize);
         info!("Watched: the match manager's {} properties", props.len());
-        *guard = Some(Watched { object, class, props, base: None, read_at: None, said: false });
+        *guard = Some(Watched { object, class, props, base: None, based_at: None, read_at: None, said: false });
     }
     let Some(w) = guard.as_mut() else { return };
     if !under_way {
-        w.base = None;
+        // The round just ended: what changed over it, the round's result among them (the round
+        // number, the winner: unnamed in this build, so found by their place; RP5).
+        if let (Some(base), Some(at)) = (w.base.take(), w.based_at) {
+            let now: Vec<u32> = w.props.iter().map(|p| value(object, p).unwrap_or(0)).collect();
+            let all: Vec<String> = w
+                .props
+                .iter()
+                .zip(base.iter().zip(&now))
+                .filter(|(p, (b, n))| b != n && !clock(p, **b, **n, at.elapsed().as_secs_f32()))
+                .map(|(p, (b, n))| format!("{} {}→{}", p.name, shown(p, *b), shown(p, *n)))
+                .collect();
+            info!("Watched: over the round, to its end: {}", all.join(", "));
+        }
         return;
     }
     let read_all = |w: &Watched| -> Vec<u32> { w.props.iter().map(|p| value(object, p).unwrap_or(0)).collect() };
     let Some(base) = &w.base else {
         w.base = Some(read_all(w));
+        w.based_at = Some(Instant::now());
         w.read_at = Some(Instant::now());
         return;
     };
@@ -152,7 +181,8 @@ pub fn tick(object: Option<usize>, under_way: bool) {
     }
     w.read_at = Some(Instant::now());
     let now = read_all(w);
-    let found = changes(&w.props, base, &now);
+    let elapsed = w.based_at.map_or(0.0, |at| at.elapsed().as_secs_f32());
+    let found = changes(&w.props, base, &now, elapsed);
     if found.is_empty() {
         return;
     }
@@ -178,6 +208,11 @@ mod tests {
         let props = [p("m_fRoundStateTimer", Kind::Float), p("m_bIsFriendlyFireEnabled", Kind::Bool(1)), p("m_iScoreLimit", Kind::Int), p("m_iSomething", Kind::Int)];
         let base = [1.0f32.to_bits(), 0, 3, 5];
         let now = [9.0f32.to_bits(), 1, 3, (-1i32) as u32];
-        assert_eq!(changes(&props, &base, &now), vec!["m_bIsFriendlyFireEnabled 0→1", "m_iSomething 5→-1"]);
+        assert_eq!(changes(&props, &base, &now, 0.0), vec!["m_bIsFriendlyFireEnabled 0→1", "m_iSomething 5→-1"]);
+        // An unnamed clock (the gamebox's: 16.3 to 47.5 in 31 s) is the game's own.
+        let clocks = [p("+812", Kind::Float), p("+816", Kind::Float), p("+900", Kind::Float)];
+        let base = [16.347_212f32.to_bits(), 0.843_994f32.to_bits(), 1.0f32.to_bits()];
+        let now = [47.548_66f32.to_bits(), 32.045f32.to_bits(), 500.0f32.to_bits()];
+        assert_eq!(changes(&clocks, &base, &now, 31.1), vec!["+900 1→500"]);
     }
 }

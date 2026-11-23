@@ -811,6 +811,7 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
             "perception-fix",
             "ragdoll-fix",
             "teams-fix",
+            "movement-fix",
             "xaudio-fix",
             "gear-list-fix",
             "disruption-fix",
@@ -834,6 +835,7 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
         crate::perception_fix::guard_perception();
         crate::ragdoll_fix::guard_ragdoll_parts();
         crate::teams_fix::guard_team_copies();
+        crate::movement_fix::guard_speed_updates();
         crate::xaudio_fix::guard_xaudio();
         crate::gear_list_fix::guard_gear_list();
         crate::disruption_fix::guard_disruption();

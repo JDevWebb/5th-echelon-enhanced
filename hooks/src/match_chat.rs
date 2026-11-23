@@ -61,6 +61,57 @@ static SETTING: Mutex<InMatchChat> = Mutex::new(InMatchChat::All);
 /// From the config, at start.
 pub fn init(setting: InMatchChat) {
     *SETTING.lock().unwrap_or_else(PoisonError::into_inner) = setting;
+    #[cfg(feature = "test-commands")]
+    let _ = std::thread::Builder::new().name("fe-chat-test".into()).spawn(test_commands);
+}
+
+/// The gamebox's stand-ins (a test build only), in `gamebox-command`: `mute <name>` /
+/// `unmute <name>` (the overlay's Mute), `chatmode all|team|off` (Settings › Game),
+/// `peername <n> <name>` (the server's name for number n: a stand-in for a spoofed name, N1), and
+/// `chatlines <name>` (logs how many of their lines a report would carry, and the first).
+#[cfg(feature = "test-commands")]
+fn test_commands() {
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+        let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else {
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(&file) else { continue };
+        let text = text.trim().to_string();
+        let mut words = text.splitn(3, ' ');
+        let (Some(verb), arg) = (words.next(), words.next().unwrap_or_default()) else { continue };
+        let rest = words.next().unwrap_or_default();
+        match verb {
+            "mute" | "unmute" => set_muted(arg, verb == "mute"),
+            "chatmode" => {
+                let mode = match arg {
+                    "team" => InMatchChat::Team,
+                    "off" => InMatchChat::Off,
+                    _ => InMatchChat::All,
+                };
+                *SETTING.lock().unwrap_or_else(PoisonError::into_inner) = mode;
+            }
+            "peername" => {
+                let Ok(n) = arg.parse::<u32>() else { continue };
+                crate::pawns::set_peer_names(vec![(n, rest.to_string())]);
+            }
+            "report" => {
+                let Some((id, name, _)) = crate::community::snapshot().match_players.into_iter().find(|(_, n, _)| n.eq_ignore_ascii_case(arg)) else {
+                    crate::community::match_players();
+                    tracing::info!("Match chat: test: {arg} isn't in the match players yet (asked again)");
+                    continue;
+                };
+                crate::community::report_player(id, name, "other", String::from("gamebox test"));
+            }
+            "chatlines" => {
+                let lines = lines_of(arg);
+                tracing::info!("Match chat: test: {} lines of {arg} kept; first {:?}", lines.len(), lines.first());
+            }
+            _ => continue,
+        }
+        let _ = std::fs::remove_file(&file);
+        tracing::info!("Match chat: test: {text}");
+    }
 }
 
 fn key(name: &str) -> String {
@@ -140,7 +191,9 @@ fn string(at: usize, max: usize) -> Option<String> {
 /// A received chat message's sender, line and whether it's for the team only.
 fn read(message: usize) -> Option<(String, String, bool, u8)> {
     let name = string(message + NAME, MOST_NAME)?;
+    // The game's line is the name's ": " and the text (the gamebox: ": hello").
     let text = string(message + TEXT, MOST_TEXT).unwrap_or_default();
+    let text = text.strip_prefix(": ").map(str::to_string).unwrap_or(text);
     Some((name, text, byte(message + TEAM_ONLY)? != 0, byte(message + TEAM)?))
 }
 
@@ -199,7 +252,7 @@ pub fn on_display(message: usize, host: bool) -> bool {
     let blocked: Vec<String> = crate::community::snapshot().blocked.into_iter().map(|p| p.name).collect();
     let setting = *SETTING.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(why) = hidden(setting, &name, team_only, &blocked, is_muted(&name)) {
-        tracing::debug!("match chat: a line not shown ({why:?})");
+        tracing::info!("Match chat: a line not shown ({why:?})");
         return false;
     }
     true

@@ -78,6 +78,7 @@ mod pawn_switches;
 mod pawns;
 mod perception_fix;
 mod ragdoll_fix;
+mod movement_fix;
 mod teams_fix;
 mod quickstart;
 mod recording;
