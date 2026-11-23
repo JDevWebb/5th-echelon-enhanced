@@ -40,6 +40,8 @@ mod chat;
 mod chat_relay;
 mod camera;
 mod gpu;
+#[cfg(feature = "test-commands")]
+mod find_text;
 mod watched;
 mod xaudio_fix;
 mod match_chat;
