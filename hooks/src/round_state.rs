@@ -518,6 +518,29 @@ pub(crate) fn made_from(class: usize, packed: u32) -> bool {
 }
 
 /// A class and those it's made from (its supers), nearest first.
+const WEAPON_ARCHETYPE_NAME_AT: usize = 1856;
+const WEAPON_ARCHETYPE_INFO_AT: usize = 1860;
+
+/// What an object is, for a person: its archetype's name (the object it was made from, at
+/// `+0x28`: a weapon's own archetype, `SC_..._Arch`), else its class's name. W3 and FN: every gun
+/// is a `BasicWeapon`, which says nothing.
+pub(crate) fn kind_name(object: usize) -> Option<String> {
+    // A weapon: its archetype's name, which it keeps (BasicWeapon.m_WeaponArchetypeName, a name,
+    // at 1856 in the script's layout, blacklist-re `lead_layout.py`; its archetype pointer follows
+    // at 1860, checked to be set).
+    if read_u32(object + WEAPON_ARCHETYPE_INFO_AT).is_some_and(|a| a != 0) {
+        if let Some(name) = read_u32(object + WEAPON_ARCHETYPE_NAME_AT).and_then(name_text).filter(|n| !n.is_empty() && !n.contains(' ')) {
+            return Some(name);
+        }
+    }
+    let archetype = read_u32(object + 0x28).filter(|a| *a != 0).map(|a| a as usize);
+    if let Some(name) = archetype.and_then(|a| name_text(read_u32(a + 0x20)?)).filter(|n| !n.is_empty() && !n.starts_with("Default__")) {
+        return Some(name);
+    }
+    let class = read_u32(object + 0x24).filter(|c| *c != 0)? as usize;
+    name_text(read_u32(class + 0x20)?)
+}
+
 pub(crate) fn chain(class: usize) -> Vec<u32> {
     let mut out = Vec::new();
     let mut c = class as u32;

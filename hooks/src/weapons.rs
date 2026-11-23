@@ -161,8 +161,7 @@ const STOCK_SWITCHES: &[(&str, &[&str])] = &[];
 /// The class name of the weapon a firing component belongs to (its outer's class), if readable.
 fn weapon_class(component: usize) -> Option<String> {
     let outer = read_u32(component + 0x18).filter(|o| *o != 0)? as usize;
-    let class = read_u32(outer + 0x24).filter(|c| *c != 0)? as usize;
-    name_text(read_u32(class + 0x20)?)
+    crate::round_state::kind_name(outer)
 }
 
 /// Whether `weapon` (a class name) has `switch` on by design ([`STOCK_SWITCHES`]).

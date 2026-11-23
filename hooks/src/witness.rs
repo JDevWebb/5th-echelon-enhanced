@@ -130,10 +130,7 @@ impl pawns::Watcher for Witness {
             track.ground_speed = c.ground_speed;
             track.sample(c.at, now);
             if let Some(weapon) = c.weapon {
-                let class = crate::dataversion::read_u32(weapon + 0x24)
-                    .and_then(|k| crate::dataversion::read_u32(k as usize + 0x20))
-                    .and_then(crate::round_state::name_text)
-                    .unwrap_or_else(|| String::from("?"));
+                let class = crate::round_state::kind_name(weapon).unwrap_or_else(|| String::from("?"));
                 let times: Vec<f32> = pawns::shots(tables, weapon).into_iter().map(|s| s.2).collect();
                 track.shots(weapon, &class, &times);
             }
@@ -167,7 +164,9 @@ impl pawns::Watcher for Witness {
             info!(
                 "Witness reports: {} characters, {named} named; {:?}",
                 self.tracks.len(),
-                seen.iter().map(|s| (&s.name, s.max_speed.round(), s.over_seconds)).collect::<Vec<_>>()
+                seen.iter()
+                    .map(|s| (&s.name, s.max_speed.round(), s.over_seconds, &s.weapon, s.fastest_shot_ms.round(), s.shots))
+                    .collect::<Vec<_>>()
             );
             let (pawns, named) = (u32::try_from(self.tracks.len()).unwrap_or(u32::MAX), u32::try_from(named).unwrap_or(u32::MAX));
             // Off the sampling thread: a slow server mustn't hold up the samples.
