@@ -287,6 +287,10 @@ async fn handle(logger: &Logger, stream: tokio::net::TcpStream, peer: SocketAddr
     let mut rate = Rate::new();
     let mut ping = tokio::time::interval(PING_EVERY);
     let mut buf = vec![0u8; 2048];
+    // Its life and bytes, logged at the close (0.5.6's TL: a tunnel cut after a little data).
+    let opened = Instant::now();
+    let (mut bytes_in, mut bytes_out) = (0u64, 0u64);
+    let mut why = String::from("replaced by a newer tunnel");
     let result: Result<(), String> = loop {
         // Replaced by a newer tunnel for the name.
         if !open().by_id.contains_key(&id) {
@@ -295,21 +299,38 @@ async fn handle(logger: &Logger, stream: tokio::net::TcpStream, peer: SocketAddr
         tokio::select! {
             message = up.next() => match message {
                 Some(Ok(Ws::Binary(data))) => {
+                    bytes_in += data.len() as u64;
                     let Some((service, datagram)) = tunnel::parse(&data) else { continue };
                     let Some(to) = services.target(service) else { continue };
                     if rate.take(datagram.len()) {
                         let _ = socket.send_to(datagram, to).await;
                     }
                 }
-                Some(Ok(Ws::Close(_))) | None => break Ok(()),
+                Some(Ok(Ws::Close(frame))) => {
+                    why = match frame {
+                        Some(f) => format!("the player's side closed it ({})", u16::from(f.code)),
+                        None => "the player's side closed it".into(),
+                    };
+                    break Ok(());
+                }
+                None => {
+                    why = "the connection ended without a close".into();
+                    break Ok(());
+                }
                 Some(Ok(_)) => {}
-                Some(Err(e)) => break Err(e.to_string()),
+                Some(Err(e)) => {
+                    why = "an error".into();
+                    break Err(e.to_string());
+                }
             },
             got = socket.recv_from(&mut buf) => {
                 let Ok((n, from)) = got else { continue };
                 let Some(service) = services.service(from) else { continue };
                 if rate.take(n) {
-                    if let Err(e) = down.send(Ws::Binary(tunnel::frame(service, &buf[..n]).into())).await {
+                    let frame = tunnel::frame(service, &buf[..n]);
+                    bytes_out += frame.len() as u64;
+                    if let Err(e) = down.send(Ws::Binary(frame.into())).await {
+                        why = "an error sending".into();
                         break Err(e.to_string());
                     }
                 }
@@ -319,6 +340,7 @@ async fn handle(logger: &Logger, stream: tokio::net::TcpStream, peer: SocketAddr
                     crate::relays::tunnelled(&name, port, ip, true);
                 }
                 if let Err(e) = down.send(Ws::Ping(Vec::new().into())).await {
+                    why = "an error sending a ping".into();
                     break Err(e.to_string());
                 }
             }
@@ -342,10 +364,16 @@ async fn handle(logger: &Logger, stream: tokio::net::TcpStream, peer: SocketAddr
     if forwards {
         crate::relays::tunnelled(&name, port, ip, false);
     }
-    info!(logger, "Tunnel: {name}'s closed");
+    let secs = opened.elapsed().as_secs();
+    let error = result.as_ref().err().map(|e| format!(": {e}")).unwrap_or_default();
+    info!(logger, "Tunnel: {name}'s closed after {secs} s ({bytes_in} bytes in, {bytes_out} out; {why}{error})");
     // At a relay the matchmaking server notes it from the link's Tunnelled (relays.rs).
     if !forwards {
-        crate::session_events::note(crate::session_events::Who::Name(name), "tunnel", serde_json::json!({ "open": false }));
+        crate::session_events::note(
+            crate::session_events::Who::Name(name),
+            "tunnel",
+            serde_json::json!({ "open": false, "secs": secs, "in": bytes_in, "out": bytes_out, "why": why }),
+        );
     }
     result
 }

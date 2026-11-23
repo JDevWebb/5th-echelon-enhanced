@@ -81,6 +81,27 @@ static RTT: Mutex<Option<(u16, std::time::Instant)>> = Mutex::new(None);
 /// How often the tunnel is pinged while open.
 const PING_EVERY: Duration = Duration::from_secs(15);
 
+/// A tunnel that closes sooner than this after opening is a short one (0.5.6's TL:
+/// CoolPeaceMaker's lived 18-20 s each, 531 times in two hours, closed by something on their
+/// path, and the game signed in again after most of them).
+const SHORT_LIFE: Duration = Duration::from_secs(60);
+/// After this many short tunnels in a row, the player is told and reopening slows down.
+const SHORT_RUNS: u32 = 3;
+
+/// How long to wait before reopening after `short` short tunnels in a row: None while there
+/// have been fewer than [`SHORT_RUNS`] (the usual quick reopen), then 30 s, then a minute, so a
+/// link that keeps being cut doesn't have the game signing in every 20 s.
+fn slowed_reopen(short: u32) -> Option<Duration> {
+    match short {
+        s if s < SHORT_RUNS => None,
+        s if s == SHORT_RUNS => Some(Duration::from_secs(30)),
+        _ => Some(Duration::from_secs(60)),
+    }
+}
+
+/// Whether the player has been told their tunnel keeps being cut, this run.
+static TOLD_SHORT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The round trip to `server` (a NAT helper's address) if it goes through the tunnel: Some(the
 /// tunnel's ping in ms, measured in the last minute, if any); None when it doesn't go through.
 pub fn round_trip_for(server: SocketAddrV4) -> Option<Option<u16>> {
@@ -215,6 +236,8 @@ async fn run(url: String, forwarders: Vec<Forwarder>) {
     let mut wait = Duration::from_secs(1);
     // When an open tunnel last dropped: within the server's 30 s to resume it, every second.
     let mut dropped_at: Option<std::time::Instant> = None;
+    // Short tunnels in a row ([`SHORT_LIFE`]).
+    let mut short = 0u32;
     loop {
         // The proof needs the NAT ticket, from signing in.
         let proof = loop {
@@ -231,6 +254,9 @@ async fn run(url: String, forwarders: Vec<Forwarder>) {
             Ok((ws, _)) => {
                 info!("Tunnel: open");
                 wait = Duration::from_secs(1);
+                let opened = std::time::Instant::now();
+                let (mut bytes_up, mut bytes_down) = (0u64, 0u64);
+                let why: String;
                 let (mut down, mut up) = ws.split();
                 if down.send(Ws::Binary(tunnel::frame(tunnel::AUTH, &proof).into())).await.is_err() {
                     continue;
@@ -242,18 +268,22 @@ async fn run(url: String, forwarders: Vec<Forwarder>) {
                         _ = ping.tick() => {
                             let nonce = rand::random::<[u8; 8]>();
                             sent = Some((nonce, std::time::Instant::now()));
-                            if down.send(Ws::Ping(nonce.to_vec().into())).await.is_err() {
+                            if let Err(e) = down.send(Ws::Ping(nonce.to_vec().into())).await {
+                                why = format!("an error sending a ping: {e}");
                                 break;
                             }
                         }
                         out = from_game.recv() => {
                             let Some(out) = out else { return };
-                            if down.send(Ws::Binary(out.into())).await.is_err() {
+                            bytes_up += out.len() as u64;
+                            if let Err(e) = down.send(Ws::Binary(out.into())).await {
+                                why = format!("an error sending: {e}");
                                 break;
                             }
                         }
                         message = up.next() => match message {
                             Some(Ok(Ws::Binary(data))) => {
+                                bytes_down += data.len() as u64;
                                 let Some((service, datagram)) = tunnel::parse(&data) else { continue };
                                 let to = GAME.lock().ok().and_then(|g| g.get(usize::from(service)).copied().flatten());
                                 if let (Some(to), Some((.., socket))) = (to, forwarders.iter().find(|f| f.0 == service)) {
@@ -261,13 +291,43 @@ async fn run(url: String, forwarders: Vec<Forwarder>) {
                                 }
                             }
                             Some(Ok(Ws::Pong(data))) => note_pong(&mut sent, &data),
-                            Some(Ok(Ws::Close(_))) | None | Some(Err(_)) => break,
+                            Some(Ok(Ws::Close(frame))) => {
+                                why = match frame {
+                                    Some(f) => format!("the server's side closed it ({})", u16::from(f.code)),
+                                    None => "the server's side closed it".into(),
+                                };
+                                break;
+                            }
+                            None => {
+                                why = "the connection ended without a close".into();
+                                break;
+                            }
+                            Some(Err(e)) => {
+                                why = format!("an error: {e}");
+                                break;
+                            }
                             Some(Ok(_)) => {}
                         }
                     }
                 }
-                warn!("Tunnel: closed; opening it again");
+                let lived = opened.elapsed();
+                warn!(
+                    "Tunnel: closed after {} s ({bytes_up} bytes up, {bytes_down} down; {why}); opening it again",
+                    lived.as_secs()
+                );
                 dropped_at = Some(std::time::Instant::now());
+                short = if lived < SHORT_LIFE { short + 1 } else { 0 };
+                if short >= SHORT_RUNS && !TOLD_SHORT.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    crate::community::tell(
+                        "Your connection keeps being cut",
+                        "Your connection to the server keeps being cut, most likely by your network or internet provider. A VPN or another network may help.",
+                    );
+                }
+                if let Some(slow) = slowed_reopen(short) {
+                    warn!("Tunnel: {short} closed within {} s of opening in a row; waiting {} s before opening it again", SHORT_LIFE.as_secs(), slow.as_secs());
+                    tokio::time::sleep(slow).await;
+                    continue;
+                }
             }
             Err(e) => warn!("Tunnel: couldn't open ({e}); trying again in {} s", wait.as_secs()),
         }
@@ -300,6 +360,15 @@ fn connector() -> Option<tokio_tungstenite::Connector> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// TL: a tunnel that keeps being cut reopens as usual twice, then after 30 s, then a minute.
+    #[test]
+    fn a_tunnel_that_keeps_being_cut_reopens_more_slowly() {
+        assert_eq!(slowed_reopen(0), None);
+        assert_eq!(slowed_reopen(SHORT_RUNS - 1), None, "the usual quick reopen, for the server's resume window");
+        assert_eq!(slowed_reopen(SHORT_RUNS), Some(Duration::from_secs(30)));
+        assert_eq!(slowed_reopen(SHORT_RUNS + 5), Some(Duration::from_secs(60)));
+    }
 
     /// T: a pong for the ping in flight gives the round trip; another is ignored.
     #[test]

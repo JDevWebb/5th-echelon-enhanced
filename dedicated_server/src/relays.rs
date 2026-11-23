@@ -238,15 +238,19 @@ pub fn on_link(data: &[u8], src: std::net::SocketAddrV4, socket: &std::net::UdpS
         // matchmaking server, only from a relay of the network, and only for that relay's own
         // address (where the datagrams come from).
         crate::link::Body::Tunnelled { name, port, ip, open } if NETWORK_RELAYS.load(Ordering::Relaxed) && !link.matchmaking => {
-            forwarded_note(std::net::SocketAddr::new(link.ip.into(), port), ip, &name, open, std::time::Instant::now());
+            let new = forwarded_note(std::net::SocketAddr::new(link.ip.into(), port), ip, &name, open, std::time::Instant::now());
             // The player's Sessions row says they signed in through this relay (0.5.5's SR). Noted
             // here from the relay's own word: an event it sent would come before it reports the
-            // player (the tunnel opens before the game registers), and be dropped.
-            crate::session_events::note(
-                crate::session_events::Who::Name(name),
-                "tunnel",
-                serde_json::json!({ "open": open, "relay": true, "at": link.id }),
-            );
+            // player (the tunnel opens before the game registers), and be dropped. Once per open
+            // and close (0.5.6's TE): the relay says it again every 20 s to keep the note fresh,
+            // and Shmoe's 2 h tunnel left 403 "open" rows.
+            if new {
+                crate::session_events::note(
+                    crate::session_events::Who::Name(name),
+                    "tunnel",
+                    serde_json::json!({ "open": open, "relay": true, "at": link.id }),
+                );
+            }
         }
         crate::link::Body::Tunnelled { .. } => {}
         crate::link::Body::Reach { to, nonce } => {
@@ -354,19 +358,25 @@ static FORWARDED: std::sync::LazyLock<Mutex<SignIns>> = std::sync::LazyLock::new
 const FORWARDED_FOR: std::time::Duration = std::time::Duration::from_secs(70);
 const MAX_FORWARDED: usize = 50_000;
 
-fn forwarded_note(from: std::net::SocketAddr, ip: std::net::IpAddr, name: &str, open: bool, now: std::time::Instant) {
+/// Notes a relay's word on a tunnel. True when it's news: a close, or an open that wasn't
+/// noted (or had lapsed, or was another player's); false for the relay saying it again.
+fn forwarded_note(from: std::net::SocketAddr, ip: std::net::IpAddr, name: &str, open: bool, now: std::time::Instant) -> bool {
     let mut f = FORWARDED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if !open {
         f.remove(&from);
-        return;
+        return true;
     }
+    let again = f
+        .get(&from)
+        .is_some_and(|(was_ip, was_name, at)| *was_ip == ip && was_name == name && now.saturating_duration_since(*at) < FORWARDED_FOR);
     if f.len() >= MAX_FORWARDED && !f.contains_key(&from) {
         f.retain(|_, (.., at)| now.saturating_duration_since(*at) < FORWARDED_FOR);
         if f.len() >= MAX_FORWARDED {
-            return;
+            return false;
         }
     }
     f.insert(from, (ip, name.to_string(), now));
+    !again
 }
 
 /// The real address of the player whose sign-in a relay forwards from `src` (SR), if one does.
@@ -1009,13 +1019,29 @@ mod tests {
         let player: std::net::IpAddr = "203.0.113.40".parse().unwrap();
         let t = std::time::Instant::now();
         assert_eq!(forwarded_ip_at(relay, t), None);
-        forwarded_note(relay, player, "Ghost", true, t);
+        assert!(forwarded_note(relay, player, "Ghost", true, t), "news: an event");
         assert_eq!(forwarded_ip_at(relay, t + std::time::Duration::from_secs(30)), Some(player));
         assert_eq!(forwarded_ip_at("198.51.100.33:52002".parse().unwrap(), t), None, "only that port");
         assert_eq!(forwarded_ip_at(relay, t + FORWARDED_FOR), None, "not said again: lapsed");
         forwarded_note(relay, player, "Ghost", true, t);
         forwarded_note(relay, player, "Ghost", false, t);
         assert_eq!(forwarded_ip_at(relay, t), None, "closed");
+    }
+
+    /// TE: the relay says a tunnel is open every 20 s; it's one event per open and close.
+    #[test]
+    fn a_tunnel_said_open_again_is_one_event() {
+        let relay: std::net::SocketAddr = "198.51.100.34:52001".parse().unwrap();
+        let player: std::net::IpAddr = "203.0.113.41".parse().unwrap();
+        let t = std::time::Instant::now();
+        let s = std::time::Duration::from_secs;
+        assert!(forwarded_note(relay, player, "Ghost", true, t));
+        assert!(!forwarded_note(relay, player, "Ghost", true, t + s(20)), "said again");
+        assert!(!forwarded_note(relay, player, "Ghost", true, t + s(40)), "and again");
+        assert!(forwarded_note(relay, player, "Ghost", false, t + s(50)), "the close");
+        assert!(forwarded_note(relay, player, "Ghost", true, t + s(53)), "a new open after it");
+        assert!(forwarded_note(relay, player, "Ghost", true, t + s(53) + FORWARDED_FOR), "lapsed, then said: news");
+        assert!(forwarded_note(relay, player, "Other", true, t + s(54) + FORWARDED_FOR), "the port is another player's now");
     }
 
     #[test]
