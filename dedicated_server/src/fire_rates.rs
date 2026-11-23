@@ -10,6 +10,10 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::PoisonError;
 
+/// Teamkills in a match a witness's game saw that make it a note (0.5.6's TK4; report only, like
+/// the rest of fair play: one or two are accidents with explosives).
+pub const TEAMKILLS_NOTED: u32 = 3;
+
 /// Others' samples of a class needed before a player is judged against them.
 pub const LEAST_OTHERS: usize = 5;
 /// A gap under this share of the others' median is too fast.

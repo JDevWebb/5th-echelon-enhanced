@@ -146,7 +146,8 @@ impl pawns::Watcher for Witness {
             .filter_map(|t| {
                 let name = t.name.clone()?;
                 let fired = t.most_fired();
-                (!name.eq_ignore_ascii_case(&self.me) && (t.max_speed > 0.0 || fired.is_some())).then(|| {
+                let teamkills = crate::recording::teamkills_of(&name);
+                (!name.eq_ignore_ascii_case(&self.me) && (t.max_speed > 0.0 || fired.is_some() || teamkills > 0)).then(|| {
                     let (weapon, shots, fastest_shot_ms) = fired.unwrap_or_default();
                     server_api::misc::Witnessed {
                         name,
@@ -156,6 +157,7 @@ impl pawns::Watcher for Witness {
                         weapon,
                         fastest_shot_ms,
                         shots,
+                        teamkills,
                     }
                 })
             })

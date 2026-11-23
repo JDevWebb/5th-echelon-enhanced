@@ -1149,6 +1149,11 @@ fn describe(e: &Event) -> String {
                 o.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")
             ))
         ),
+        "witnessed" if e.str("check") == "teamkill" => format!(
+            "Seen killing {} of their own team in a match by player {}",
+            e.detail["teamkills"].as_u64().unwrap_or(0),
+            e.detail["by"]
+        ),
         "witnessed" if e.str("check") == "fire_rate" => format!(
             "Seen firing {} faster than other players do by player {} ({} ms between shots, others {} ms)",
             e.str("weapon"),
@@ -1674,13 +1679,17 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
                     count
                 };
                 let rooms = |events: &[&&Event]| events.iter().map(|o| o.detail["room"].to_string()).collect::<HashSet<_>>().len();
-                let now_enough = witnesses(&seen) >= 2 && rooms(&seen) >= 2;
+                // Teamkills are counted per match: two witnesses in one are enough.
+                let matches_needed = if check == "teamkill" { 1 } else { 2 };
+                let now_enough = witnesses(&seen) >= 2 && rooms(&seen) >= matches_needed;
                 let before = &seen[..seen.len().saturating_sub(1)];
-                if !now_enough || (witnesses(before) >= 2 && rooms(before) >= 2) {
+                if !now_enough || (witnesses(before) >= 2 && rooms(before) >= matches_needed) {
                     continue;
                 }
                 let what = if check == "fire_rate" {
                     format!("fired {} faster than other players do", e.str("weapon"))
+                } else if check == "teamkill" {
+                    "killed their own team again and again".to_string()
                 } else {
                     "moved faster than the game allows".to_string()
                 };

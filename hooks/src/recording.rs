@@ -132,6 +132,26 @@ impl Sanity {
     }
 }
 
+/// TK4: each player's kills of their own team in this match, as this game saw them (by name,
+/// lowercase); cleared as a recording begins (a new match).
+static TEAMKILLS: std::sync::Mutex<Option<HashMap<String, u32>>> = std::sync::Mutex::new(None);
+
+/// Whether a kill of `victim` (team `vt`) by `killer` (team `kt`) is a teamkill: both named and
+/// teamed, the same team, not themselves.
+fn is_teamkill(killer: &str, kt: i32, victim: &str, vt: i32) -> bool {
+    kt >= 0 && kt == vt && !killer.is_empty() && !victim.is_empty() && !killer.eq_ignore_ascii_case(victim)
+}
+
+/// The match ended: its teamkills go with it.
+pub fn match_left() {
+    *TEAMKILLS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+}
+
+/// How many teamkills `name` has in this match as this game saw them (witness reports).
+pub fn teamkills_of(name: &str) -> u32 {
+    TEAMKILLS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(|m| m.get(&name.to_lowercase()).copied()).unwrap_or(0)
+}
+
 /// Whether a character is a player's (RP1): it has a player's number in the session or a name.
 /// The others (a menu's or a cutscene's Sam) aren't recorded.
 fn players(c: &pawns::Sample) -> bool {
@@ -442,6 +462,13 @@ fn record(o: &mut Open, tables: &pawns::Tables, characters: &[pawns::Sample]) ->
                 victim: *victim,
             })?;
             o.counts.kills += 1;
+            // TK4: a kill within one team (both teams known, not oneself).
+            if let (Some((_, kn, kt)), Some((_, vn, vt))) = (o.described.get(killer), o.described.get(victim)) {
+                if is_teamkill(kn, *kt, vn, *vt) {
+                    *TEAMKILLS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert_with(HashMap::new).entry(kn.to_lowercase()).or_insert(0) += 1;
+                    info!("Recording: a teamkill seen ({kn} killed a teammate)");
+                }
+            }
         }
     }
     let (round, _, _) = rs::current();
@@ -459,6 +486,15 @@ fn record(o: &mut Open, tables: &pawns::Tables, characters: &[pawns::Sample]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_teamkill_is_a_kill_within_one_named_team() {
+        assert!(is_teamkill("Levi", 1, "Tea_bag", 1));
+        assert!(!is_teamkill("Levi", 1, "Tea_bag", 0), "the other team");
+        assert!(!is_teamkill("Levi", -1, "Tea_bag", -1), "teams not known");
+        assert!(!is_teamkill("Levi", 1, "levi", 1), "themselves");
+        assert!(!is_teamkill("", 1, "Tea_bag", 1), "unnamed");
+    }
 
     #[test]
     fn junk_numbers_are_left_out() {

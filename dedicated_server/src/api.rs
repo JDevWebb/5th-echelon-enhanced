@@ -2244,6 +2244,14 @@ impl Misc for MyMisc {
             let Some((id, name, room)) = known.iter().find(|(_, n, _)| n.eq_ignore_ascii_case(&seen.name)) else {
                 continue;
             };
+            // TK4: three teamkills or more in this match, as this witness's game saw them (0.5.6).
+            if seen.teamkills >= crate::fire_rates::TEAMKILLS_NOTED && seen.teamkills <= 100 {
+                crate::session_events::note(
+                    crate::session_events::Who::Id(*id),
+                    "witnessed",
+                    serde_json::json!({ "by": user_id, "room": room, "check": "teamkill", "teamkills": seen.teamkills }),
+                );
+            }
             // W3: their fire rate against everyone else's with the weapon class (0.5.6).
             if seen.shots >= 2 {
                 if let Some(median) = crate::fire_rates::seen(*id, &printable(&seen.weapon, 64), seen.fastest_shot_ms) {

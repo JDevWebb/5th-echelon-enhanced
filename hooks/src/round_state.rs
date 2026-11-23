@@ -949,6 +949,7 @@ pub fn start() {
                     // Out of a match: mutes end with it (match_chat.rs).
                     if state == "none" {
                         crate::match_chat::match_left();
+                        crate::recording::match_left();
                     }
                 }
                 // Nothing to say before the first match, nor of no match after a joinable one.
