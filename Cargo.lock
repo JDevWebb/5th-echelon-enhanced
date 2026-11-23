@@ -755,6 +755,7 @@ dependencies = [
  "flate2",
  "geo",
  "hmac",
+ "hooks-config",
  "http-body-util",
  "identity",
  "moderation",

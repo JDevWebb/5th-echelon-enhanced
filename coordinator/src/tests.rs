@@ -3573,6 +3573,88 @@ async fn crashes_are_grouped_marked_and_alerted() {
     assert_eq!(admin_call(&r, "GET", "/api/crashes", "", None).await.0, StatusCode::UNAUTHORIZED);
 }
 
+/// A log line's time as the add-on writes it (`2026-11-21T23:13:53.000000Z`), for Unix second `t`.
+fn log_time(t: i64) -> String {
+    // Days to a civil date (Howard Hinnant's algorithm).
+    let (days, secs) = (t.div_euclid(86_400), t.rem_euclid(86_400));
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000000Z", secs / 3600, secs / 60 % 60, secs % 60)
+}
+
+/// CT: a report's game logs feed the Crashes page, each crash once: not again for the same
+/// report, for the next report carrying the log as `bl-tracing.prev.log`, or for the game
+/// sending it too.
+#[tokio::test]
+async fn crashes_in_a_reports_logs_count_once() {
+    let t = start("crashes-from-reports").await;
+    let r = admin_router(&t);
+    let a = t.join("server-a").await;
+    let now = identity::now();
+    let place = "Blacklist_DX11_game.exe+0x41a00c";
+    let other = "Blacklist_DX11_game.exe+0x3d731d";
+    let run = |start: i64, at: i64, place: &str| {
+        format!(
+            "{}  INFO ThreadId(01) hooks: 591: attaching\n\
+             {} ERROR hooks::crash: The game hit an exception: 0xC0000005 access violation (writing 0x000000fc) at {place}. On the stack: Blacklist_DX11_game.exe+0x3d7646, Blacklist_DX11_game.exe+0x38d1dc. If the game handles it, it carries on.\n\
+             {} ERROR hooks::crash: The game is closing on an unhandled exception\n",
+            log_time(start),
+            log_time(at),
+            log_time(at + 1)
+        )
+    };
+    let first = run(now - 7200, now - 7000, place);
+    let second = run(now - 3600, now - 3500, other);
+    let report = |id: &str, files: Vec<(&str, &str)>| {
+        let mut body = report_body(id);
+        body["files"] = json!(files
+            .iter()
+            .map(|(name, text)| json!({ "name": name, "gzip_base64": gz64(text.as_bytes()), "size": text.len() }))
+            .collect::<Vec<_>>());
+        body
+    };
+    // The first report has the first crash; the next has the second, and the first again in
+    // the previous log.
+    let one = report(&report_id(1), vec![("bl-tracing.log", &first)]);
+    assert_eq!(t.call("POST", "/v1/reports", Some(&a), Some(one.clone())).await.0, StatusCode::OK);
+    assert_eq!(t.call("POST", "/v1/reports", Some(&a), Some(one)).await.0, StatusCode::OK, "again: the same report");
+    let two = report(&report_id(2), vec![("bl-tracing.log", &second), ("bl-tracing.prev.log", &first)]);
+    assert_eq!(t.call("POST", "/v1/reports", Some(&a), Some(two)).await.0, StatusCode::OK);
+    // The game sent the second crash itself at its next start.
+    let sent = json!({ "events": [{ "id": 1, "at": now - 3000, "last_at": now - 3000, "player": 1011, "name": "ijsman5530", "kind": "crash", "count": 1,
+        "detail": { "kind": "exception", "at": now - 3500, "code": "0xC0000005 access violation (writing 0x000000fc)", "place": other,
+            "stack": [], "registers": [], "callers": [], "doing": "", "fatal": true, "release": "0.5.5" } }] });
+    assert_eq!(t.call("POST", "/v1/events", Some(&a), Some(sent)).await.0, StatusCode::OK);
+
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    let (status, v) = admin_call(&r, "GET", "/api/crashes?days=7", &cookie, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["crashes"].as_i64(), Some(2), "each crash once: {v}");
+    let groups = v["groups"].as_array().unwrap();
+    let from_report = groups.iter().find(|g| g["signature"] == place).unwrap();
+    assert_eq!((from_report["count"].as_i64(), from_report["from_reports"].as_i64()), (Some(1), Some(1)), "{from_report}");
+    assert_eq!(from_report["latest"]["report"], report_id(1));
+    assert_eq!(from_report["latest"]["fatal"], true, "it closed on it");
+    assert_eq!(from_report["latest"]["stack"], "Blacklist_DX11_game.exe+0x3d7646, Blacklist_DX11_game.exe+0x38d1dc");
+    let game_sent = groups.iter().find(|g| g["signature"] == other).unwrap();
+    assert_eq!((game_sent["count"].as_i64(), game_sent["from_reports"].as_i64()), (Some(1), Some(0)), "the game's own: {game_sent}");
+    assert!(v["diagnostics"]["signed_in"].is_i64(), "{v}");
+
+    // Reading the stored reports again (the first start's catch-up) adds nothing.
+    t.c.crashes_from_stored_reports().await.unwrap();
+    let (_, v) = admin_call(&r, "GET", "/api/crashes?days=7", &cookie, None).await;
+    assert_eq!(v["crashes"].as_i64(), Some(2));
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM session_events WHERE kind = 'crash' AND id < 0").fetch_one(&t.c.pool).await.unwrap();
+    assert_eq!(rows, 3, "one per crash per report, kept as found");
+}
+
 #[tokio::test]
 async fn the_map_lists_who_is_online_from_the_last_pulse_only() {
     let t = start("online-now").await;

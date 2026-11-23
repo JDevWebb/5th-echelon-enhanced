@@ -1,9 +1,15 @@
 <template>
-  <PageTop title="Crashes" sub="Every player's crashes and freezes, sent by their game when it starts again, grouped by where they happened. A new one that hits three players in a day, or a fixed one seen again, is an alert.">
+  <PageTop title="Crashes" sub="Players' crashes and freezes, sent by their game when it starts again (diagnostics on) or found in the logs of a report they sent, grouped by where they happened. A new one that hits three players in a day, or a fixed one seen again, is an alert.">
     <template v-if="data" #stats>
       <Stat :value="fmt.n(data.crashes)" label="Crashes and freezes" :sub="`last ${data.days} days`" />
       <Stat :value="fmt.n(data.fatal)" label="Ended the game" :tone="data.fatal ? 'warn' : ''" />
       <Stat :value="fmt.n(data.players)" label="Players hit" />
+      <Stat
+        v-if="data.diagnostics"
+        :value="`${fmt.n(data.diagnostics.sending)} of ${fmt.n(data.diagnostics.signed_in)}`"
+        label="Players sending diagnostics"
+        sub="the counts are a sample of these"
+      />
       <Stat :value="fmt.n(newOnes)" label="Not marked" :tone="newOnes ? 'warn' : 'ok'" />
     </template>
     <div class="seg" role="group" aria-label="Range">
@@ -23,7 +29,7 @@
         <div v-for="g in shown" :id="`crash-${g.signature}`" :key="g.signature" class="callout" :class="[tone(g), { picked: g.signature === place }]">
           <div class="row" style="justify-content: space-between; align-items: baseline">
             <b class="mono">{{ g.signature }}</b>
-            <span class="small muted">{{ fmt.n(g.players) }} players · {{ fmt.n(g.count) }} times · {{ fmt.n(g.fatal) }} ended the game · last {{ fmt.ago(g.last) }}</span>
+            <span class="small muted">{{ fmt.n(g.players) }} players · {{ fmt.n(g.count) }} times · {{ fmt.n(g.fatal) }} ended the game<template v-if="g.from_reports"> · {{ fmt.n(g.from_reports) }} from reports</template> · last {{ fmt.ago(g.last) }}</span>
           </div>
           <div class="row small" style="gap: 6px; flex-wrap: wrap">
             <span v-if="g.mark" class="pill" :class="g.mark.status === 'fixed' ? 'ok' : 'info'">{{ markText(g.mark) }}</span>
@@ -35,7 +41,7 @@
           <details>
             <summary class="small">Details: {{ g.names.join(', ') }}{{ g.players > g.names.length ? ' …' : '' }}</summary>
             <div class="stack small" style="margin-top: 8px">
-              <div><span class="muted">Latest</span> {{ fmt.when(g.latest.at) }}, {{ g.latest.name || 'someone' }}, {{ g.latest.release || '?' }}{{ g.latest.fatal ? ', ended the game' : ', carried on' }}</div>
+              <div><span class="muted">Latest</span> {{ fmt.when(g.latest.at) }}, {{ g.latest.name || 'someone' }}, {{ g.latest.release || '?' }}{{ g.latest.fatal ? ', ended the game' : ', carried on' }}<template v-if="g.latest.report">, from <RouterLink :to="`/reports/${g.latest.report}`">their report</RouterLink></template></div>
               <div v-if="g.latest.doing"><span class="muted">Doing</span> {{ g.latest.doing }}</div>
               <div v-if="g.latest.registers"><span class="muted">Registers</span> <code class="wrap">{{ g.latest.registers }}</code></div>
               <div v-if="g.latest.callers"><span class="muted">Callers</span> <code class="wrap">{{ g.latest.callers }}</code></div>

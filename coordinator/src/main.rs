@@ -512,6 +512,15 @@ async fn main() -> eyre::Result<()> {
     let _ = coordinator.geo.set(Arc::clone(&geo));
     tokio::spawn(async move { geo.keep_current(concat!("5th-echelon-coordinator/", env!("FE_RELEASE"))).await });
     spawn_jobs(&coordinator);
+    // Once: the crashes in the logs of the reports already here (0.5.6's CT).
+    {
+        let coordinator = Arc::clone(&coordinator);
+        tokio::spawn(async move {
+            if let Err(e) = coordinator.crashes_from_stored_reports().await {
+                tracing::warn!("reading the stored reports for crashes failed: {e}");
+            }
+        });
+    }
     // Names claimed for accounts that never linked go after an hour.
     {
         let coordinator = Arc::clone(&coordinator);

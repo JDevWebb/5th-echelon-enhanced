@@ -418,6 +418,19 @@ impl Coordinator {
         }
         tx.commit().await.map_err(|e| e.to_string())?;
         self.cap_report_storage().await.map_err(|e| e.to_string())?;
+        // The crashes in its game logs, for the Crashes page (0.5.6's CT).
+        let logs: Vec<String> = r
+            .files
+            .iter()
+            .filter(|f| crate::crashes::is_game_log(&f.name))
+            .filter_map(|f| gunzip(&f.gzip, MAX_FILE_SIZE).ok())
+            .map(|t| String::from_utf8_lossy(&t).into_owned())
+            .collect();
+        if !logs.is_empty() {
+            if let Err(e) = self.crashes_from_report(server, &r.id, r.player_id, &r.player_name, r.created_at, logs).await {
+                tracing::warn!("report {}: its crashes weren't noted: {e}", r.id);
+            }
+        }
         Ok(true)
     }
 

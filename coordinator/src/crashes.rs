@@ -6,6 +6,13 @@
 //! games (`crash_fixes` events): how often each kept a game going, and the builds where one
 //! didn't go in.
 //!
+//! A report a player sent themselves (logs included, their choice) adds the crashes in its game
+//! logs too (0.5.6's CT): crashes are sent at the next start only with diagnostics on, and a
+//! report was often the only sign of them (Tea_bag's round-end crashes, 21-22 Nov). They're
+//! `crash` events with the report's id in them, at negative ids (a server's own are positive),
+//! and one the game sent as well, or another report carried (a log goes again as
+//! `bl-tracing.prev.log`), counts once.
+//!
 //! An admin marks a group: `fixed` (in a release: crashes from that release or later show it
 //! came back), `known` (nothing to do, an audio driver's say) or `watching`. A new crash, not
 //! marked, that hits [`ALERT_PLAYERS`] players in a day is an alert, as is a fixed one seen
@@ -30,6 +37,65 @@ pub(crate) const ALERT_PLAYERS: usize = 3;
 const REPORT_WITHIN: i64 = 3 * 3600;
 /// The most players named, and reports linked, per group.
 const MOST_NAMED: usize = 12;
+/// The most crashes taken from one report's logs.
+const MOST_FROM_A_REPORT: usize = 10;
+/// A crash from a report and one the game sent this close together, at the same place, by the
+/// same player, are one.
+const SAME_CRASH_WITHIN: i64 = 120;
+/// The setting that says the reports already here were read for crashes (once, on the first
+/// start with CT).
+const FROM_REPORTS_DONE: &str = "crashes_from_reports";
+
+/// Whether a report's file is a game log the add-on writes.
+pub(crate) fn is_game_log(name: &str) -> bool {
+    matches!(name, "bl-tracing.log" | "bl-tracing.prev.log")
+}
+
+/// The event id of crash `n` from report `report`: negative, never a server's own, and the same
+/// each time, so a report read twice adds nothing.
+fn report_crash_id(report: &str, n: usize) -> i64 {
+    use sha2::Digest as _;
+    let h = sha2::Sha256::digest(format!("{report}/{n}").as_bytes());
+    let v = i64::from_be_bytes([h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]]) & i64::MAX;
+    -v.max(1)
+}
+
+/// The crashes in a report's game logs, as `crash` events' details (the fields the game server
+/// gives one the game sent, and the report's id), oldest first, at most [`MOST_FROM_A_REPORT`]
+/// (the latest).
+pub(crate) fn crashes_in_logs(logs: &[String], report: &str, created_at: i64) -> Vec<(i64, Value)> {
+    let short = |t: &str, max: usize| t.chars().filter(|c| !c.is_control()).take(max).collect::<String>();
+    let parts = |text: &str, by: &str| text.split(by).map(str::trim).filter(|p| !p.is_empty()).take(16).map(|p| short(p, 190)).collect::<Vec<_>>();
+    let mut found: Vec<hooks_config::crash_log::Crash> = logs.iter().flat_map(|l| hooks_config::crash_log::crashes(l)).filter(|c| valid_place(&c.place)).collect();
+    found.sort_by_key(|c| c.at);
+    found.dedup_by(|a, b| a.at == b.at && a.place == b.place && a.kind == b.kind);
+    let skip = found.len().saturating_sub(MOST_FROM_A_REPORT);
+    found
+        .into_iter()
+        .skip(skip)
+        .map(|c| {
+            let release = c.release.clone().unwrap_or_default();
+            (
+                c.at,
+                json!({
+                    "kind": c.kind.as_str(),
+                    "at": c.at,
+                    "code": short(&c.code, 120),
+                    "place": short(&c.place, 120),
+                    "stack": parts(&c.stack, ", "),
+                    "registers": parts(&c.registers, "; "),
+                    "callers": parts(&c.callers, ", "),
+                    "doing": short(&c.doing, 190),
+                    "fatal": c.fatal,
+                    "release": short(&release, 32),
+                    "release_from": if release.is_empty() { "" } else { "log" },
+                    "reported_after_s": (created_at - c.at).max(0),
+                    "report": report,
+                }),
+            )
+        })
+        .collect()
+}
 
 /// A release as `0.5.0` or `0.5.0-dev` (a dev build comes before its release).
 fn release_key(r: &str) -> Option<(u32, u32, u32, bool)> {
@@ -72,6 +138,8 @@ struct Group {
     servers: BTreeSet<String>,
     /// The latest one's details.
     latest: Value,
+    /// How many came from reports players sent, not from their games (CT).
+    from_reports: i64,
     /// (server, player, at) of each, for the reports around them.
     hits: Vec<(String, i64, i64)>,
 }
@@ -126,15 +194,41 @@ impl Coordinator {
                 .bind(since)
                 .fetch_all(&self.pool)
                 .await?;
+        let rows: Vec<(String, Option<i64>, Option<String>, i64, i64, Value)> = rows
+            .into_iter()
+            .filter_map(|(server, player, name, at, count, detail)| Some((server, player, name, at, count, serde_json::from_str::<Value>(&detail).ok()?)))
+            .collect();
+        // When each player's game sent a crash at each place (the crash's own time), for the
+        // ones a report carried as well.
+        let mut sent: HashMap<(String, i64, String), Vec<i64>> = HashMap::new();
+        for (server, player, _, at, _, d) in &rows {
+            if let (Some(p), None) = (player, d.get("report")) {
+                sent.entry((server.clone(), *p, signature(d))).or_default().push(d["at"].as_i64().unwrap_or(*at));
+            }
+        }
+        let mut from_reports_seen: BTreeSet<(String, Option<i64>, String, i64)> = BTreeSet::new();
         let mut groups: BTreeMap<String, Group> = BTreeMap::new();
-        for (server, player, name, at, count, detail) in rows {
-            let Ok(d) = serde_json::from_str::<Value>(&detail) else { continue };
+        for (server, player, name, at, count, d) in rows {
             if !d["place"].as_str().is_some_and(valid_place) {
                 continue;
+            }
+            let from_report = d.get("report").is_some();
+            if from_report {
+                let crash_at = d["at"].as_i64().unwrap_or(at);
+                let game_sent = player.is_some_and(|p| {
+                    sent.get(&(server.clone(), p, signature(&d)))
+                        .is_some_and(|times| times.iter().any(|t| (t - crash_at).abs() <= SAME_CRASH_WITHIN))
+                });
+                if game_sent || !from_reports_seen.insert((server.clone(), player, signature(&d), crash_at)) {
+                    continue;
+                }
             }
             let g = groups.entry(signature(&d)).or_default();
             g.kind = d["kind"].as_str().unwrap_or("exception").to_string();
             g.count += count;
+            if from_report {
+                g.from_reports += count;
+            }
             if d["fatal"] == true {
                 g.fatal += count;
             }
@@ -166,9 +260,72 @@ impl Coordinator {
                 "doing": d["doing"],
                 "release": d["release"],
                 "fatal": d["fatal"],
+                "report": d["report"],
             });
         }
         Ok(groups)
+    }
+
+    /// The crashes in the game logs of report `report` (sent by `player`, `name`, on `server`),
+    /// noted as `crash` events (CT). Answers how many were new.
+    pub(crate) async fn crashes_from_report(&self, server: &str, report: &str, player: i64, name: &str, created_at: i64, logs: Vec<String>) -> sqlx::Result<u64> {
+        let id = report.to_string();
+        let found = tokio::task::spawn_blocking(move || crashes_in_logs(&logs, &id, created_at)).await.unwrap_or_default();
+        let oldest = identity::now() - LONGEST_DAYS * 86_400;
+        let mut added = 0;
+        for (n, (at, detail)) in found.into_iter().enumerate() {
+            if at < oldest {
+                continue;
+            }
+            added += sqlx::query("INSERT OR IGNORE INTO session_events (server_id, id, at, last_at, player, name, kind, detail, count) VALUES (?, ?, ?, ?, ?, ?, 'crash', ?, 1)")
+                .bind(server)
+                .bind(report_crash_id(report, n))
+                .bind(at)
+                .bind(at)
+                .bind(player)
+                .bind(name)
+                .bind(detail.to_string())
+                .execute(&self.pool)
+                .await?
+                .rows_affected();
+        }
+        Ok(added)
+    }
+
+    /// The game logs of a stored report, from disk.
+    async fn report_logs(&self, report: &str) -> Vec<String> {
+        let mut logs = Vec::new();
+        for name in ["bl-tracing.log", "bl-tracing.prev.log"] {
+            if let Ok(Some(Some(text))) = self.report_file(report, name).await {
+                logs.push(String::from_utf8_lossy(&text).into_owned());
+            }
+        }
+        logs
+    }
+
+    /// Once: the crashes in the reports already here (the last 30 days'), for the first start
+    /// with CT.
+    pub async fn crashes_from_stored_reports(&self) -> sqlx::Result<()> {
+        let done: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?").bind(FROM_REPORTS_DONE).fetch_optional(&self.pool).await?;
+        if done.is_some() {
+            return Ok(());
+        }
+        let since = identity::now() - LONGEST_DAYS * 86_400;
+        let reports: Vec<(String, String, i64, String, i64)> = sqlx::query_as(
+            "SELECT id, server_id, player_id, player_name, created_at FROM player_reports WHERE created_at >= ? AND id IN (SELECT report_id FROM player_report_files WHERE name LIKE 'bl-tracing%')",
+        )
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut added = 0;
+        for (id, server, player, name, created_at) in &reports {
+            let logs = self.report_logs(id).await;
+            if !logs.is_empty() {
+                added += self.crashes_from_report(server, id, *player, name, *created_at, logs).await?;
+            }
+        }
+        tracing::info!("crashes from the reports already here: {added} from {} reports", reports.len());
+        self.set_setting(FROM_REPORTS_DONE, "1").await
     }
 
     /// The Crashes page: the groups of the last `days` days, the crash fixes' counts, and the
@@ -221,6 +378,7 @@ impl Coordinator {
                 "kind": g.kind,
                 "count": g.count,
                 "fatal": g.fatal,
+                "from_reports": g.from_reports,
                 "players": g.players.len(),
                 "names": g.names.iter().take(MOST_NAMED).collect::<Vec<_>>(),
                 "first": g.first,
@@ -240,12 +398,23 @@ impl Coordinator {
             .filter(|(sig, _)| !groups.contains_key(*sig))
             .map(|(sig, m)| json!({ "signature": sig, "status": m.status, "fixed_in": m.fixed_in, "note": m.note, "by": m.by, "at": m.at }))
             .collect();
+        // The crash events are a sample: only games with diagnostics on send theirs, and those
+        // send what the crash fixes did on each start (`crash_fixes`).
+        let players_in = |kind: &'static str| {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(DISTINCT server_id || ':' || player) FROM session_events WHERE kind = ? AND at >= ? AND player IS NOT NULL")
+                .bind(kind)
+                .bind(since)
+                .fetch_one(&self.pool)
+        };
+        let signed_in = players_in("signin").await?;
+        let sending = players_in("crash_fixes").await?.min(signed_in);
         Ok(json!({
             "since": since,
             "days": days,
             "crashes": total,
             "fatal": fatal,
             "players": everyone.len(),
+            "diagnostics": { "sending": sending, "signed_in": signed_in },
             "groups": out,
             "fixes": self.fix_counts(since).await?,
             "marked_unseen": unseen,

@@ -10,6 +10,7 @@ argon2 = { workspace = true }
 base64 = "0.22"
 ciborium = "0.2"
 geo = { path = "../geo" }
+hooks-config = { path = "../hooks/hooks-config" }
 hmac = { workspace = true }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
