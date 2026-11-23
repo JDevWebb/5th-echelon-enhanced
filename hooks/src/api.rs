@@ -444,6 +444,7 @@ pub fn match_state(under_way: bool, state: &str, settings: &std::collections::BT
                 // The weapon archetypes' hashes (W1), when they're due.
                 weapons: crate::weapons::for_match_state(under_way),
                 round_result: round_result.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+                xp: crate::round_state::profile_xp().unwrap_or(0),
             }))
             .await?
             .into_inner();

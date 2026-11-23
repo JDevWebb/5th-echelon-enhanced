@@ -56,6 +56,39 @@ fn coop(state: &str) -> bool {
     state.starts_with("CoopMissionState")
 }
 
+/// P1: the character's health system (EPawn.m_pHealthSystem) and its numbers, by their places in
+/// the script's layout (blacklist-re `lead_layout.py`: the pointer at 1244 on EPawn; HealthSystem's
+/// m_initialHealth 40, m_MaxHealth 104, m_currentHealth 108, floats). Pawn.Health is only a copy the
+/// game writes back from here; a cheat that keeps a character alive edits these. Read only when the
+/// object there is a HealthSystem (its class or one made from it).
+const HEALTH_SYSTEM_AT: usize = 1244;
+const HS_INITIAL: usize = 40;
+const HS_MAX: usize = 104;
+const HS_CURRENT: usize = 108;
+
+/// The own character's health system: (current, max, initial), when it's one.
+fn health_system(character: usize) -> Option<(f32, f32, f32)> {
+    let hs = read_u32(character + HEALTH_SYSTEM_AT).filter(|h| *h != 0)? as usize;
+    let names = rs::name_indices(&["HealthSystem"]);
+    let packed = rs::pack(*names.get("HealthSystem")?, 0);
+    if !read_u32(hs + 0x24).is_some_and(|c| rs::made_from(c as usize, packed)) {
+        return None;
+    }
+    let f = |at: usize| read::<f32>(hs + at).filter(|v| v.is_finite());
+    Some((f(HS_CURRENT)?, f(HS_MAX)?, f(HS_INITIAL)?))
+}
+
+/// What P1 makes of a health system's numbers: current over max, or max over the character's
+/// own starting health (no stock character's max is above it).
+fn health_says(current: f32, max: f32, initial: Option<i32>) -> Option<String> {
+    if max > 0.0 && current > max + 1.0 {
+        return Some(format!("health system {current:.0} of max {max:.0}"));
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let start = initial.filter(|i| *i > 0)? as f32;
+    (max > start * 1.01 + 1.0).then(|| format!("health system max {max:.0} over the character's {start:.0}"))
+}
+
 /// How often the own character is read.
 const EVERY: Duration = Duration::from_secs(3);
 /// How often the look-up is tried again while it found nothing (each is a few whole scans).
@@ -125,6 +158,8 @@ pub struct PawnSwitches {
     initial_health: Option<u16>,
     /// Reads in a row with health over it.
     over: u32,
+    /// Reads in a row with the health system over its limits (P1).
+    hs_over: u32,
     looked: Option<Instant>,
     looks: u32,
     read: Option<Instant>,
@@ -140,6 +175,7 @@ impl PawnSwitches {
             places: None,
             initial_health: None,
             over: 0,
+            hs_over: 0,
             looked: None,
             looks: 0,
             read: None,
@@ -193,11 +229,12 @@ impl pawns::Watcher for PawnSwitches {
                     let name = c.control.as_ref().and_then(|k| k.name.clone()).unwrap_or_default();
                     let initial = self.initial_health.and_then(|o| read::<i32>(c.object + usize::from(o)));
                     format!(
-                        "{name}({:?}{}): {:?}, health {:?} of {initial:?}",
+                        "{name}({:?}{}): {:?}, health {:?} of {initial:?}, health system {:?}",
                         c.peer,
                         if self.own(c) { ", own" } else { "" },
                         on(places, c.object, pawns::controller_of(tables, c.object)),
-                        c.health
+                        c.health,
+                        health_system(c.object)
                     )
                 })
                 .collect();
@@ -221,6 +258,16 @@ impl pawns::Watcher for PawnSwitches {
         // seconds (999 written once was 170 again by the next read), so only a cheat that keeps
         // writing it shows here; one that edits the health system needs that object's layout.
         let initial = self.initial_health.and_then(|o| read::<i32>(own.object + usize::from(o))).filter(|i| *i > 0);
+        // P1: the health system's own numbers, on two reads in a row.
+        match health_system(own.object).and_then(|(current, max, _)| health_says(current, max, initial)) {
+            Some(said) => {
+                self.hs_over += 1;
+                if self.hs_over >= 2 {
+                    found.push(said);
+                }
+            }
+            None => self.hs_over = 0,
+        }
         match (own.health, initial) {
             (Some(health), Some(initial)) if health > initial => {
                 self.over += 1;
@@ -282,6 +329,15 @@ fn test_command(places: &[Place], own: &pawns::Sample) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_health_system_over_its_limits_is_said() {
+        assert_eq!(health_says(90.0, 90.0, Some(90)), None, "full health");
+        assert_eq!(health_says(40.0, 90.0, Some(90)), None);
+        assert_eq!(health_says(999.0, 90.0, Some(90)).as_deref(), Some("health system 999 of max 90"));
+        assert_eq!(health_says(170.0, 999.0, Some(170)).as_deref(), Some("health system max 999 over the character's 170"));
+        assert_eq!(health_says(170.0, 999.0, None), None, "no starting health to set it against");
+    }
 
     #[test]
     fn switches_are_placed_by_declaration_order_only_when_the_count_is_the_scripts() {

@@ -226,6 +226,9 @@ message MatchStateRequest {
     // When a round just ended (0.5.6's RP5): its result as the match manager has it, by the
     // script property's name (m_iRoundNumber, m_iRoundWinningTeam, m_iNumHackComplete...).
     map<string, float> round_result = 7;
+    // N2 (0.5.6): the player's XP as their game's profile has it (EEchelonProfileExtension.m_iXP;
+    // the rank shown comes from it); 0 when not read.
+    uint32 xp = 8;
 }
 
 message TeamPlayer {

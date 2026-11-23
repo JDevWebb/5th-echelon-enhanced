@@ -2094,6 +2094,11 @@ impl Misc for MyMisc {
                 crate::session_events::note(crate::session_events::Who::Id(user_id), "round_result", round_result(room, !rooms.is_empty(), &r.round_result));
             }
         }
+        // N2: the XP their game's profile says (the rank shown comes from it), once a day a player,
+        // for comparing with what their stats imply (0.5.6: gathered first).
+        if r.xp > 0 && crate::profile_xp::first_today(user_id, identity::now()) {
+            crate::session_events::note(crate::session_events::Who::Id(user_id), "profile", serde_json::json!({ "xp": r.xp }));
+        }
         // Its player's number in the session, and everyone's in its room back (peer_names.rs).
         crate::peer_names::said(user_id, r.peer);
         let mut rooms = self.storage.find_host_sessions_async(user_id).await.map_err(internal)?;

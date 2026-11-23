@@ -79,6 +79,7 @@ mod config;
 mod fire_rates;
 mod name_witness;
 mod oversized;
+mod profile_xp;
 mod escorts;
 mod fair_play_beats;
 mod far_rooms;

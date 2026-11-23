@@ -1134,6 +1134,7 @@ impl Bot {
                     peer: 0,
                     weapons: Default::default(),
                     round_result: Default::default(),
+                    xp: 0,
                 }),
             )
             .await?;
@@ -1369,6 +1370,7 @@ impl Bot {
                 peer: 0,
                 weapons: Default::default(),
                 round_result: Default::default(),
+                xp: 0,
             }))
             .await?;
         Ok(())

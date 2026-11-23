@@ -77,6 +77,7 @@ const KINDS: &[&str] = &[
     "address_change",
     "oversized",
     "round_result",
+    "profile",
 ];
 
 /// How long after a relay drop a player leaving their match counts as dropping out, and
@@ -1003,6 +1004,7 @@ fn describe(e: &Event) -> String {
                 _ => "signed in (a neighbouring address)",
             }
         ),
+        "profile" => format!("Their game's profile: {} XP", e.detail["xp"].as_u64().unwrap_or(0)),
         "round_result" => format!(
             "Round {} ended{}{}",
             e.detail["round"].as_i64().map_or_else(|| "?".to_string(), |r| r.to_string()),

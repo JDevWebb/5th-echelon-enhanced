@@ -518,6 +518,55 @@ pub(crate) fn made_from(class: usize, packed: u32) -> bool {
 }
 
 /// A class and those it's made from (its supers), nearest first.
+/// The profile's XP (N2): EEchelonProfileExtension.m_iXP, by name or at its place in the
+/// script's layout (64). Found once a minute at most (a scan of the object table).
+pub(crate) fn profile_xp() -> Option<u32> {
+    static FOUND: std::sync::Mutex<Option<(usize, Instant)>> = std::sync::Mutex::new(None);
+    const XP_AT: usize = 64;
+    let mut found = FOUND.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let fresh = found.is_some_and(|(o, at)| alive(o) && at.elapsed() < Duration::from_secs(600));
+    if !fresh && found.is_none_or(|(_, at)| at.elapsed() >= Duration::from_secs(60)) {
+        let names = name_indices(&["EEchelonProfileExtension", "m_iXP", "Class"]);
+        let Some(index) = names.get("EEchelonProfileExtension") else {
+            info!("Profile: EEchelonProfileExtension isn't in the name table");
+            *found = None;
+            return None;
+        };
+        let packed = pack(*index, 0);
+        // The game makes several (one a player slot; the gamebox: five); the signed-in player's is
+        // the one with a profile in it: the most XP (the others read 0). Not the class's default
+        // object (Default__EEchelonProfileExtension).
+        let mut object: Option<(usize, i32)> = None;
+        each_object(|o| {
+            if read_u32(o + 0x24).is_some_and(|c| made_from(c as usize, packed))
+                && alive(o)
+                && !read_u32(o + 0x20).and_then(name_text).is_some_and(|n| n.starts_with("Default__"))
+            {
+                let xp = read::<i32>(o + XP_AT).unwrap_or(0);
+                if xp > 0 && object.is_none_or(|(_, best)| xp > best) {
+                    object = Some((o, xp));
+                }
+            }
+        });
+        let object = object.map(|(o, _)| o);
+        *found = object.map(|o| (o, Instant::now()));
+        info!("Profile: {}", match object {
+            Some(o) => format!(
+                "the profile extension {:?} found, XP {:?} at its place",
+                read_u32(o + 0x20).and_then(name_text),
+                read::<i32>(o + XP_AT)
+            ),
+            None => String::from("no profile extension found"),
+        });
+    }
+    let (object, _) = (*found)?;
+    let names = name_indices(&["EEchelonProfileExtension", "m_iXP", "Class"]);
+    let at = class_named(&names, "EEchelonProfileExtension")
+        .and_then(|c| offset_in(&names, "m_iXP", c))
+        .map_or(XP_AT, usize::from);
+    read::<i32>(object + at).and_then(|xp| u32::try_from(xp).ok()).filter(|xp| *xp < 100_000_000)
+}
+
 const WEAPON_ARCHETYPE_NAME_AT: usize = 1856;
 const WEAPON_ARCHETYPE_INFO_AT: usize = 1860;
 
