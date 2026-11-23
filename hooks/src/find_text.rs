@@ -34,7 +34,7 @@ const MEM_COMMIT: u32 = 0x1000;
 const MEM_IMAGE: u32 = 0x0100_0000;
 const PAGE_GUARD: u32 = 0x100;
 const PAGE_NOACCESS: u32 = 0x01;
-const MOST_HITS: usize = 24;
+const MOST_HITS: usize = 64;
 const MOST_POINTERS: usize = 6;
 
 /// The committed, readable regions: (base, size, kind).
@@ -90,14 +90,18 @@ pub fn find(text: &str) {
     let ascii: Vec<u8> = text.as_bytes().to_vec();
     let wide: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let regions = regions();
-    let mut hits: Vec<(usize, &'static str)> = Vec::new();
+    // Allocated once, so no stale copy of a list is left for the search to find.
+    let mut hits: Vec<(usize, &'static str)> = Vec::with_capacity(MOST_HITS);
     each_chunk(&regions, |base, bytes| {
         for (needle, how) in [(&ascii, "ascii"), (&wide, "utf16")] {
             let mut from = 0;
             while hits.len() < MOST_HITS {
                 let Some(i) = bytes[from..].windows(needle.len()).position(|w| w == needle.as_slice()) else { break };
                 let at = base + from + i;
-                if !hits.iter().any(|(h, _)| *h == at) {
+                // Not the logs' own text (this tool's lines, the add-on's).
+                let around = &bytes[(from + i).saturating_sub(48)..(from + i)];
+                let logged = around.windows(4).any(|w| w == b"test" || w == b"Find" || w == b"hook" || w == b"Wit");
+                if !logged && !hits.iter().any(|(h, _)| *h == at) {
                     hits.push((at, how));
                 }
                 from += i + 1;
@@ -111,14 +115,28 @@ pub fn find(text: &str) {
         let class = read_u32(o + 0x24).and_then(|c| read_u32(c as usize + 0x20)).and_then(crate::round_state::name_text).unwrap_or_default();
         objects.insert(o, class);
     });
-    let targets: Vec<u32> = hits.iter().map(|(h, _)| *h as u32).collect();
+    // A copy's owner may point at its record's start, a little before the text.
+    let mut targets: Vec<u32> = Vec::with_capacity(MOST_HITS * 5);
+    for (h, _) in &hits {
+        for back in [0u32, 4, 8, 12, 16] {
+            targets.push(*h as u32 - back);
+        }
+    }
+    // This tool's own lists hold every target: not owners.
+    let own = [
+        (hits.as_ptr() as usize, hits.capacity() * std::mem::size_of::<(usize, &str)>()),
+        (targets.as_ptr() as usize, targets.capacity() * 4),
+    ];
     let mut pointers: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
     each_chunk(&regions, |base, bytes| {
         for (i, w) in bytes.chunks_exact(4).enumerate() {
             let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+            let at = base + i * 4;
+            if own.iter().any(|(b, n)| (*b..b + n).contains(&at)) {
+                continue;
+            }
             if targets.contains(&v) {
                 let list = pointers.entry(v).or_default();
-                let at = base + i * 4;
                 if list.len() < MOST_POINTERS && !list.contains(&at) {
                     list.push(at);
                 }
@@ -128,17 +146,28 @@ pub fn find(text: &str) {
     info!("Find text: test: {text:?}: {} copies", hits.len());
     for (at, how) in &hits {
         let before: Vec<String> = (1..=4).rev().filter_map(|k| read_u32(at - k * 4)).map(|w| format!("{w:x}")).collect();
-        let by: Vec<String> = pointers
-            .get(&(*at as u32))
+        let mut owners: Vec<(u32, usize)> = Vec::new();
+        for back in [0u32, 4, 8, 12, 16] {
+            for p in pointers.get(&(*at as u32 - back)).into_iter().flatten() {
+                owners.push((back, *p));
+            }
+        }
+        let by: Vec<String> = Some(&owners)
             .map(|list| {
                 list.iter()
-                    .map(|p| match objects.range(..=*p).next_back().filter(|(o, _)| p - **o < 0x1000) {
-                        Some((o, class)) => format!("{p:#x} = {class}+{}", p - o),
-                        None => format!("{p:#x} ({})", kind_of(&regions, *p)),
+                    .map(|(back, p)| (back, p))
+                    .map(|(back, p)| match objects.range(..=*p).next_back().filter(|(o, _)| p - **o < 0x1000) {
+                        Some((o, class)) => format!("-{back}: {p:#x} = {class}+{}", p - o),
+                        None => format!("-{back}: {p:#x} ({})", kind_of(&regions, *p)),
                     })
                     .collect()
             })
             .unwrap_or_default();
         info!("Find text: test: {at:#x} {how} in {}; before {}; pointed at by {by:?}", kind_of(&regions, *at), before.join(" "));
+        // Each owner's words around its pointer (-32..+32), for telling which structure it is.
+        for (_, p) in owners.iter().take(3) {
+            let words: Vec<String> = (0..16).filter_map(|k| read_u32(p - 32 + k * 4)).map(|w| format!("{w:x}")).collect();
+            info!("Find text: test:   {p:#x}: {}", words.join(" "));
+        }
     }
 }
