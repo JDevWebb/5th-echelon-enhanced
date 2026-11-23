@@ -50,6 +50,9 @@ pub fn note_pings<'a>(user_id: u32, pings: impl Iterator<Item = (&'a str, u32)>)
         .take(MOST_RELAYS)
         .map(|(relay, ms)| (relay.to_string(), ms))
         .collect();
+    if let Some(detail) = pings_event(&list).filter(|_| first_today(user_id, identity::now())) {
+        crate::session_events::note(crate::session_events::Who::Id(user_id), "relay_pings", detail);
+    }
     let mut kept = PINGS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let map = kept.get_or_insert_with(HashMap::new);
     if list.is_empty() {
@@ -57,6 +60,36 @@ pub fn note_pings<'a>(user_id: u32, pings: impl Iterator<Item = (&'a str, u32)>)
     } else {
         map.insert(user_id, list);
     }
+}
+
+/// The day each account's relay pings were last noted as a session event.
+static NOTED_ON: Mutex<Option<HashMap<u32, i64>>> = Mutex::new(None);
+
+/// Whether `user_id`'s pings haven't been noted yet on the day of `now` (Unix seconds, UTC),
+/// and from now on they have.
+fn first_today(user_id: u32, now: i64) -> bool {
+    let day = now.div_euclid(86_400);
+    let mut noted = NOTED_ON.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let map = noted.get_or_insert_with(HashMap::new);
+    if map.len() > 200_000 {
+        map.retain(|_, d| *d == day);
+    }
+    map.insert(user_id, day) != Some(day)
+}
+
+/// A game's round trips to the relays as a `relay_pings` session event (0.5.6's RL), once a day
+/// an account: every relay ("id:ms", nearest first, 16 at most), the nearest and the next. Join
+/// failures and drops can then be read against how far a player is from each relay.
+fn pings_event(list: &[(String, u32)]) -> Option<serde_json::Value> {
+    let mut sorted: Vec<&(String, u32)> = list.iter().collect();
+    sorted.sort_by_key(|(_, ms)| *ms);
+    let (best, best_ms) = sorted.first()?;
+    Some(serde_json::json!({
+        "pings": sorted.iter().take(16).map(|(r, ms)| format!("{r}:{ms}")).collect::<Vec<_>>(),
+        "best": best,
+        "best_ms": best_ms,
+        "second_ms": sorted.get(1).map(|(_, ms)| *ms),
+    }))
 }
 
 /// The round trip between two players' games through the relay they'd both reach soonest: the
@@ -121,6 +154,22 @@ fn order_with<T>(rooms: Vec<(T, Option<u32>)>, far_ms: u32, strict: bool) -> (Ve
 
 #[cfg(test)]
 mod tests {
+    /// RL: a game's relay pings are an event once a day an account, nearest first.
+    #[test]
+    fn relay_pings_are_noted_once_a_day() {
+        use super::first_today;
+        use super::pings_event;
+        let day = 20_000 * 86_400;
+        assert!(first_today(4242, day + 10));
+        assert!(!first_today(4242, day + 80_000), "the same day");
+        assert!(first_today(4243, day + 10), "another account");
+        assert!(first_today(4242, day + 86_400), "the next day");
+        let e = pings_event(&[("de1".into(), 180), ("au1".into(), 21), ("sg1".into(), 95)]).unwrap();
+        assert_eq!(e["pings"], serde_json::json!(["au1:21", "sg1:95", "de1:180"]));
+        assert_eq!((e["best"].as_str(), e["best_ms"].as_u64(), e["second_ms"].as_u64()), (Some("au1"), Some(21), Some(95)));
+        assert!(pings_event(&[]).is_none(), "none: no event");
+    }
+
     /// Two players' estimate through the relays is the least sum over a relay both reached;
     /// none in common, or a game that didn't say, is no estimate; nonsense is left out.
     #[test]

@@ -1518,6 +1518,33 @@ async fn an_address_adds_one_ping_per_server_in_a_while() {
     assert_eq!((status, v["recorded"].as_u64()), (StatusCode::OK, Some(0)), "a second report counted again: {v}");
 }
 
+/// RL: a launcher's relay pings are kept as one batch with the picked one marked; an unknown
+/// relay and an impossible ping are dropped, and a batch id that isn't one is left out.
+#[tokio::test]
+async fn a_launchers_relay_pings_are_one_batch_with_the_pick() {
+    let t = start("relay-pings").await;
+    t.join("relay-a").await;
+    t.join("relay-b").await;
+    let report = json!({ "batch": "00ff00ff00ff00ff", "pings": [
+        { "server": "relay-a", "ms": 21, "picked": true },
+        { "server": "relay-b", "ms": 180 },
+        { "server": "nowhere", "ms": 30 },
+        { "server": "relay-b", "ms": 0 },
+    ] });
+    let (status, v) = t.call("POST", "/v1/pings", None, Some(report)).await;
+    assert_eq!((status, v["recorded"].as_u64()), (StatusCode::OK, Some(2)), "{v}");
+    let rows: Vec<(String, i64, bool, String)> = sqlx::query_as("SELECT server_id, ms, picked, batch FROM player_pings ORDER BY ms").fetch_all(&t.c.pool).await.unwrap();
+    assert_eq!(
+        rows,
+        vec![("relay-a".into(), 21, true, "00ff00ff00ff00ff".into()), ("relay-b".into(), 180, false, "00ff00ff00ff00ff".into())]
+    );
+    t.join("relay-c").await;
+    let odd = json!({ "batch": "not a batch; DROP", "pings": [{ "server": "relay-c", "ms": 50 }] });
+    assert_eq!(t.call("POST", "/v1/pings", None, Some(odd)).await.0, StatusCode::OK);
+    let batch: String = sqlx::query_scalar("SELECT batch FROM player_pings WHERE server_id = 'relay-c'").fetch_one(&t.c.pool).await.unwrap();
+    assert_eq!(batch, "");
+}
+
 /// A players report entry.
 fn player(id: i64, name: &str, identity: Option<&str>) -> Value {
     json!({ "id": id, "name": name, "identity": identity, "created_at": identity::now() - 86_400, "last_seen": identity::now(),

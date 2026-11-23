@@ -1994,7 +1994,7 @@ async fn pings(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net:
                 .collect()
         })
         .unwrap_or_default();
-    match c.record_player_pings(ip, &list).await {
+    match c.record_player_pings(ip, &list, body["batch"].as_str().unwrap_or_default()).await {
         Ok(n) => ok(json!({ "recorded": n })),
         Err(e) => internal(e),
     }

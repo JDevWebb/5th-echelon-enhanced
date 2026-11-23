@@ -3,7 +3,8 @@
 # connection failures (Storm's CONNECTION_FAILED 0xb08a1a05, and the add-on's "never got in"), by
 # whether the joiner and the host were relayed (each one's last `nat` event before the join), the
 # direct hosts most joins failed into, the moves to the relay (J2, JC1, JC4) and the peers games
-# couldn't reach (JC4). Compare a week before and after a release.
+# couldn't reach (JC4), and players' address changes during a sign-in (IP) with the joins and
+# drops around them. Compare a week before and after a release.
 #
 #   scripts/join-stats.sh <ssh host> [days, default 7] [database, default /var/lib/5th-echelon/5th-echelon.db]
 #
@@ -64,6 +65,18 @@ select case when json_extract(detail,'\$.found') then 'found' else 'not found' e
   coalesce(json_extract(detail,'\$.together'),0) as together, count(*) as reports, count(distinct name) as reporters,
   count(distinct json_extract(detail,'\$.peer')) as peers
 from session_events where kind='unreachable' and at >= strftime('%s','now','-$days days') group by 1, 2;
+.print
+.print Address changes during a sign-in (0.5.6's IP), by network and outcome:
+select json_extract(detail,'\$.net') as net, json_extract(detail,'\$.outcome') as outcome, sum(count) as changes, count(distinct user_id) as players
+from session_events where kind='address_change' and at >= strftime('%s','now','-$days days') group by 1, 2 order by 3 desc;
+.print
+.print Failed joins, relay drops and removals within a minute of an address change:
+select e.kind || coalesce(' ' || json_extract(e.detail,'\$.how'),'') as what, count(*) as events, count(distinct e.user_id) as players
+from session_events e
+where e.at >= strftime('%s','now','-$days days')
+  and (e.kind in ('join_failed','relay_drop') or (e.kind='leave' and json_extract(e.detail,'\$.how') in ('removed','timed_out')))
+  and exists (select 1 from session_events a where a.kind='address_change' and a.user_id=e.user_id and e.at between a.at-60 and a.last_at+60)
+group by 1 order by 2 desc;
 SQL
 )
 echo "# $host, the last $days days"

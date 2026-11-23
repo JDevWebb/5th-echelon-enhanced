@@ -434,6 +434,10 @@ pub async fn server_directory(coordinator: &str) -> Result<Browsed, String> {
         let answered = ping.is_some();
         if let Some(relay) = pick.await.ok().flatten().filter(|p| p.ms > 0) {
             *ping = Some(relay.ms);
+            // Every relay's ping, for how well the relays cover where players are (0.5.6's RL).
+            if note.is_none() {
+                report_relay_pings(coordinator, &relay);
+            }
             // The server doesn't answer from here, its relay does: through the relay (SR), for
             // this run of the launcher.
             crate::sign_in_route::server_answered(&server.host, answered);
@@ -537,6 +541,48 @@ fn report_pings(coordinator: &str, servers: &[setup::directory::Listing], pings:
     });
 }
 
+/// When this launcher last sent its relays' pings: once a start, and at most once an hour for a
+/// launcher left open.
+static RELAY_PINGS_SENT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+const RELAY_PINGS_EVERY: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// The pings to every relay that answered, as `/v1/pings` takes them: the relay's id and ms,
+/// the one picked marked, all under one batch id (random) so a start's pings read together.
+fn relay_pings_body(relay: &crate::relays::Picked, batch: &str) -> Option<serde_json::Value> {
+    let list: Vec<serde_json::Value> = relay
+        .pings
+        .iter()
+        .filter_map(|p| {
+            let (id, ms) = p.rsplit_once(':')?;
+            let ms: u32 = ms.parse().ok()?;
+            Some(serde_json::json!({ "server": id, "ms": ms, "picked": id == relay.id }))
+        })
+        .collect();
+    (!list.is_empty()).then(|| serde_json::json!({ "pings": list, "batch": batch }))
+}
+
+fn report_relay_pings(coordinator: &str, relay: &crate::relays::Picked) {
+    {
+        let mut sent = RELAY_PINGS_SENT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if sent.is_some_and(|at| at.elapsed() < RELAY_PINGS_EVERY) {
+            return;
+        }
+        *sent = Some(std::time::Instant::now());
+    }
+    let batch = format!("{:016x}", rand::random::<u64>());
+    let Some(body) = relay_pings_body(relay, &batch) else { return };
+    let url = format!("{}/v1/pings", coordinator.trim_end_matches('/'));
+    tokio::spawn(async move {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
+            .build();
+        if let Ok(client) = client {
+            let _ = client.post(url).header("content-type", "application/json").body(body.to_string()).send().await;
+        }
+    });
+}
+
 /// The round trip to a server: its NAT helper's answer (the path game
 /// traffic takes), or else the time to open its port 80. Only public
 /// addresses, and the NAT helper only on its usual port: a directory can't
@@ -572,6 +618,27 @@ async fn ping(host: String, nat_port: Option<u16>) -> Ping {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RL: every relay that answered goes in one batch, the one picked marked.
+    #[test]
+    fn the_relay_report_has_every_relay_that_answered_with_one_picked() {
+        let relay = crate::relays::Picked {
+            id: "tqzfwr7a4dhc67lp".into(),
+            host: "de1.example".into(),
+            port: 13000,
+            name: "de1".into(),
+            ms: 21,
+            ranges: vec![],
+            pings: vec!["tqzfwr7a4dhc67lp:21".into(), "qzydgaemomioqsyb:290".into(), "bad".into()],
+        };
+        let body = relay_pings_body(&relay, "0123456789abcdef").unwrap();
+        assert_eq!(body["batch"], "0123456789abcdef");
+        let list = body["pings"].as_array().unwrap();
+        assert_eq!(list.len(), 2, "{body}");
+        assert_eq!(list[0], serde_json::json!({ "server": "tqzfwr7a4dhc67lp", "ms": 21, "picked": true }));
+        assert_eq!(list[1]["picked"], false);
+        assert!(relay_pings_body(&crate::relays::Picked { pings: vec![], ..relay }, "x").is_none(), "none answered: nothing sent");
+    }
 
     /// The community network typed by the name players know (its matchmaking server's) or its
     /// coordinator's old ones is its coordinator: that's what answers as a network.

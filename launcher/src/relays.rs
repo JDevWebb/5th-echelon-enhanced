@@ -72,6 +72,8 @@ fn saved(dir: &std::path::Path, server: &str, now: i64) -> Option<Vec<Helper>> {
 /// The relay picked: where the game reaches its helper, and the port.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Picked {
+    /// The relay's id (the coordinator's for it too).
+    pub id: String,
     pub host: String,
     pub port: u16,
     pub name: String,
@@ -134,6 +136,7 @@ pub async fn pick(server: String) -> Option<Picked> {
         // Always the nearest: players don't choose a relay (a far one would only make their own
         // connection worse).
         nearest(&relays, &pings).map(|i| Picked {
+            id: relays[i].id.clone(),
             host: setup::directory::helper_host(&relays[i]),
             port: relays[i].port,
             name: if relays[i].name.is_empty() { relays[i].id.clone() } else { relays[i].name.clone() },

@@ -135,6 +135,17 @@ pub fn set_ticket_accepted(check: impl Fn(u32, u64) -> bool + Send + Sync + 'sta
     let _ = TICKET_ACCEPTED.set(Box::new(check));
 }
 
+/// Told when a ticket is used from another address than the one it was issued to (0.5.6's
+/// IP: a VPN moving a player's address mid-session): the user, the address it was issued to,
+/// the one it's used from, and what came of it (`near`, `proven` or `refused`). Set once by the
+/// server.
+static TICKET_ADDRESS_MOVED: std::sync::OnceLock<fn(u32, std::net::IpAddr, std::net::IpAddr, &'static str)> = std::sync::OnceLock::new();
+
+/// Sets [`TICKET_ADDRESS_MOVED`].
+pub fn set_ticket_address_moved(tell: fn(u32, std::net::IpAddr, std::net::IpAddr, &'static str)) {
+    let _ = TICKET_ADDRESS_MOVED.set(tell);
+}
+
 /// Sets [`TICKET_ADDRESS_PROVEN`].
 pub fn set_ticket_address_proven(check: fn(u32, std::net::IpAddr) -> bool) {
     let _ = TICKET_ADDRESS_PROVEN.set(check);
@@ -1209,7 +1220,19 @@ where
                 // on the strength of their tag.
                 if !ti.is_for(client.ip()) {
                     let proven = TICKET_ADDRESS_PROVEN.get().is_some_and(|check| check(ti.principle_id, client.ip()));
-                    if ti.is_near(client.ip()) || proven {
+                    let near = ti.is_near(client.ip());
+                    if let Some(tell) = TICKET_ADDRESS_MOVED.get() {
+                        let issued = std::net::IpAddr::from(std::net::Ipv6Addr::from(ti.issued_to)).to_canonical();
+                        let outcome = if near {
+                            "near"
+                        } else if proven {
+                            "proven"
+                        } else {
+                            "refused"
+                        };
+                        tell(ti.principle_id, issued, client.ip(), outcome);
+                    }
+                    if near || proven {
                         info!(
                             logger,
                             "Ticket of user {} used from {client}, {} the address it was issued to; signed in",

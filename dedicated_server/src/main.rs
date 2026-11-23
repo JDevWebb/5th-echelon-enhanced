@@ -68,6 +68,7 @@ fn login_or_service_required<T>(ci: &ClientInfo<T>) -> quazal::rmc::Result<u32> 
     ci.user_id.ok_or(quazal::rmc::Error::AccessDenied)
 }
 
+mod address_change;
 mod api;
 mod challenge;
 mod chat;
@@ -595,6 +596,7 @@ fn main() -> color_eyre::Result<()> {
     // A game's ticket is good from an address its player signed in to the API from over TLS
     // (a VPN's other exit), as well as its own and its neighbours (quazal's prudp.rs).
     quazal::prudp::set_ticket_address_proven(clients::address_proven);
+    quazal::prudp::set_ticket_address_moved(address_change::ticket_moved);
 
     let storage = Arc::new(Storage::init(logger.clone())?);
     // Global matchmaking's move: other servers' accounts into this one's database, then done.

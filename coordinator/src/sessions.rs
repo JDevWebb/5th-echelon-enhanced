@@ -73,6 +73,8 @@ const KINDS: &[&str] = &[
     "tunnel",
     "queue",
     "unreachable",
+    "relay_pings",
+    "address_change",
 ];
 
 /// How long after a relay drop a player leaving their match counts as dropping out, and
@@ -967,7 +969,33 @@ fn describe(e: &Event) -> String {
             None => "Invited someone".into(),
         },
         "invite_delivered" => format!("Got {}'s invitation", e.detail["from_name"].as_str().unwrap_or("an")),
+        "address_change" => format!(
+            "Their address changed ({} to {}{}) at {}: {}",
+            e.str("from"),
+            e.str("to"),
+            match e.str("net") {
+                "cloudflare_warp" => ", Cloudflare WARP",
+                "same_16" => ", the same provider's range",
+                _ => "",
+            },
+            match e.str("where") {
+                "secure" => "the game's sign-in ticket",
+                other => other,
+            },
+            match e.str("outcome") {
+                "refused" => "not signed in",
+                "proven" => "signed in (their launcher had signed in from there)",
+                _ => "signed in (a neighbouring address)",
+            }
+        ),
+        "relay_pings" => format!(
+            "Pings to the relays: nearest {} at {} ms{}",
+            e.detail["best"].as_str().unwrap_or("?"),
+            e.detail["best_ms"].as_u64().unwrap_or(0),
+            e.detail["second_ms"].as_u64().map_or_else(String::new, |ms| format!(", the next at {ms} ms"))
+        ),
         "unreachable" => match e.detail["peer"].as_str() {
+            Some(peer) if e.detail["house"] == true => format!("Their game couldn't reach {peer} on their home network; they meet at the relay from now on"),
             Some(peer) if e.detail["found"] == true => format!(
                 "Their game couldn't reach {peer} ({}){}",
                 if e.detail["relayed"] == true { "relayed" } else { "direct" },
@@ -1380,6 +1408,8 @@ fn mark_level(e: &Event) -> Option<&'static str> {
         },
         "relay_drop" if e.detail["player_quiet"] == true => Some("warn"),
         "login_stalled" => Some("warn"),
+        "address_change" if e.str("outcome") == "refused" => Some("warn"),
+        "address_change" => Some("info"),
         "crash" if e.detail["fatal"] == true => Some("bad"),
         "crash" => Some("warn"),
         "crash_fixes" if e.detail["missing"].as_array().is_some_and(|m| !m.is_empty()) => Some("warn"),

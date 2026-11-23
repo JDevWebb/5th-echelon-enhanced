@@ -73,6 +73,11 @@
 //! - `fair_play`: `check` (`code`, `speed`; 0.5.2: `self`, the add-on's own code changed, and
 //!   `heartbeat`, its checks stopped reporting in a match), `detail`, `value`, `wine`.
 //! - `tunnel`: `open` (0.5.2's T: the player's game came through the HTTPS tunnel, or it closed).
+//!   A game server's close has the tunnel's `secs`, bytes `in` and `out`, and `why` (0.5.6's TL).
+//! - `address_change`: the player's address changed during a sign-in (0.5.6's IP; see
+//!   [`crate::address_change`]): `where`, `outcome`, `from` and `to` masked, `net`.
+//! - `relay_pings`: at a game's sign-in, once a day, its round trips to every relay (0.5.6's RL;
+//!   [`crate::far_rooms`]): `pings` ("id:ms", nearest first), `best`, `best_ms`, `second_ms`.
 //! - `nat`: `relayed` (the player's game traffic goes through the server's relay), `why`
 //!   (0.5.2's J5: `direct`, `asked`, `symmetric`, `no_mapping`, `double_nat`, `failed_joins`);
 //!   said again when a direct player is moved to the relay.

@@ -520,20 +520,27 @@ impl Coordinator {
 
     /// Records a launcher's pings to the servers, from `ip` (located, then
     /// forgotten).
-    pub(crate) async fn record_player_pings(&self, ip: std::net::IpAddr, pings: &[Value]) -> sqlx::Result<usize> {
+    ///
+    /// A launcher's pings to a network's relays (0.5.6's RL) come as one `batch` (its random
+    /// id), the relay it picked marked `picked`, so one start's pings read together: its best
+    /// relay, its second, and how far apart.
+    pub(crate) async fn record_player_pings(&self, ip: std::net::IpAddr, pings: &[Value], batch: &str) -> sqlx::Result<usize> {
         let place = self.geo.get().and_then(|g| g.lookup(ip)).unwrap_or_default();
         let now = identity::now();
+        let batch = if batch.len() <= 32 && batch.bytes().all(|b| b.is_ascii_hexdigit()) { batch } else { "" };
         let mut n = 0;
         for p in pings.iter().take(32) {
             let (Some(server), Some(ms)) = (p["server"].as_str(), p["ms"].as_u64()) else { continue };
             if !(1..=5000).contains(&ms) {
                 continue;
             }
-            let done = sqlx::query("INSERT INTO player_pings (server_id, at, country, city, ms) SELECT id, ?, ?, ?, ? FROM servers WHERE id = ?")
+            let done = sqlx::query("INSERT INTO player_pings (server_id, at, country, city, ms, picked, batch) SELECT id, ?, ?, ?, ?, ?, ? FROM servers WHERE id = ?")
                 .bind(now)
                 .bind(&place.country)
                 .bind(&place.city)
                 .bind(i64::try_from(ms).unwrap_or(0))
+                .bind(p["picked"] == true)
+                .bind(batch)
                 .bind(server)
                 .execute(&self.pool)
                 .await?;
