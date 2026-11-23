@@ -380,13 +380,14 @@ pub fn report_player(id: &str, reason: &str, text: &str, chat_lines: Vec<String>
     }))
 }
 
-/// Tells the server this game showed player number `peer` as `shown`, which isn't the name it
-/// has for them (match_chat.rs; 0.5.6's N1). Failures are only logged.
-pub fn name_seen(peer: u32, shown: &str) {
+/// Tells the server this game showed player number `peer` (or account `account`, when known) as
+/// `shown`, which isn't (or may not be) the name it has for them (match_chat.rs, net_names.rs;
+/// 0.5.6's N1). Failures are only logged.
+pub fn name_seen(peer: u32, shown: &str, account: u32) {
     let result = run(signed_in(|| async {
         let mut client = connect!(MiscClient);
         client
-            .name_seen(tonic::Request::new(server_api::misc::NameSeenRequest { peer, shown: shown.to_string() }))
+            .name_seen(tonic::Request::new(server_api::misc::NameSeenRequest { peer, shown: shown.to_string(), account }))
             .await?;
         Ok(())
     }));

@@ -112,18 +112,36 @@ pub fn own() -> Option<Member> {
 }
 
 /// The match's other players' names as their descriptions say, against the server's for their
-/// numbers: what a read found (`peer` → the name shown), and what's been said already.
+/// numbers: what a read found (`peer` → the name shown), when each was first seen without the
+/// server's name, and what's been said already.
 #[derive(Default)]
 struct Witness {
     last: HashMap<u8, String>,
+    unnamed_since: HashMap<u8, std::time::Instant>,
     said: Vec<(u8, String)>,
 }
 static WITNESS: Mutex<Option<Witness>> = Mutex::new(None);
 
+/// How long a player can go without the server's name for their number before the server is
+/// asked by their account instead (a game that never says its own number: the Surface's DX9,
+/// 24 Nov). Most get theirs within a minute of spawning, so this keeps the asks rare.
+const UNNAMED_FOR: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// One to tell the server: number, account, the name shown, and whether the server's name for the
+/// number was known (and differed) or the server is to check it by the account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Seen {
+    peer: u8,
+    account: u32,
+    shown: String,
+    checked: bool,
+}
+
 /// What one read comes to: the players whose description has another name than the server's for
-/// their number on this read and the one before (and not said yet), as (number, name shown).
-fn compare(w: &mut Witness, members: &[Member], own: Option<u64>, real: impl Fn(u8) -> Option<String>) -> Vec<(u8, String)> {
-    let mut now = HashMap::new();
+/// their number on this read and the one before (and not said yet); and the ones without the
+/// server's name for `UNNAMED_FOR`, for the server to check by their account (once a name).
+fn compare(w: &mut Witness, members: &[Member], own: Option<u64>, real: impl Fn(u8) -> Option<String>, now: std::time::Instant) -> Vec<Seen> {
+    let mut last = HashMap::new();
     let mut out = Vec::new();
     for m in members {
         // Storm's peer id is the session's index; the server numbers from 1 (`peer_names`).
@@ -132,20 +150,39 @@ fn compare(w: &mut Witness, members: &[Member], own: Option<u64>, real: impl Fn(
             continue;
         }
         let shown: String = m.name.chars().filter(|c| !c.is_control()).take(40).collect();
-        let Some(real) = real(peer) else { continue };
-        if shown.trim().is_empty() || shown.trim().eq_ignore_ascii_case(real.trim()) {
+        if shown.trim().is_empty() {
             continue;
         }
-        if w.last.get(&peer) == Some(&shown) {
-            let item = (peer, shown.to_lowercase());
-            if !w.said.contains(&item) && w.said.len() < 64 {
-                w.said.push(item);
-                out.push((peer, shown.clone()));
+        let account = u32::try_from(m.id).unwrap_or(0);
+        let again = w.last.get(&peer) == Some(&shown);
+        last.insert(peer, shown.clone());
+        let checked = match real(peer) {
+            Some(real) if shown.trim().eq_ignore_ascii_case(real.trim()) => {
+                w.unnamed_since.remove(&peer);
+                continue;
             }
+            Some(_) => {
+                w.unnamed_since.remove(&peer);
+                true
+            }
+            None => {
+                let since = *w.unnamed_since.entry(peer).or_insert(now);
+                if account == 0 || now.duration_since(since) < UNNAMED_FOR {
+                    continue;
+                }
+                false
+            }
+        };
+        if !again {
+            continue;
         }
-        now.insert(peer, shown);
+        let item = (peer, shown.to_lowercase());
+        if !w.said.contains(&item) && w.said.len() < 64 {
+            w.said.push(item);
+            out.push(Seen { peer, account, shown, checked });
+        }
     }
-    w.last = now;
+    w.last = last;
     out
 }
 
@@ -160,10 +197,16 @@ pub fn tick(in_match: bool) {
     }
     let w = guard.get_or_insert_with(Witness::default);
     let own = own().map(|m| m.id);
-    for (peer, shown) in compare(w, &members(), own, crate::pawns::peer_name) {
-        let real = crate::pawns::peer_name(peer).unwrap_or_default();
-        tracing::warn!("Net names: number {peer} ({real} to the server) is shown to everyone as {shown:?}");
-        let _ = std::thread::Builder::new().name("fe-name-seen".into()).spawn(move || crate::api::name_seen(u32::from(peer), &shown));
+    for seen in compare(w, &members(), own, crate::pawns::peer_name, std::time::Instant::now()) {
+        if seen.checked {
+            let real = crate::pawns::peer_name(seen.peer).unwrap_or_default();
+            tracing::warn!("Net names: number {} ({real} to the server) is shown to everyone as {:?}", seen.peer, seen.shown);
+        } else {
+            tracing::info!("Net names: number {} (account {}) has no name from the server yet: asking it about {:?}", seen.peer, seen.account, seen.shown);
+        }
+        let _ = std::thread::Builder::new()
+            .name("fe-name-seen".into())
+            .spawn(move || crate::api::name_seen(u32::from(seen.peer), &seen.shown, seen.account));
     }
 }
 
@@ -225,17 +268,24 @@ mod tests {
             2 => Some("gbox2".to_string()),
             _ => None,
         };
+        let t = std::time::Instant::now();
         let mut w = Witness::default();
         let clean = [m(0, 1003, "gbox1"), m(1, 1004, "GBox2 ")];
-        assert!(compare(&mut w, &clean, Some(1003), real).is_empty(), "the real names, case and spaces aside");
-        let renamed = [m(0, 1003, "gbox1"), m(1, 1004, "Tea_bag"), m(2, 1005, "nobody known")];
-        assert!(compare(&mut w, &renamed, Some(1003), real).is_empty(), "one read isn't enough");
-        assert_eq!(compare(&mut w, &renamed, Some(1003), real), vec![(2, "Tea_bag".to_string())]);
-        assert!(compare(&mut w, &renamed, Some(1003), real).is_empty(), "said once");
+        assert!(compare(&mut w, &clean, Some(1003), real, t).is_empty(), "the real names, case and spaces aside");
+        let renamed = [m(0, 1003, "gbox1"), m(1, 1004, "Tea_bag"), m(2, 1008, "nobody known")];
+        assert!(compare(&mut w, &renamed, Some(1003), real, t).is_empty(), "one read isn't enough");
+        let said = compare(&mut w, &renamed, Some(1003), real, t);
+        assert_eq!(said, vec![Seen { peer: 2, account: 1004, shown: "Tea_bag".into(), checked: true }]);
+        assert!(compare(&mut w, &renamed, Some(1003), real, t).is_empty(), "said once");
+        // Number 3 has no name from the server: after UNNAMED_FOR the server checks it by account.
+        let later = t + UNNAMED_FOR;
+        let said = compare(&mut w, &renamed, Some(1003), real, later);
+        assert_eq!(said, vec![Seen { peer: 3, account: 1008, shown: "nobody known".into(), checked: false }]);
+        assert!(compare(&mut w, &renamed, Some(1003), real, later).is_empty(), "asked once");
         // The own player is the own check's (pawns.rs), not this one's.
         let mut w = Witness::default();
         let own = [m(0, 1003, "Tea_bag")];
-        compare(&mut w, &own, Some(1003), real);
-        assert!(compare(&mut w, &own, Some(1003), real).is_empty());
+        compare(&mut w, &own, Some(1003), real, t);
+        assert!(compare(&mut w, &own, Some(1003), real, t).is_empty());
     }
 }

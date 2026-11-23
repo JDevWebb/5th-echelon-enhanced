@@ -2433,7 +2433,7 @@ impl Misc for MyMisc {
         }
         let r = request.into_inner();
         let shown = printable(&r.shown, 40);
-        if r.peer == 0 || r.peer > crate::peer_names::MOST_PEER || shown.trim().is_empty() {
+        if (r.account == 0 && (r.peer == 0 || r.peer > crate::peer_names::MOST_PEER)) || shown.trim().is_empty() {
             return Ok(Response::new(misc::NameSeenResponse {}));
         }
         // The witness's match room and its players (the witness too), named by their numbers.
@@ -2448,10 +2448,16 @@ impl Misc for MyMisc {
         let mut players: Vec<(u32, String)> = sessions.iter().flat_map(|s| s.participants.iter().map(|p| (p.user_id, p.name.clone()))).collect();
         players.sort();
         players.dedup();
-        let Some(real) = crate::peer_names::of(&players).into_iter().find(|(peer, _)| *peer == r.peer).map(|(_, name)| name) else {
-            return Ok(Response::new(misc::NameSeenResponse {}));
+        // By the account the session's player list gives (0.5.6), else by the number.
+        let found = if r.account != 0 {
+            players.iter().find(|(id, _)| *id == r.account).map(|(id, name)| (*id, name.clone()))
+        } else {
+            crate::peer_names::of(&players)
+                .into_iter()
+                .find(|(peer, _)| *peer == r.peer)
+                .and_then(|(_, real)| players.iter().find(|(_, n)| *n == real).map(|(id, _)| (*id, real)))
         };
-        let Some(target) = players.iter().find(|(_, n)| *n == real).map(|(id, _)| *id) else {
+        let Some((target, real)) = found else {
             return Ok(Response::new(misc::NameSeenResponse {}));
         };
         match crate::name_witness::seen(user_id, room, target, &real, &shown) {

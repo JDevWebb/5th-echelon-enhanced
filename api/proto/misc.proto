@@ -66,6 +66,9 @@ message NameSeenRequest {
     // game showed for them (a chat line's sender).
     uint32 peer = 1;
     string shown = 2;
+    // Their account number, as the game session's player list has it (0.5.6; 0: not known).
+    // When given, the server goes by it rather than the number, which a game may not know.
+    uint32 account = 3;
 }
 message NameSeenResponse {}
 

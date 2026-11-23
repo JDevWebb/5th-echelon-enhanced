@@ -235,7 +235,7 @@ fn check_name(message: usize, shown: &str) {
     }
     tracing::warn!("Match chat: number {peer} ({real} to the server) writes as another name");
     let shown = shown.to_string();
-    let _ = std::thread::Builder::new().name("fe-name-seen".into()).spawn(move || crate::api::name_seen(u32::from(peer), &shown));
+    let _ = std::thread::Builder::new().name("fe-name-seen".into()).spawn(move || crate::api::name_seen(u32::from(peer), &shown, 0));
 }
 
 /// At the chat display, before the game shows a line: whether it shows it. A line shown is kept
