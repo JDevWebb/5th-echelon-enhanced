@@ -132,9 +132,86 @@ fn hash(bytes: &[u8]) -> u32 {
     bytes.iter().fold(0x811c_9dc5u32, |h, b| (h ^ u32::from(*b)).wrapping_mul(0x0100_0193))
 }
 
-/// Each loaded archetype's hash, by its name.
+/// W1, attachments: an attachment's stat changes (clip capacity and spare clips, penetration,
+/// recoil, dispersion, damage, impulse, falloff, ranges, FOV, aim and reload times; modifiers and
+/// biases) aren't on the weapon's archetype but on the attachment's own (`EWeaponAttachmentArchetype`,
+/// 37 floats from 104 to 252 in the script's layout, blacklist-re `lead_layout.py`), so a scope is
+/// never an edit of the weapon; the attachments are hashed the same way, by name, so an edited
+/// one is. Taken only when the block reads as that layout says (finite; the FOV multiplier, at
+/// 240, between 0 and 5).
+const ATTACHMENT_MODIFIERS: std::ops::Range<usize> = 104..252;
+const ATTACHMENT_FOV_AT: usize = 240;
+
+fn attachment_hash(o: usize) -> Option<u32> {
+    let mut bytes = Vec::with_capacity(ATTACHMENT_MODIFIERS.len());
+    for at in ATTACHMENT_MODIFIERS.step_by(4) {
+        let v = read::<f32>(o + at)?;
+        if !v.is_finite() {
+            return None;
+        }
+        bytes.extend_from_slice(&v.to_bits().to_le_bytes());
+    }
+    let fov = read::<f32>(o + ATTACHMENT_FOV_AT)?;
+    (fov > 0.0 && fov <= 5.0).then(|| hash(&bytes))
+}
+
+/// The attachment archetypes' own class name isn't in this build's name table (the gamebox,
+/// 23 Nov), so they're reached through the live weapons characters hold (pawns.rs):
+/// BasicWeapon.m_WeaponUpgrades (an array at 1892) of WeaponUpgrades, each with its
+/// m_AttachmentArchetypeName (1788) and m_AttachmentArchetypeInfo (1792). The array has a slot
+/// per attachment place, null when none is fitted (the gamebox's rank 5 loadouts: 10 empty slots
+/// on the UMP45, 13 on the AK-47).
+const WEAPON_UPGRADES_AT: usize = 1892;
+const UPGRADE_ATTACHMENT_NAME_AT: usize = 1788;
+const UPGRADE_ATTACHMENT_AT: usize = 1792;
+/// The most upgrades read on one weapon.
+const MOST_UPGRADES: u32 = 16;
+
+/// The attachments on live weapons: (attachment archetype's name, its object).
+fn attachments() -> Vec<(String, usize)> {
+    let mut out: Vec<(String, usize)> = Vec::new();
+    for o in crate::pawns::live_weapons() {
+        let (Some(data), Some(count)) = (read_u32(o + WEAPON_UPGRADES_AT), read_u32(o + WEAPON_UPGRADES_AT + 4)) else { continue };
+        if data == 0 || count > MOST_UPGRADES {
+            continue;
+        }
+        for k in 0..count as usize {
+            let Some(upgrade) = read_u32(data as usize + k * 4).filter(|u| *u != 0).map(|u| u as usize) else { continue };
+            let Some(archetype) = read_u32(upgrade + UPGRADE_ATTACHMENT_AT).filter(|a| *a != 0).map(|a| a as usize) else { continue };
+            let name = read_u32(upgrade + UPGRADE_ATTACHMENT_NAME_AT)
+                .and_then(name_text)
+                .or_else(|| read_u32(archetype + 0x20).and_then(name_text))
+                .filter(|n| !n.is_empty() && !n.contains(' '));
+            if let Some(name) = name {
+                if !out.iter().any(|(n, a)| *n == name || *a == archetype) {
+                    out.push((name, archetype));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Each loaded archetype's hash, by its name (attachments' too).
 fn read_all(f: &Found) -> BTreeMap<String, u32> {
     let mut out = BTreeMap::new();
+    {
+        let mut skipped = 0;
+        let mut hashed = 0;
+        for (name, archetype) in attachments() {
+            match attachment_hash(archetype) {
+                Some(h) => {
+                    out.insert(format!("attachment:{name}"), h);
+                    hashed += 1;
+                }
+                None => skipped += 1,
+            }
+        }
+        static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if hashed + skipped > 0 && !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::info!("Weapons: {hashed} attachment archetypes hashed, {skipped} left out (not as their layout says)");
+        }
+    }
     crate::round_state::each_object(|o| {
         if out.len() >= MOST || !crate::round_state::of_class(o, f.class) {
             return;
@@ -253,6 +330,32 @@ pub fn for_match_state(under_way: bool) -> HashMap<String, u32> {
 /// which before reading more of them.
 #[cfg(feature = "test-commands")]
 pub fn test_firing_words() {
+    {
+        let mut seen = Vec::new();
+        crate::pawns::live_weapons().into_iter().for_each(|o| {
+            {
+                let arr = |at: usize| (read_u32(o + at), read_u32(o + at + 4));
+                if let (Some(data), Some(n)) = arr(WEAPON_UPGRADES_AT) {
+                    for k in 0..n.min(3) as usize {
+                        let u = read_u32(data as usize + k * 4).unwrap_or(0) as usize;
+                        if u == 0 {
+                            continue;
+                        }
+                        let class = read_u32(u + 0x24).and_then(|c| read_u32(c as usize + 0x20)).and_then(name_text);
+                        let words: Vec<String> = (1776..1808).step_by(4).map(|at| format!("{at}:{:x}", read_u32(u + at).unwrap_or(0))).collect();
+                        seen.push(format!("  upgrade {k}: {:?} class {class:?} {}", read_u32(u + 0x20).and_then(name_text), words.join(" ")));
+                    }
+                }
+                seen.push(format!(
+                    "{:?} upgrades {:?} starting {:?}",
+                    crate::round_state::kind_name(o),
+                    arr(WEAPON_UPGRADES_AT),
+                    arr(WEAPON_UPGRADES_AT - 12)
+                ));
+            }
+        });
+        tracing::info!("Weapons: test: live weapons {seen:?}; attachments {:?}", attachments());
+    }
     let Some(f) = found() else { return };
     let Some((class, switches)) = &f.firing else { return };
     let Some(offset) = switches.first().map(|(_, o, _)| *o) else { return };

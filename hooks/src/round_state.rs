@@ -517,7 +517,6 @@ pub(crate) fn made_from(class: usize, packed: u32) -> bool {
     chain(class).iter().any(|c| read_u32(*c as usize + 0x20) == Some(packed))
 }
 
-/// A class and those it's made from (its supers), nearest first.
 /// The profile's XP (N2): EEchelonProfileExtension.m_iXP, by name or at its place in the
 /// script's layout (64). Found once a minute at most (a scan of the object table).
 pub(crate) fn profile_xp() -> Option<u32> {
@@ -590,6 +589,7 @@ pub(crate) fn kind_name(object: usize) -> Option<String> {
     name_text(read_u32(class + 0x20)?)
 }
 
+/// A class and those it's made from (its supers), nearest first.
 pub(crate) fn chain(class: usize) -> Vec<u32> {
     let mut out = Vec::new();
     let mut c = class as u32;

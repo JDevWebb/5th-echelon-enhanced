@@ -387,6 +387,16 @@ pub(crate) fn peer_name(peer: u8) -> Option<String> {
         .map(|(_, n)| n.clone())
 }
 
+/// The live weapons characters were seen holding (newest last), for W1's attachments.
+static LIVE_WEAPONS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+/// The live weapons characters were seen holding, still alive.
+pub fn live_weapons() -> Vec<usize> {
+    let mut live = LIVE_WEAPONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    live.retain(|w| rs::alive(*w));
+    live.clone()
+}
+
 fn sample(t: &Tables, object: usize, class: &'static str) -> Option<Sample> {
     let loc = object + usize::from(t.location);
     let at = [read::<f32>(loc)?, read::<f32>(loc + 4)?, read::<f32>(loc + 8)?];
@@ -402,6 +412,15 @@ fn sample(t: &Tables, object: usize, class: &'static str) -> Option<Sample> {
                     .is_some_and(|i| read_u32(w + 0x24).is_some_and(|c| rs::made_from(c as usize, rs::pack(*i, 0))))
             })
         });
+    if let Some(w) = weapon {
+        let mut live = LIVE_WEAPONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !live.contains(&w) {
+            if live.len() >= 64 {
+                live.remove(0);
+            }
+            live.push(w);
+        }
+    }
     // A game has only its own player's name: that character's number is its own; the others'
     // names come from the server by their numbers (peer_names on the server).
     let peer = peer_of(t, object);
