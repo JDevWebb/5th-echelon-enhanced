@@ -295,7 +295,7 @@ impl pawns::Watcher for PawnSwitches {
 }
 
 /// The gamebox's stand-ins for a cheat (a test build only): `godmode` sets m_bGodMode on the own
-/// character, `health999` its health.
+/// character, `health999` its health, `hs999` its health system's current (P1).
 #[cfg(feature = "test-commands")]
 fn test_command(places: &[Place], own: &pawns::Sample) {
     let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else {
@@ -311,6 +311,16 @@ fn test_command(places: &[Place], own: &pawns::Sample) {
                     // SAFETY: the own character's bool word, read just before.
                     unsafe { (at as *mut u32).write_unaligned(w | p.mask) };
                     info!("Character switches: test: m_bGodMode set on the own character");
+                }
+            }
+        }
+        "hs999" => {
+            let _ = std::fs::remove_file(&file);
+            if health_system(own.object).is_some() {
+                if let Some(hs) = read_u32(own.object + HEALTH_SYSTEM_AT).map(|h| h as usize) {
+                    // SAFETY: the own character's HealthSystem, checked just above.
+                    unsafe { ((hs + HS_CURRENT) as *mut f32).write_unaligned(999.0) };
+                    info!("Character switches: test: the own health system's current set to 999");
                 }
             }
         }
