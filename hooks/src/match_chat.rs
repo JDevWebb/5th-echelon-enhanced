@@ -285,15 +285,25 @@ fn keep(line: Line) {
 }
 
 /// The lines from `name` this game showed lately, for a report: "HH:MM:SS [ALL|TEAM] text".
+/// Lines are kept by the name they were shown under, so a player shown under another name (a
+/// rewritten one, N1) has those too: the session's player list gives the name each number is
+/// shown as, the server the real one.
 pub fn lines_of(name: &str) -> Vec<String> {
-    let k = key(name);
+    let mut names = vec![key(name)];
+    for m in crate::net_names::members() {
+        let shown = key(&m.name);
+        let real = u8::try_from(m.storm + 1).ok().and_then(crate::pawns::peer_name);
+        if real.is_some_and(|r| key(&r) == names[0]) && !names.contains(&shown) {
+            names.push(shown);
+        }
+    }
     let lines = LINES.lock().unwrap_or_else(PoisonError::into_inner);
-    lines_from(lines.iter(), &k)
+    lines_from(lines.iter(), &names)
 }
 
-fn lines_from<'a>(lines: impl Iterator<Item = &'a Line>, k: &str) -> Vec<String> {
+fn lines_from<'a>(lines: impl Iterator<Item = &'a Line>, names: &[String]) -> Vec<String> {
     lines
-        .filter(|l| l.at.elapsed() < KEPT_FOR && key(&l.name) == k)
+        .filter(|l| l.at.elapsed() < KEPT_FOR && names.contains(&key(&l.name)))
         .map(|l| {
             let t = l.unix.rem_euclid(86_400);
             format!("{:02}:{:02}:{:02} UTC [{}] {}", t / 3600, t / 60 % 60, t % 60, if l.team_only { "TEAM" } else { "ALL" }, l.text)
@@ -336,6 +346,6 @@ mod tests {
             Line { at, unix: 3600 * 17 + 60 * 21, name: "Tea_bag".into(), team_only: false, text: "stop".into() },
             Line { at, unix: 3600 * 17 + 60 * 22, name: "levichuking".into(), team_only: false, text: "lol".into() },
         ];
-        assert_eq!(lines_from(lines.iter(), &key("LeviChuKing")), vec!["17:20:05 UTC [TEAM] kill them", "17:22:00 UTC [ALL] lol"]);
+        assert_eq!(lines_from(lines.iter(), &[key("LeviChuKing")]), vec!["17:20:05 UTC [TEAM] kill them", "17:22:00 UTC [ALL] lol"]);
     }
 }
