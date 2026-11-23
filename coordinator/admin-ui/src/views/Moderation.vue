@@ -12,6 +12,9 @@
 
   <div v-if="!data" class="panel empty">{{ error || 'Loading…' }}</div>
 
+  <!-- The whole chat: every room, a player's, a conversation. -->
+  <ChatTranscript v-else-if="tab === 'transcript'" />
+
   <!-- Reports: one a message, oldest first. -->
   <template v-else-if="tab === 'reports'">
     <div v-if="!data.reports.length" class="panel empty">No open reports. Players report a message from the launcher's or the overlay's chat.</div>
@@ -154,6 +157,8 @@
 import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue';
 import PageTop from '../components/PageTop.vue';
 import Stat from '../components/Stat.vue';
+import ChatTranscript from '../components/ChatTranscript.vue';
+import { useRoute } from 'vue-router';
 import { api } from '../lib/api.js';
 import { confirmBox } from '../lib/dialogs.js';
 import { ensureOverview, useLoad } from '../lib/data.js';
@@ -198,9 +203,10 @@ const { data, error, reload } = useLoad(() => api('GET', '/moderation'), () => n
 watch(() => live.moderationTick, reload);
 
 const tabs = computed(() => (data.value?.chat
-  ? [['reports', 'Reports'], ['refused', 'Refused'], ['mutes', 'Mutes'], ['names', 'Names'], ['rules', 'Rules']]
+  ? [['reports', 'Reports'], ['transcript', 'Transcript'], ['refused', 'Refused'], ['mutes', 'Mutes'], ['names', 'Names'], ['rules', 'Rules']]
   : [['names', 'Names'], ['rules', 'Rules']]));
-const tab = ref('reports');
+const route = useRoute();
+const tab = ref(typeof route.query.tab === 'string' ? route.query.tab : 'reports');
 watch(tabs, t => { if (!t.some(([id]) => id === tab.value)) tab.value = t[0][0]; });
 
 const busy = ref(false);

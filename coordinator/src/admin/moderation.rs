@@ -15,10 +15,17 @@
 //!   words of the network's own, whether Discord invites may be sent (a second factor proved
 //!   lately). Servers have them with their next pulse.
 //!
+//! * `GET /api/moderation/chat?room=&player=&conv=&q=&before=`: the chat's transcript, newest
+//!   first, 200 a page (`before`: the last id shown), every room, deleted messages too (marked).
+//!   `player` (an identity) gives everything they sent or were sent, and their conversations;
+//!   `conv` one conversation; `q` text in it. The public text says the admins can read it all;
+//!   a player's or a direct conversation's reading goes to the audit log.
+//!
 //! Bans are the players' page's (the sender's accounts link there). Everything done here goes
 //! to the audit log.
 
 use axum::extract::Path;
+use axum::extract::Query;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
@@ -48,6 +55,7 @@ pub(super) fn routes() -> Router<Shared> {
         .route("/moderation/mutes", post(mute))
         .route("/moderation/mutes/{identity}/{room}", delete(unmute))
         .route("/moderation/settings", axum::routing::put(set_settings))
+        .route("/moderation/chat", get(transcript))
 }
 
 /// Rooms a mute can be for ("*": everywhere).
@@ -60,6 +68,8 @@ const AROUND: i64 = 2;
 /// The longest list of allowed or extra words, and the longest word.
 const MAX_WORDS: usize = 2000;
 const MAX_WORD: usize = 64;
+/// A page of the transcript.
+const PAGE: i64 = 200;
 
 fn no_chat() -> Response {
     fail(StatusCode::NOT_FOUND, "chat is on the community network's coordinator only")
@@ -246,6 +256,122 @@ impl Coordinator {
                 .rows_affected(),
         )
     }
+}
+
+#[derive(Deserialize, Default)]
+struct TranscriptQuery {
+    #[serde(default)]
+    room: String,
+    #[serde(default)]
+    player: String,
+    #[serde(default)]
+    conv: String,
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    before: Option<i64>,
+}
+
+impl Coordinator {
+    /// A page of the transcript (newest first) and, for a player, their conversations.
+    async fn chat_transcript(&self, q: &TranscriptQuery) -> sqlx::Result<Value> {
+        let room = (!q.room.is_empty() && q.room != "all").then_some(q.room.as_str());
+        let player = (!q.player.is_empty()).then_some(q.player.as_str());
+        let conv = (!q.conv.is_empty()).then_some(q.conv.as_str());
+        let text = (!q.q.trim().is_empty()).then(|| format!("%{}%", q.q.trim().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")));
+        let mut rows: Vec<MessageRow> = sqlx::query_as(&format!(
+            "SELECT {MESSAGE} FROM chat_messages WHERE deletes IS NULL
+               AND (?1 IS NULL OR room = ?1)
+               AND (?2 IS NULL OR sender = ?2 OR recipient = ?2)
+               AND (?3 IS NULL OR conv = ?3)
+               AND (?4 IS NULL OR body LIKE ?4 ESCAPE '\\' OR sender_name LIKE ?4 ESCAPE '\\')
+               AND (?5 IS NULL OR id < ?5)
+             ORDER BY id DESC LIMIT ?6"
+        ))
+        .bind(room)
+        .bind(player)
+        .bind(conv)
+        .bind(text)
+        .bind(q.before)
+        .bind(PAGE + 1)
+        .fetch_all(&self.pool)
+        .await?;
+        let more = rows.len() as i64 > PAGE;
+        rows.truncate(PAGE as usize);
+        // A direct message's recipient by name.
+        let mut to_names = std::collections::HashMap::new();
+        for m in &rows {
+            if let Some(to) = &m.7 {
+                if !to_names.contains_key(to) {
+                    to_names.insert(to.clone(), self.identity_name(to).await?);
+                }
+            }
+        }
+        let messages: Vec<Value> = rows
+            .iter()
+            .map(|m| {
+                let mut j = message_json(m);
+                if let Some(to) = &m.7 {
+                    j["to_name"] = json!(to_names.get(to));
+                }
+                j
+            })
+            .collect();
+        let mut v = json!({ "messages": messages, "more": more });
+        if let Some(player) = player {
+            // Their conversations: every room they posted in or were written to, with the other
+            // side of a direct one.
+            let convs: Vec<(String, String, i64, i64, Option<String>)> = sqlx::query_as(
+                "SELECT conv, room, COUNT(*), MAX(at),
+                        (SELECT CASE WHEN x.sender = ?1 THEN x.recipient ELSE x.sender END FROM chat_messages x
+                          WHERE x.conv = m.conv AND x.room = 'direct' LIMIT 1)
+                 FROM chat_messages m WHERE deletes IS NULL AND (sender = ?1 OR recipient = ?1)
+                 GROUP BY conv ORDER BY MAX(at) DESC LIMIT 200",
+            )
+            .bind(player)
+            .fetch_all(&self.pool)
+            .await?;
+            let mut out = Vec::with_capacity(convs.len());
+            for (conv, room, count, last, with) in convs {
+                let with_name = match &with {
+                    Some(w) => self.identity_name(w).await?,
+                    None => String::new(),
+                };
+                out.push(json!({ "conv": conv, "room": room, "count": count, "last": last, "with": with, "with_name": with_name }));
+            }
+            v["conversations"] = json!(out);
+            v["player"] = json!({ "identity": player, "name": self.identity_name(player).await?, "detail": self.identity_detail(player, identity::now()).await? });
+        }
+        Ok(v)
+    }
+}
+
+async fn transcript(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Query(q): Query<TranscriptQuery>) -> Response {
+    let s = match c.full(&headers, &client).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    if !c.has_chat() {
+        return no_chat();
+    }
+    if !q.room.is_empty() && !["all", "global", "direct", "lobby"].contains(&q.room.as_str()) {
+        return fail(StatusCode::BAD_REQUEST, "a room is all, global, direct or lobby");
+    }
+    if q.q.len() > 100 || q.player.len() > 128 || q.conv.len() > 256 {
+        return fail(StatusCode::BAD_REQUEST, "too long");
+    }
+    // Reading a player's messages or a direct conversation is noted (the first page only).
+    if q.before.is_none() && (!q.player.is_empty() || q.conv.starts_with("direct:") || q.room == "direct") {
+        let what = if !q.player.is_empty() {
+            format!("player {}", q.player)
+        } else if !q.conv.is_empty() {
+            format!("conversation {}", q.conv)
+        } else {
+            String::from("direct messages")
+        };
+        c.audit(&s.username, Some(&client), "chat: transcript read", &what).await;
+    }
+    c.chat_transcript(&q).await.map_or_else(internal, ok)
 }
 
 async fn overview(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap) -> Response {

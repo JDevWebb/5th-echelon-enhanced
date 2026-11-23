@@ -6092,6 +6092,72 @@ async fn admins_moderate_chat_and_names() {
     }
 }
 
+/// The Moderation page's transcript: every room, newest first, a player's sent and received
+/// with their conversations, one conversation, text, pages; deleted messages shown, marked; reading
+/// a player's or a direct conversation goes to the audit log.
+#[tokio::test]
+async fn admins_read_the_whole_chat() {
+    let t = start("transcript").await;
+    let r = admin_router(&t);
+    let a = t.join("server-a").await;
+    let (kiwi, tank, moa) = (identity::Identity::generate(), identity::Identity::generate(), identity::Identity::generate());
+    t.changes(
+        &a,
+        json!([link(&kiwi, "server-a", "Kiwi"), link(&tank, "server-a", "Tank"), link(&moa, "server-a", "Moa"),
+               { "op": "friends", "a": kiwi.global_id(), "b": tank.global_id(), "friends": true }]),
+    )
+    .await;
+    t.c.enable_chat();
+    t.c.chat_from_unverified();
+    let send = |body: Value| {
+        let a = a.clone();
+        let t = &t;
+        async move { t.call("POST", "/v1/chat/send", Some(&a), Some(body)).await.1 }
+    };
+    send(json!({ "room": "global", "from": moa.global_id(), "text": "hello from moa" })).await;
+    send(json!({ "room": "global", "from": kiwi.global_id(), "text": "evening all" })).await;
+    send(json!({ "room": "direct", "from": kiwi.global_id(), "to": tank.global_id(), "text": "psst tank" })).await;
+    let gone = send(json!({ "room": "direct", "from": tank.global_id(), "to": kiwi.global_id(), "text": "oops 100%" })).await["message"]["id"].as_i64().unwrap();
+    t.call("POST", "/v1/chat/delete", Some(&a), Some(json!({ "for": tank.global_id(), "id": gone }))).await;
+
+    let admin = admin_cookie(&t, "admin1", 3600).await;
+    let (status, v) = admin_call(&r, "GET", "/api/moderation/chat", &admin, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let bodies: Vec<&str> = v["messages"].as_array().unwrap().iter().map(|m| m["body"].as_str().unwrap()).collect();
+    assert_eq!(bodies, ["oops 100%", "psst tank", "evening all", "hello from moa"], "newest first, the deleted one too");
+    assert!(v["messages"][0]["deleted_at"].is_i64(), "marked deleted: {v}");
+    assert_eq!(v["messages"][0]["deleted_by"], "sender");
+    assert_eq!(v["messages"][1]["to_name"], "Tank");
+    assert_eq!(v["more"], false);
+
+    // A player: what they sent and were sent, and their conversations.
+    let (_, v) = admin_call(&r, "GET", &format!("/api/moderation/chat?player={}", tank.global_id()), &admin, None).await;
+    let bodies: Vec<&str> = v["messages"].as_array().unwrap().iter().map(|m| m["body"].as_str().unwrap()).collect();
+    assert_eq!(bodies, ["oops 100%", "psst tank"]);
+    assert_eq!(v["player"]["name"], "Tank");
+    assert_eq!(v["conversations"][0]["room"], "direct");
+    assert_eq!(v["conversations"][0]["with_name"], "Kiwi", "{v}");
+    assert_eq!(v["conversations"][0]["count"], 2);
+    // One conversation, a room, text (% is literal), and pages.
+    let conv = v["conversations"][0]["conv"].as_str().unwrap().to_owned();
+    let (_, v) = admin_call(&r, "GET", &format!("/api/moderation/chat?conv={}", conv.replace('|', "%7C")), &admin, None).await;
+    assert_eq!(v["messages"].as_array().unwrap().len(), 2, "{v}");
+    let (_, v) = admin_call(&r, "GET", "/api/moderation/chat?room=global", &admin, None).await;
+    assert_eq!(v["messages"].as_array().unwrap().len(), 2);
+    let (_, v) = admin_call(&r, "GET", "/api/moderation/chat?q=100%25", &admin, None).await;
+    assert_eq!(v["messages"][0]["body"], "oops 100%");
+    assert_eq!(v["messages"].as_array().unwrap().len(), 1);
+    let (_, v) = admin_call(&r, "GET", "/api/moderation/chat?q=moa", &admin, None).await;
+    assert_eq!(v["messages"].as_array().unwrap().len(), 1, "by sender's name or text: {v}");
+    let newest_global = sqlx::query_scalar::<_, i64>("SELECT MAX(id) FROM chat_messages WHERE room = 'global'").fetch_one(&t.c.pool).await.unwrap();
+    let (_, v) = admin_call(&r, "GET", &format!("/api/moderation/chat?room=global&before={newest_global}"), &admin, None).await;
+    assert_eq!(v["messages"][0]["body"], "hello from moa");
+    assert_eq!(admin_call(&r, "GET", "/api/moderation/chat?room=party", &admin, None).await.0, StatusCode::BAD_REQUEST);
+
+    let reads: Vec<String> = sqlx::query_scalar("SELECT detail FROM audit WHERE event = 'chat: transcript read' ORDER BY id").fetch_all(&t.c.pool).await.unwrap();
+    assert_eq!(reads, [format!("player {}", tank.global_id()), format!("conversation {conv}")]);
+}
+
 /// A match recording comes here only once an admin asked its server for it, from that server,
 /// and only when it reads as a recording; the pulse carries the ask with the recording's id.
 #[tokio::test]

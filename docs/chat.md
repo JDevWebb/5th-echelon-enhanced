@@ -37,6 +37,7 @@ Names follow the same line: a name with a slur, hate or a web address is refused
 ## Reports and the admins
 
 - **Messages are kept for the times above, and the network's admins can read them.** The launcher says so on the Chat page.
+- **The transcript** (Chat and names › Transcript, or **Chat** on a player's page): every kept message, newest first, in every room (Global, lobbies, direct messages), deleted ones too (marked, with who deleted them). Filter by room, player (everything they sent and were sent, with their conversations), conversation or text. Reading a player's chat or a direct conversation goes in the audit log.
 - **Report** a message with a reason. The admins see it on the admin site's **Chat and names** page, with the 20 messages before it (in a direct conversation, only the messages next to it), who reported it and why, and the sender's accounts.
 - A reported message stays until the admins have dealt with it, whatever happens to the conversation or the sender's account, so the evidence can't be wiped first; a report and its message go after 90 days at most.
 - What the admins can do: **delete** the message (it goes from every player's view), **mute** the sender in one room or everywhere (an hour, a day, 7 days or for good), **ban** their accounts, or **dismiss** the report. Mutes, bans and deletes need a recent second factor and go in the audit log. A player's page shows their mutes in force, each with **Lift**. Nothing is muted automatically.

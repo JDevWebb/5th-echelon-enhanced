@@ -30,6 +30,7 @@
       </div>
       <div class="actbar" role="group" aria-label="Actions">
         <RouterLink v-if="features.roadmap && p.identity" class="btn primary" :to="{ path: `/support/${p.identity}`, query: { name: p.name } }" title="They read it on their launcher's Support page, and the game's overlay tells them">{{ support ? 'Open support' : 'Message' }}</RouterLink>
+        <RouterLink v-if="features.roadmap && p.identity" class="btn" :to="{ path: '/moderation', query: { tab: 'transcript', player: p.identity } }" title="Everything they sent and were sent in chat (the audit log notes the reading)">Chat</RouterLink>
         <button type="button" :disabled="!p.online" @click="act('kick')">Kick</button>
         <button v-if="!p.banned && !d.network_ban" class="danger" type="button" @click="act('ban')">Ban…</button>
         <button v-else type="button" @click="act('unban')">Unban</button>
