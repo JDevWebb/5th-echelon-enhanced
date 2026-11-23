@@ -2463,7 +2463,7 @@ impl Misc for MyMisc {
                     "fair_play",
                     serde_json::json!({
                         "check": "name",
-                        "detail": format!("shown to the other players as {shown:?}, not their name (their host's game saw it in the chat)"),
+                        "detail": format!("shown to the other players as {shown:?}, not their name (another player's game saw it, in the chat or the session's player list)"),
                         "value": 1,
                         "room": room,
                         "witness": user_id,

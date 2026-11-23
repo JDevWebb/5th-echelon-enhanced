@@ -42,6 +42,7 @@ mod camera;
 mod gpu;
 #[cfg(feature = "test-commands")]
 mod find_text;
+mod net_names;
 mod watched;
 mod xaudio_fix;
 mod match_chat;

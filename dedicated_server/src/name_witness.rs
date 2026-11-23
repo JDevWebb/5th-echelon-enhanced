@@ -1,9 +1,10 @@
 //! Names shown to others that aren't the player's (0.5.6's N1). A cheat table rewrites the name a
 //! player's own game sends the others (in the lobby, the scoreboard and the chat); the server
 //! knows each player's real name, by their number in the match's session ([`crate::peer_names`]).
-//! A game that showed a chat line from number N under another name says so (`NameSeen`). Only a
-//! host's game can: a line reaches the host from its sender, the others get it passed on by the
-//! host (from number 0, whoever wrote it). One witness makes it a `fair_play` note on that
+//! A game that showed a chat line from number N under another name says so (`NameSeen`): a host's
+//! (a line reaches the host from its sender, the others get it passed on from number 0). And since
+//! 0.5.6 any game whose session's player list (Storm's player descriptions, the name every other
+//! game shows in the lobby and the scoreboard) has another name for N, on two reads in a row. One witness makes it a `fair_play` note on that
 //! player (check `name`, report only, for the admins); two (the same name in two players'
 //! games) and every player in the match is told who it really is, once a match.
 

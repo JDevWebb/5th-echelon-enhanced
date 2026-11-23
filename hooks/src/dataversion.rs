@@ -38,6 +38,11 @@ use tracing::warn;
 /// `0x03383df8`, DX9 `0x032b5dc8`. Set once the check is found.
 static ENGINE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 
+/// The engine global's place (the data version check's), once found.
+pub(crate) fn engine_global() -> Option<usize> {
+    ENGINE.get().copied()
+}
+
 fn engine() -> Option<usize> {
     read_u32(*ENGINE.get()?).map(|e| e as usize)
 }

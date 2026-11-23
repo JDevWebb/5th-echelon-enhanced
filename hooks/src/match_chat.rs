@@ -95,6 +95,11 @@ fn test_commands() {
                 let text = format!("{arg} {rest}").trim().to_string();
                 let _ = std::thread::Builder::new().name("fe-find-text".into()).spawn(move || crate::find_text::find(&text));
             }
+            "peers" => crate::net_names::log_all(),
+            "netname" => {
+                let Ok(n) = arg.parse::<i32>() else { continue };
+                crate::net_names::test_rename(n - 1, rest.trim());
+            }
             "selfname" => {
                 *crate::pawns::SELF_NAME_TEST.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = (!arg.is_empty()).then(|| arg.to_string());
                 tracing::info!("Match chat: test: the account's name stands in as {arg:?}");

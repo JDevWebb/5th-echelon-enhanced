@@ -967,6 +967,8 @@ pub fn start() {
             let (state, under_way) = now.unwrap_or_else(|| ("none".to_string(), false));
             // D1: the manager's own properties, watched through the round (watched.rs).
             crate::watched::tick(live.map(|(object, _)| object), under_way);
+            // N1: the other players' names as their games describe them (net_names.rs).
+            crate::net_names::tick(live.is_some());
             let mode = live
                 .and_then(|(object, _)| name_text(read_u32(read_u32(object + 0x24)? as usize + 0x20)?))
                 .unwrap_or_default();
