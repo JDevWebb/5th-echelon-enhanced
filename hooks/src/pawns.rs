@@ -387,6 +387,48 @@ pub(crate) fn peer_name(peer: u8) -> Option<String> {
         .map(|(_, n)| n.clone())
 }
 
+/// N1, the own game: the name the own character goes by (Controller.m_MPNickname, the name a
+/// cheat table rewrites, and the one the game shows the others) against the account's. Two reads
+/// in a row of the same other name are a report-only `name` note, once a name. The test build's
+/// `selfname` stands in for the account's name.
+static OWN_NAME: std::sync::Mutex<(Option<String>, u32, Option<String>)> = std::sync::Mutex::new((None, 0, None));
+#[cfg(feature = "test-commands")]
+pub static SELF_NAME_TEST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Whether `shown` isn't the account name `account` (case and spaces at the ends aside).
+fn other_name(shown: &str, account: &str) -> bool {
+    !shown.trim().is_empty() && !account.trim().is_empty() && !shown.trim().eq_ignore_ascii_case(account.trim())
+}
+
+fn own_name_seen(shown: &str) {
+    #[cfg(feature = "test-commands")]
+    let account = SELF_NAME_TEST.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().or_else(crate::api::username);
+    #[cfg(not(feature = "test-commands"))]
+    let account = crate::api::username();
+    let Some(account) = account else { return };
+    let mut own = OWN_NAME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !other_name(shown, &account) {
+        own.0 = None;
+        own.1 = 0;
+        return;
+    }
+    if own.0.as_deref() == Some(shown) {
+        own.1 += 1;
+    } else {
+        *own = (Some(shown.to_string()), 1, own.2.take());
+    }
+    if own.1 < 2 || own.2.as_deref() == Some(shown) {
+        return;
+    }
+    own.2 = Some(shown.to_string());
+    let shown: String = shown.chars().filter(|c| !c.is_control()).take(40).collect();
+    info!("Characters: this game shows its player as {shown:?}, not their account's name");
+    let detail = format!("this game shows its player to the others as \"{shown}\", not their account's name");
+    let _ = std::thread::Builder::new().name("fe-own-name".into()).spawn(move || {
+        crate::api::fair_play_check("name", &detail, 1.0, hooks_config::running_under_wine());
+    });
+}
+
 /// The live weapons characters were seen holding (newest last), for W1's attachments.
 static LIVE_WEAPONS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
 
@@ -432,6 +474,9 @@ fn sample(t: &Tables, object: usize, class: &'static str) -> Option<Sample> {
             }
             if let Some(team) = control.as_ref().and_then(|c| c.team) {
                 OWN_TEAM.store(team, std::sync::atomic::Ordering::Relaxed);
+            }
+            if let Some(name) = control.as_ref().and_then(|c| c.name.clone()) {
+                own_name_seen(&name);
             }
         } else if let Some(name) = peer_name(p) {
             control.get_or_insert_with(Control::default).name = Some(name);
@@ -643,6 +688,14 @@ pub fn start(mut watchers: Vec<Box<dyn Watcher>>) {
 #[cfg(test)]
 mod tests {
     use super::nickname;
+    use super::other_name;
+
+    #[test]
+    fn the_own_name_against_the_account() {
+        assert!(!other_name("gbox1", "GBox1 "), "case and spaces aside");
+        assert!(other_name("Tea_bag", "gbox1"));
+        assert!(!other_name("", "gbox1"), "no name read");
+    }
 
     #[test]
     fn a_name_from_the_game_is_cleaned_and_clipped() {

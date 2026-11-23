@@ -91,6 +91,10 @@ fn test_commands() {
                 };
                 *SETTING.lock().unwrap_or_else(PoisonError::into_inner) = mode;
             }
+            "selfname" => {
+                *crate::pawns::SELF_NAME_TEST.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = (!arg.is_empty()).then(|| arg.to_string());
+                tracing::info!("Match chat: test: the account's name stands in as {arg:?}");
+            }
             "peername" => {
                 let Ok(n) = arg.parse::<u32>() else { continue };
                 crate::pawns::set_peer_names(vec![(n, rest.to_string())]);
