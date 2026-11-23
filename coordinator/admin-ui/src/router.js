@@ -19,19 +19,20 @@ const ICON = {
   roadmap: '<path d="M4 19V5M4 5h11l-2 3.5L15 12H4"/><path d="M15 19h5M18 16l2 3-2 3"/>',
   alerts: '<path d="M12 3.5 21.5 20h-19z"/><path d="M12 10v4.5M12 17.5h.01"/>',
   security: '<path d="M12 3 19 6v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/><path d="m9 12 2 2 4-4"/>',
+  matches: '<path d="M4 5h16M4 12h16M4 19h10"/><circle cx="18" cy="19" r="2"/>',
 };
 const item = (id, label) => [id, label, ICON[id]];
 export const NAV = [
   ['', [item('inbox', 'Inbox'), item('players', 'Players')]],
   ['Support', [item('support', 'Support'), item('reports', 'Reports'), item('moderation', 'Chat and names')]],
-  ['Network', [item('overview', 'Overview'), item('servers', 'Servers'), item('live', 'Live matches'), item('sessions', 'Sessions'), item('network', 'Traffic')]],
+  ['Network', [item('overview', 'Overview'), item('servers', 'Servers'), item('live', 'Live matches'), item('matches', 'Matches'), item('sessions', 'Sessions'), item('network', 'Traffic')]],
   ['Game health', [item('crashes', 'Crashes')]],
   ['Operations', [item('updates', 'Releases'), item('roadmap', 'Roadmap'), item('alerts', 'Alerts'), item('security', 'Admins and security')]],
 ];
 
 /** Pages shown as tabs of another page in the rail: Bandwidth and Activity under Network,
  * the audit log under Security. */
-export const PARENT = { bandwidth: 'network', activity: 'network', audit: 'security', match: 'sessions' };
+export const PARENT = { bandwidth: 'network', activity: 'network', audit: 'security', match: 'matches' };
 export const NETWORK_TABS = [['/network', 'Live traffic'], ['/bandwidth', 'Bandwidth'], ['/activity', 'Activity']];
 export const SECURITY_TABS = [['/security', 'Sign-in and admins'], ['/audit', 'Audit log']];
 
@@ -46,6 +47,7 @@ export const router = createRouter({
     { path: '/bandwidth', component: () => import('./views/Bandwidth.vue') },
     { path: '/live', component: () => import('./views/Live.vue') },
     { path: '/match/:server/:room/:since', component: () => import('./views/Match.vue'), props: true },
+    { path: '/matches', component: () => import('./views/Matches.vue') },
     { path: '/sessions', component: () => import('./views/Sessions.vue') },
     { path: '/replay/files', component: () => import('./views/Replay.vue') },
     { path: '/replay/:server/:player/:id', component: () => import('./views/Replay.vue'), props: true },

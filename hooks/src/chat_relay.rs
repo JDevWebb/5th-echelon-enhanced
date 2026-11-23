@@ -90,10 +90,21 @@ fn peers(head: usize) -> Option<Vec<u32>> {
     Some(peers)
 }
 
-/// The detour: the game's display first, then the relay.
+/// Whether this game passes lines on when it hosts (`ChatRelay`); the detour is there for the
+/// in-match chat filter as well (match_chat.rs).
+static RELAYING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// The detour: the game's display first (unless this player doesn't want the line:
+/// match_chat.rs), then the relay, which passes it on whatever this player chose.
 fn display(manager: *mut c_void, message: *mut c_void) {
-    unsafe { ChatDisplayHook.call(manager, message) };
-    relay(manager, message);
+    // Only the host has each line from its sender (match_chat.rs's name check).
+    let host = word(manager as usize + MANAGER_REPLICA) == Some(0);
+    if crate::match_chat::on_display(message as usize, host) {
+        unsafe { ChatDisplayHook.call(manager, message) };
+    }
+    if RELAYING.load(std::sync::atomic::Ordering::Relaxed) {
+        relay(manager, message);
+    }
 }
 
 fn relay(manager: *mut c_void, message: *mut c_void) {
@@ -166,8 +177,10 @@ unsafe fn send(sites: &Sites, manager: *mut c_void, message: *mut c_void, target
     targets.len()
 }
 
-/// Installs the relay. Safe to call once at startup; leaves an unrecognised build untouched.
-pub unsafe fn install() {
+/// Installs the relay (with `relaying`) and the in-match chat filter. Safe to call once at
+/// startup; leaves an unrecognised build untouched.
+pub unsafe fn install(relaying: bool) {
+    RELAYING.store(relaying, std::sync::atomic::Ordering::Relaxed);
     let Some(image) = crate::game_image() else {
         warn!("chat-relay: the game's sections weren't found -> skipped");
         return;
@@ -187,8 +200,12 @@ pub unsafe fn install() {
         warn!("chat-relay: the detour failed ({e:?}) -> skipped");
         return;
     }
-    info!(
-        "chat-relay: a player's chat in a match goes on to the others when this game hosts (display @ {:#010x}, unicast {:#010x})",
-        sites.display, sites.unicast
-    );
+    if relaying {
+        info!(
+            "chat-relay: a player's chat in a match goes on to the others when this game hosts (display @ {:#010x}, unicast {:#010x})",
+            sites.display, sites.unicast
+        );
+    } else {
+        info!("chat-relay: off (chat_relay); the in-match chat filter only (display @ {:#010x})", sites.display);
+    }
 }

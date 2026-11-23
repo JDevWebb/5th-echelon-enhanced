@@ -8,7 +8,7 @@
 //! On for every player (all are its testers, the user decided 2026-10-31); `ReplayRecording =
 //! false` turns it off. Each finished one of a minute or more with two characters or more goes
 //! to the player's server (step 2, `Misc.Recording`; `ReplayUpload = false` keeps them here),
-//! which keeps it a week for its admins' replay viewer. What the logs' lines say (how many
+//! which keeps it for its admins' replay viewer (30 days, in R2, from 0.5.6). What the logs' lines say (how many
 //! characters, how many named, shots, kills) is what step 1 is to learn.
 
 use std::collections::HashMap;
@@ -72,6 +72,70 @@ struct Open {
     map: String,
     map_checked: Instant,
     counts: Counts,
+    /// Each character's last position kept, and one held back as a possible glitch (RP2).
+    sanity: Sanity,
+    /// Samples left out as junk (RP2), and characters left out as not players' (RP1).
+    junk: usize,
+}
+
+/// The furthest a sane position is from the map's origin, and the biggest one-sample move that
+/// isn't held back as a possible glitch (units; a map is a few thousand across). RP2.
+const FARTHEST: f32 = 1.0e6;
+const JUMP: f32 = 20_000.0;
+
+/// Whether a sample's numbers can be a character's (RP2: samples read as a character was torn
+/// down had 2.5e27 or 5.9e22 on every axis and health 32767 or -32768).
+fn sane(at: [f32; 3], health: Option<i32>) -> bool {
+    at.iter().all(|v| v.is_finite() && v.abs() <= FARTHEST) && health.is_none_or(|h| (0..=1000).contains(&h))
+}
+
+fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+/// One-sample glitches (RP2: a spy 130 to 470 km away for a frame, then back): a jump is held
+/// back a sample; kept if the next one stays there (a respawn), dropped if it comes back.
+#[derive(Default)]
+struct Sanity {
+    last: HashMap<usize, [f32; 3]>,
+    held: HashMap<usize, [f32; 3]>,
+}
+
+impl Sanity {
+    /// Whether `object`'s sample at `at` is kept.
+    fn keep(&mut self, object: usize, at: [f32; 3]) -> bool {
+        let Some(last) = self.last.get(&object).copied() else {
+            self.last.insert(object, at);
+            return true;
+        };
+        if distance(at, last) <= JUMP {
+            self.held.remove(&object);
+            self.last.insert(object, at);
+            return true;
+        }
+        match self.held.remove(&object) {
+            // It stayed where it jumped to: a respawn.
+            Some(held) if distance(at, held) <= JUMP => {
+                self.last.insert(object, at);
+                true
+            }
+            _ => {
+                self.held.insert(object, at);
+                false
+            }
+        }
+    }
+
+    fn forget(&mut self, object: usize) {
+        self.last.remove(&object);
+        self.held.remove(&object);
+    }
+}
+
+/// Whether a character is a player's (RP1): it has a player's number in the session or a name.
+/// The others (a menu's or a cutscene's Sam) aren't recorded.
+fn players(c: &pawns::Sample) -> bool {
+    c.peer.is_some() || c.control.as_ref().is_some_and(|k| k.name.is_some())
 }
 
 #[derive(Default)]
@@ -148,6 +212,8 @@ impl Recorder {
             map,
             map_checked: Instant::now(),
             counts: Counts::default(),
+            sanity: Sanity::default(),
+            junk: 0,
         })
     }
 
@@ -160,13 +226,14 @@ impl Recorder {
         }
         let c = &o.counts;
         info!(
-            "Recording: ended after {} s: {} characters ({} named), {} shots, {} deaths, {} kills: {}",
+            "Recording: ended after {} s: {} characters ({} named), {} shots, {} deaths, {} kills, {} samples left out (not a player's, or junk): {}",
             o.began.elapsed().as_secs(),
             c.characters.len(),
             c.named.len(),
             c.shots,
             c.deaths,
             c.kills,
+            o.junk,
             o.path.display()
         );
         if let Err(e) = o.writer.finish() {
@@ -260,16 +327,33 @@ impl pawns::Watcher for Recorder {
 fn record(o: &mut Open, tables: &pawns::Tables, characters: &[pawns::Sample]) -> std::io::Result<()> {
     let t = ms(o.began);
     let first = o.ids.is_empty() && o.counts.characters.is_empty();
+    // Players' characters only (RP1), and no junk samples (RP2).
+    let mut kept: Vec<&pawns::Sample> = Vec::with_capacity(characters.len());
+    for c in characters {
+        if !players(c) || !sane(c.at, c.health) || !o.sanity.keep(c.object, c.at) {
+            o.junk += 1;
+            continue;
+        }
+        kept.push(c);
+    }
+    let characters = kept;
     // Gone first: an object freed and made again is a new character.
-    let gone: Vec<usize> = o.ids.keys().filter(|k| !characters.iter().any(|c| c.object == **k)).copied().collect();
+    // (A character held back a sample as a possible glitch isn't gone.)
+    let gone: Vec<usize> = o
+        .ids
+        .keys()
+        .filter(|k| !characters.iter().any(|c| c.object == **k) && !o.sanity.held.contains_key(*k))
+        .copied()
+        .collect();
     for object in gone {
         if let Some(id) = o.ids.remove(&object) {
             o.writer.write(&Record::Gone { t, id })?;
             o.health.remove(&id);
         }
+        o.sanity.forget(object);
     }
     let mut frame = Vec::with_capacity(characters.len());
-    for c in characters {
+    for c in characters.iter().copied() {
         let id = match o.ids.get(&c.object) {
             Some(id) => *id,
             None => {
@@ -321,7 +405,7 @@ fn record(o: &mut Open, tables: &pawns::Tables, characters: &[pawns::Sample]) ->
     }
     o.writer.write(&Record::Frame { t, pawns: frame })?;
     // Shots: a weapon's history from when it was first seen on.
-    for c in characters {
+    for c in characters.iter().copied() {
         let (Some(weapon), Some(id)) = (c.weapon, o.ids.get(&c.object).copied()) else {
             continue;
         };
@@ -346,7 +430,7 @@ fn record(o: &mut Open, tables: &pawns::Tables, characters: &[pawns::Sample]) ->
         *seen = seen.max(newest);
     }
     // Kills: a controller's last victim and time, new since the recording began.
-    for c in characters {
+    for c in characters.iter().copied() {
         let Some((victim, at)) = c.control.as_ref().and_then(|k| k.last_kill) else { continue };
         if !o.kills.insert((victim, at.to_bits())) || first {
             continue;
@@ -370,4 +454,32 @@ fn record(o: &mut Open, tables: &pawns::Tables, characters: &[pawns::Sample]) ->
         o.writer.flush()?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn junk_numbers_are_left_out() {
+        assert!(sane([100.0, -2000.0, 30.0], Some(170)));
+        assert!(!sane([2.5e27, 2.5e27, 2.5e27], Some(170)), "torn down");
+        assert!(!sane([f32::NAN, 0.0, 0.0], None));
+        assert!(!sane([0.0, 0.0, 0.0], Some(32767)), "unset health");
+        assert!(!sane([0.0, 0.0, 0.0], Some(-32768)));
+        assert!(sane([0.0, 0.0, 0.0], None), "no health read");
+    }
+
+    #[test]
+    fn a_one_sample_jump_is_dropped_and_a_respawn_kept() {
+        let mut s = Sanity::default();
+        assert!(s.keep(1, [0.0, 0.0, 0.0]));
+        assert!(s.keep(1, [100.0, 0.0, 0.0]), "walking");
+        assert!(!s.keep(1, [470_000.0, 0.0, 0.0]), "a jump: held back");
+        assert!(s.keep(1, [110.0, 0.0, 0.0]), "back: the jump was a glitch");
+        assert!(!s.keep(1, [50_000.0, 0.0, 0.0]), "a respawn's jump: held back");
+        assert!(s.keep(1, [50_010.0, 0.0, 0.0]), "it stays: kept");
+        assert!(s.keep(1, [50_020.0, 0.0, 0.0]));
+        assert!(s.keep(2, [9.0e5, 0.0, 0.0]), "a new character is kept where it starts");
+    }
 }

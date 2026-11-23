@@ -46,6 +46,16 @@ const SWITCHES: [(&str, usize, &[(usize, &str)]); 3] = [
     ("CharacterControl", 39, &[(30, "m_bUnlimitedInventory")]),
 ];
 
+/// FN: switches co-op itself turns on (a downed or reviving player, a cutscene: 128 invisible
+/// notes in two days, all in co-op, mostly pairs of teammates at the same moments, with the
+/// unhittable and god mode override ones beside them), so not read in co-op.
+const NOT_IN_COOP: [&str; 3] = ["m_bStateInvisible", "m_bStateUnhittable", "m_bGodModeOverride"];
+
+/// Whether a match state is co-op's (`CoopMissionState_…`).
+fn coop(state: &str) -> bool {
+    state.starts_with("CoopMissionState")
+}
+
 /// How often the own character is read.
 const EVERY: Duration = Duration::from_secs(3);
 /// How often the look-up is tried again while it found nothing (each is a few whole scans).
@@ -147,7 +157,7 @@ impl PawnSwitches {
 
 impl pawns::Watcher for PawnSwitches {
     fn sample(&mut self, tables: &pawns::Tables, now: Instant, characters: &[pawns::Sample]) {
-        let (_, under_way, _) = rs::current();
+        let (state, under_way, _) = rs::current();
         if !under_way {
             self.said = false;
             return;
@@ -199,7 +209,12 @@ impl pawns::Watcher for PawnSwitches {
         if self.said {
             return;
         }
-        let mut found: Vec<String> = on(places, own.object, pawns::controller_of(tables, own.object)).into_iter().map(String::from).collect();
+        let in_coop = coop(&state);
+        let mut found: Vec<String> = on(places, own.object, pawns::controller_of(tables, own.object))
+            .into_iter()
+            .filter(|name| !(in_coop && NOT_IN_COOP.contains(name)))
+            .map(String::from)
+            .collect();
         // Health over the character's own starting health (spies 90, mercs 170 in SvM: the
         // gamebox, 14 Nov), on two reads in a row: no stock character goes over it. Pawn.Health
         // is a copy: the game writes it back from its health system (m_pHealthSystem) within

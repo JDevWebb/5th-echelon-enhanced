@@ -3253,6 +3253,7 @@ async fn witness(ctx: &mut Ctx) -> Result<()> {
         max_speed: 1400.0,
         ground_speed: 450.0,
         over_seconds: 6,
+        ..Default::default()
     };
     guest.witness(vec![seen(&host.name), seen("NoSuchPlayer")]).await?;
     // One report a minute a witness.

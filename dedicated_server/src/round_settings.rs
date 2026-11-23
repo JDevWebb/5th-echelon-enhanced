@@ -65,6 +65,11 @@ pub fn said(host: u32, under_way: bool, settings: &HashMap<String, f32>) -> Opti
     }
 }
 
+/// Settings the host's choice doesn't reach the guests' games with (0.5.6's FN): every guest of a
+/// host who set a custom time limit reads the menu's default (600 against the host's 1200 or 1800,
+/// 57 notes from 6 players in a week, all in one host's matches), so they say nothing.
+const NOT_REPLICATED: [&str; 1] = ["m_iTimeLimit"];
+
 /// Guests whose rules were found to differ from their host's this round, with the host: told
 /// once a round (0.5.2's R4).
 fn told() -> std::sync::MutexGuard<'static, HashMap<u32, u32>> {
@@ -82,10 +87,16 @@ pub fn guest_said(guest: u32, host: u32, under_way: bool, settings: &HashMap<Str
         return None;
     }
     let mine = clean(settings);
+    // FN (0.5.6): a guest's match manager not set up yet (its time limit still 0) reads defaults;
+    // nothing to compare.
+    if mine.get("m_iTimeLimit").is_some_and(|t| *t == 0.0) {
+        return None;
+    }
     let hosts = rounds();
     let theirs = hosts.get(&host)?;
     let differ: BTreeMap<&String, (f32, f32)> = mine
         .iter()
+        .filter(|(k, _)| !NOT_REPLICATED.contains(&k.as_str()))
         .filter_map(|(k, v)| theirs.get(k).filter(|h| (*h - v).abs() > 0.011).map(|h| (k, (*v, *h))))
         .collect();
     if differ.is_empty() {
@@ -201,6 +212,17 @@ mod tests {
         assert!(guest_said(700_102, 700_100, true, &s(0.5, 10.0)).is_none(), "once a round");
         guest_said(700_102, 700_100, false, &s(0.5, 10.0));
         assert!(guest_said(700_102, 700_100, true, &s(0.5, 10.0)).is_some(), "the next round again");
+    }
+
+    /// FN: the host's custom time limit doesn't reach the guests' games, and a guest's manager
+    /// not set up yet (time limit 0) is no guest to compare.
+    #[test]
+    fn the_time_limit_and_an_unset_manager_say_nothing() {
+        let s = |limit: f32, ff: f32| HashMap::from([(String::from("m_iTimeLimit"), limit), (String::from("m_bIsFriendlyFireEnabled"), ff)]);
+        said(700_200, true, &s(1800.0, 1.0));
+        assert!(guest_said(700_201, 700_200, true, &s(600.0, 1.0)).is_none(), "the menu's default against the host's choice");
+        assert!(guest_said(700_202, 700_200, true, &s(0.0, 0.0)).is_none(), "not set up yet");
+        assert!(guest_said(700_203, 700_200, true, &s(600.0, 0.0)).is_some(), "friendly fire still counts");
     }
 
     #[test]

@@ -35,6 +35,53 @@ pub struct Release {
 /// Newest first. A release with nothing a player would notice has no entry.
 pub const RELEASES: &[Release] = &[
     Release {
+        version: "0.5.6",
+        thanks: &["Tea_bag", "TrustInDemon", "Glacio1", "Cloud", "CoolPeaceMaker", "GhostReacher"],
+        new: &[
+            Item {
+                title: "Mute in-match chat",
+                text: "The overlay's Match tab mutes a player's in-match chat for the rest of the match, players you've blocked are never shown, and Settings › Game sets the chat to everyone, your team only, or off.",
+                community: false,
+            },
+            Item {
+                title: "Reports carry the chat",
+                text: "Reporting a player from the overlay now sends the admins that player's in-match chat lines your game showed, so you don't need a screenshot.",
+                community: false,
+            },
+            Item {
+                title: "Matches kept for reviews",
+                text: "Match recordings are kept 30 days for the admins to review reported matches. ReplayUpload = false in uplay.toml keeps them on your PC.",
+                community: true,
+            },
+        ],
+        fixed: &[
+            Fix {
+                lead: "In co-op with more than two players,",
+                rest: " a crash when a player joined, left or was removed (a character's ragdoll) is stopped.",
+            },
+            Fix {
+                lead: "Two PCs behind one router",
+                rest: " whose home network doesn't carry the game now meet through the relay instead of failing every join.",
+            },
+            Fix {
+                lead: "Restarting the game with a join pending",
+                rest: " no longer counts as a failed join or takes you out of that match.",
+            },
+            Fix {
+                lead: "When your connection to the server keeps being cut,",
+                rest: " the overlay says so, and the game stops signing in again every few seconds.",
+            },
+            Fix {
+                lead: "Alt+Enter on DirectX 9",
+                rest: " tells you once that the graphics driver can freeze the game for a minute or more while it switches.",
+            },
+            Fix {
+                lead: "In a match past its mode's size,",
+                rest: " every player is told once that games crash more often above it.",
+            },
+        ],
+    },
+    Release {
         version: "0.5.5",
         thanks: &["Major", "Mumu", "Glacio1", "TheFlash24AM"],
         new: &[
@@ -230,7 +277,7 @@ pub const RELEASES: &[Release] = &[
             },
             Item {
                 title: "Match recordings",
-                text: "Your game records each match (where everyone was, faced and shot) in the game folder's replays, and sends it to your server, which keeps it a week for the admins to watch when a match is reported. ReplayRecording = false in uplay.toml turns it off, ReplayUpload = false keeps them on your PC.",
+                text: "Your game records each match (where everyone was, faced and shot) in the game folder's replays, and sends it to your server, which keeps it 30 days for the admins to watch when a match is reported. ReplayRecording = false in uplay.toml turns it off, ReplayUpload = false keeps them on your PC.",
                 community: false,
             },
             Item {

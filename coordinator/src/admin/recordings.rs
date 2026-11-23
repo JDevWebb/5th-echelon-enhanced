@@ -49,7 +49,7 @@ async fn ask(State(c): State<Shared>, Extension(client): Extension<Client>, head
         Ok(n) => n,
         Err(e) => return internal(e),
     };
-    if c.recording_path(&server, &id).is_some_and(|p| p.exists()) {
+    if c.recording_path(&server, &id).is_some_and(|p| p.exists()) || c.recording_from_r2(&server, &id).await {
         return ok(json!({ "status": "here", "name": name }));
     }
     match c.ask_for_recording(&server, player, &id, &s.username).await {

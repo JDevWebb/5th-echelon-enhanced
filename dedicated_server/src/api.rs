@@ -1752,13 +1752,13 @@ impl Misc for MyMisc {
 
         // The mode's size for the match the player is in, for the overlay's warning; nothing
         // when it can't be read (a warning, not worth failing the poll for).
-        let match_size = self
-            .storage
-            .rooms_attributes_of_async(user_id)
-            .await
-            .ok()
-            .and_then(|rooms| rooms.iter().find_map(|a| crate::game_session::mode_size(a)))
-            .unwrap_or(0);
+        let rooms = self.storage.rooms_with_players_of_async(user_id).await.unwrap_or_default();
+        let match_size = rooms.iter().find_map(|(_, a, _)| crate::game_session::mode_size(a)).unwrap_or(0);
+        // R3: a match room with more players than its mode was made for (a host raised it past
+        // its size): the player is told once, and still plays.
+        if let Some((room, size, players)) = rooms.iter().find_map(|(room, a, n)| crate::game_session::mode_size(a).filter(|s| n > s).map(|s| (*room, s, *n))) {
+            crate::oversized::seen(user_id, room, size, players);
+        }
 
         let Some(invite) = self.storage.take_invite_async(user_id).await.map_err(|e| {
             error!(self.logger, "Error getting latest invite for user: {e}");
@@ -2076,6 +2076,24 @@ impl Misc for MyMisc {
                 }
             }
         }
+        // A round just ended: its result, as this player's game has it (0.5.6's RP5). The host's
+        // is the match's word; a guest's is kept to compare.
+        if !r.round_result.is_empty() {
+            let room = match rooms.first() {
+                Some(room) => Some(*room),
+                None => self
+                    .storage
+                    .rooms_with_players_of_async(user_id)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|(_, a, _)| crate::game_session::attribute_value(a, crate::game_session::PROPERTY_ROOM_KIND) == Some(0))
+                    .map(|(room, ..)| room),
+            };
+            if let Some(room) = room {
+                crate::session_events::note(crate::session_events::Who::Id(user_id), "round_result", round_result(room, !rooms.is_empty(), &r.round_result));
+            }
+        }
         // Its player's number in the session, and everyone's in its room back (peer_names.rs).
         crate::peer_names::said(user_id, r.peer);
         let mut rooms = self.storage.find_host_sessions_async(user_id).await.map_err(internal)?;
@@ -2226,6 +2244,19 @@ impl Misc for MyMisc {
             let Some((id, name, room)) = known.iter().find(|(_, n, _)| n.eq_ignore_ascii_case(&seen.name)) else {
                 continue;
             };
+            // W3: their fire rate against everyone else's with the weapon class (0.5.6).
+            if seen.shots >= 2 {
+                if let Some(median) = crate::fire_rates::seen(*id, &printable(&seen.weapon, 64), seen.fastest_shot_ms) {
+                    crate::session_events::note(
+                        crate::session_events::Who::Id(*id),
+                        "witnessed",
+                        serde_json::json!({
+                            "by": user_id, "room": room, "check": "fire_rate", "weapon": printable(&seen.weapon, 64),
+                            "fastest_shot_ms": seen.fastest_shot_ms.round(), "others_ms": median.round(), "shots": seen.shots,
+                        }),
+                    );
+                }
+            }
             if seen.over_seconds < WITNESS_OVER || !seen.max_speed.is_finite() {
                 continue;
             }
@@ -2261,6 +2292,7 @@ impl Misc for MyMisc {
                     "recording",
                     serde_json::json!({
                         "id": k.id, "map": k.map, "mode": k.mode, "seconds": k.seconds.round(), "size": k.size,
+                        "key": crate::recordings::r2_store().map(|_| crate::recordings::r2_key(&k.id, k.received)),
                         "characters": k.characters, "named": k.named, "shots": k.shots, "kills": k.kills, "started": k.started,
                     }),
                 );
@@ -2379,6 +2411,63 @@ impl Misc for MyMisc {
 
     /// What the add-on's crash fixes did: which went in, and how often each kept the game from
     /// crashing (a session event, `crash_fixes`). Once a minute at most.
+    /// A name this player's game showed for another player of its match (a chat line's sender)
+    /// that isn't the one the server has for their number (0.5.6's N1).
+    async fn name_seen(&self, request: Request<misc::NameSeenRequest>) -> Result<Response<misc::NameSeenResponse>, Status> {
+        let user_id = caller(&request)?;
+        if !crate::rate_limit::polls().check(user_id) {
+            return Err(Status::resource_exhausted("Too many requests; slow down"));
+        }
+        let r = request.into_inner();
+        let shown = printable(&r.shown, 40);
+        if r.peer == 0 || r.peer > crate::peer_names::MOST_PEER || shown.trim().is_empty() {
+            return Ok(Response::new(misc::NameSeenResponse {}));
+        }
+        // The witness's match room and its players (the witness too), named by their numbers.
+        let mut rooms = self.storage.find_host_sessions_async(user_id).await.map_err(internal)?;
+        rooms.extend(self.storage.member_sessions_async(user_id).await.map_err(internal)?);
+        rooms.retain(is_match_room);
+        rooms.truncate(1);
+        let Some(room) = rooms.first().map(|s| s.session_id) else {
+            return Ok(Response::new(misc::NameSeenResponse {}));
+        };
+        let sessions = self.storage.with_participants_async(rooms, crate::storage::UrlsFor::AllBut(user_id)).await.map_err(internal)?;
+        let mut players: Vec<(u32, String)> = sessions.iter().flat_map(|s| s.participants.iter().map(|p| (p.user_id, p.name.clone()))).collect();
+        players.sort();
+        players.dedup();
+        let Some(real) = crate::peer_names::of(&players).into_iter().find(|(peer, _)| *peer == r.peer).map(|(_, name)| name) else {
+            return Ok(Response::new(misc::NameSeenResponse {}));
+        };
+        let Some(target) = players.iter().find(|(_, n)| *n == real).map(|(id, _)| *id) else {
+            return Ok(Response::new(misc::NameSeenResponse {}));
+        };
+        match crate::name_witness::seen(user_id, room, target, &real, &shown) {
+            crate::name_witness::Seen2::Nothing => {}
+            crate::name_witness::Seen2::Note => {
+                warn!(self.logger, "Fair play: {user_id}'s game showed {real} ({target}) as {shown:?} in room {room}");
+                crate::session_events::note(
+                    crate::session_events::Who::Id(target),
+                    "fair_play",
+                    serde_json::json!({
+                        "check": "name",
+                        "detail": format!("shown to the other players as {shown:?}, not their name (their host's game saw it in the chat)"),
+                        "value": 1,
+                        "room": room,
+                        "witness": user_id,
+                        "wine": false,
+                    }),
+                );
+            }
+            crate::name_witness::Seen2::Tell => {
+                warn!(self.logger, "Fair play: {real} ({target}) is shown as {shown:?} in room {room} (two witnesses): the match is told");
+                for (id, _) in &players {
+                    crate::reports::tell(*id, String::from("A player's name isn't theirs"), format!("{shown} is really {real}."), None);
+                }
+            }
+        }
+        Ok(Response::new(misc::NameSeenResponse {}))
+    }
+
     async fn crash_fixes(&self, request: Request<misc::CrashFixesRequest>) -> Result<Response<misc::CrashFixesResponse>, Status> {
         let user_id = caller(&request)?;
         let r = request.into_inner();
@@ -2426,7 +2515,7 @@ impl Misc for MyMisc {
         let peer = client_addr(&request);
         let r = request.into_inner();
         let target: u32 = r.id.parse().map_err(|_| Status::invalid_argument("Not a player"))?;
-        match crate::player_reports::report(&self.storage, user_id, peer, target, &r.reason, &r.text)
+        match crate::player_reports::report(&self.storage, user_id, peer, target, &r.reason, &r.text, &r.chat_lines)
             .await
             .map_err(internal)?
         {
@@ -2447,7 +2536,8 @@ impl Misc for MyMisc {
     }
 
     async fn test_p2p(&self, request: Request<misc::TestP2pRequest>) -> Result<Response<misc::TestP2pResponse>, Status> {
-        if !crate::rate_limit::game_requests().check(caller(&request)?) {
+        let user_id = caller(&request)?;
+        if !crate::rate_limit::game_requests().check(user_id) {
             return Err(Status::resource_exhausted("Too many requests; slow down"));
         }
         // The player's own address: behind a reverse proxy, the one it forwards
@@ -2473,8 +2563,43 @@ impl Misc for MyMisc {
             return Err(Status::unknown(format!("P2P communication failed: {}", challenge.unwrap_err())));
         };
 
+        // Reached at its game port by this server's own packet: a lasting move to the relay made
+        // at this address is undone (0.5.6's JC2).
+        if let std::net::IpAddr::V4(v4) = ip.to_canonical() {
+            let storage = Arc::clone(&self.storage);
+            let logger = self.logger.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Ok(Some(name)) = storage.find_username_by_user_id(user_id) {
+                    crate::relay_moves::reached(&storage, &logger, user_id, &name, v4);
+                }
+            })
+            .await;
+        }
         Ok(Response::new(misc::TestP2pResponse { challenge }))
     }
+}
+
+/// A round's result as a `round_result` session event (0.5.6's RP5): the room, whether it's the
+/// host's word, and the match manager's numbers by short names (only those that are sane ints).
+fn round_result(room: u32, host: bool, values: &HashMap<String, f32>) -> serde_json::Value {
+    const NAMES: [(&str, &str); 6] = [
+        ("m_iRoundNumber", "round"),
+        ("m_iRoundWinningTeam", "winner_team"),
+        ("m_iRoundWinningPlayer", "winner_player"),
+        ("m_iNumRounds", "rounds"),
+        ("m_iNumHackComplete", "hacks"),
+        ("m_iRoundScore", "score"),
+    ];
+    let mut d = serde_json::Map::new();
+    d.insert("room".into(), serde_json::json!(room));
+    d.insert("host".into(), serde_json::json!(host));
+    for (name, short) in NAMES {
+        if let Some(v) = values.get(name).filter(|v| v.is_finite() && v.abs() <= 1_000_000.0) {
+            #[allow(clippy::cast_possible_truncation)]
+            d.insert(short.into(), serde_json::json!(*v as i64));
+        }
+    }
+    serde_json::Value::Object(d)
 }
 
 /// Implements the `UsersAdmin` gRPC service for administrative user management.

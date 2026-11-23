@@ -1,0 +1,10 @@
+[package]
+name = "objstore"
+version = "0.1.0"
+edition = "2021"
+description = "A small S3-compatible object store client (Cloudflare R2): signed PUT and GET"
+
+[dependencies]
+hmac = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+sha2 = { workspace = true }

@@ -171,6 +171,7 @@ export const PROBLEMS = {
 export const ALERT_KINDS = {
   offline: 'Offline', program: 'Program', unreachable: 'Unreachable', api: 'API', dns: 'Name lookup', cpu: 'CPU', memory: 'Memory', disk: 'Disk',
   signins: 'Refused sign-ins', allowance: 'Traffic allowance', update: 'Update', rollout: 'Rollout', crash: 'Crash',
+  recordings: 'Recordings',
 };
 export const alertKind = kind => ALERT_KINDS[kind] || kind;
 /** Where an alert is: a server's name when it's about a server (a crash's alert is keyed by

@@ -152,21 +152,53 @@ fn read_all(f: &Found) -> BTreeMap<String, u32> {
     out
 }
 
-/// W2: the live weapons with a switch on, by switch: how many.
-fn switches_on(f: &Found) -> BTreeMap<&'static str, u32> {
-    let mut on = BTreeMap::new();
+/// FN: weapons whose own archetype turns a switch on (the game's, not a cheat's): by the
+/// weapon's class name, the switches it has on by design. Filled from the gamebox's `firing`
+/// test command and the notes' weapon names (0.5.6's FN: `m_bUnlimitedAmmo on 1 weapon` was a
+/// third of all players in SvM).
+const STOCK_SWITCHES: &[(&str, &[&str])] = &[];
+
+/// The class name of the weapon a firing component belongs to (its outer's class), if readable.
+fn weapon_class(component: usize) -> Option<String> {
+    let outer = read_u32(component + 0x18).filter(|o| *o != 0)? as usize;
+    let class = read_u32(outer + 0x24).filter(|c| *c != 0)? as usize;
+    name_text(read_u32(class + 0x20)?)
+}
+
+/// Whether `weapon` (a class name) has `switch` on by design ([`STOCK_SWITCHES`]).
+fn stock(weapon: &str, switch: &str) -> bool {
+    STOCK_SWITCHES.iter().any(|(w, on)| w.eq_ignore_ascii_case(weapon) && on.contains(&switch))
+}
+
+/// W2: the live weapons with a switch on (stock ones left out), by switch: the weapons' classes.
+fn switches_on(f: &Found) -> BTreeMap<&'static str, Vec<String>> {
+    let mut on: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
     let Some((class, switches)) = &f.firing else { return on };
     crate::round_state::each_object(|o| {
         if !crate::round_state::of_class(o, *class) {
             return;
         }
+        let mut weapon: Option<String> = None;
         for (name, offset, mask) in switches {
             if read_u32(o + usize::from(*offset)).is_some_and(|w| w & mask != 0) {
-                *on.entry(*name).or_insert(0) += 1;
+                let w = weapon.get_or_insert_with(|| weapon_class(o).unwrap_or_else(|| String::from("?"))).clone();
+                if !stock(&w, name) {
+                    on.entry(*name).or_default().push(w);
+                }
             }
         }
     });
     on
+}
+
+/// How a switch's weapons read in a note: "m_bUnlimitedAmmo on 1 weapon (EWeaponX)".
+fn said(switch: &str, weapons: &[String]) -> String {
+    let n = weapons.len();
+    let mut names: Vec<&str> = weapons.iter().map(String::as_str).collect();
+    names.sort_unstable();
+    names.dedup();
+    let names: Vec<&str> = names.into_iter().take(4).collect();
+    format!("{switch} on {n} weapon{} ({})", if n == 1 { "" } else { "s" }, names.join(", "))
 }
 
 /// W2, each minute in a match: a live weapon with a cheat switch on is told the server once a
@@ -183,11 +215,11 @@ pub fn check_switches(under_way: bool) {
     if on.is_empty() || SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
         return;
     }
-    let said: Vec<String> = on.iter().map(|(k, n)| format!("{k} on {n} weapon{}", if *n == 1 { "" } else { "s" })).collect();
-    let detail = format!("live weapons with a cheat switch on: {}", said.join(", "));
+    let parts: Vec<String> = on.iter().map(|(k, w)| said(k, w)).collect();
+    let detail = format!("live weapons with a cheat switch on: {}", parts.join(", "));
     tracing::warn!("Weapons: {detail}");
     #[allow(clippy::cast_precision_loss)]
-    crate::api::fair_play_check("weapon", &detail, on.values().sum::<u32>() as f64, hooks_config::running_under_wine());
+    crate::api::fair_play_check("weapon", &detail, on.values().map(Vec::len).sum::<usize>() as f64, hooks_config::running_under_wine());
 }
 
 static LAST: Mutex<Option<(Instant, BTreeMap<String, u32>, bool)>> = Mutex::new(None);
@@ -246,4 +278,19 @@ pub fn test_firing_words() {
         "Weapons: test: {total} live weapons at {offset}; bits on (bit:weapons) {}; values {values:x?}",
         on.join(" ")
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_switch_note_names_its_weapons() {
+        assert_eq!(said("m_bUnlimitedAmmo", &["EWeaponB".into()]), "m_bUnlimitedAmmo on 1 weapon (EWeaponB)");
+        assert_eq!(
+            said("m_bUnlimitedAmmo", &["EWeaponB".into(), "EWeaponA".into(), "EWeaponB".into()]),
+            "m_bUnlimitedAmmo on 3 weapons (EWeaponA, EWeaponB)"
+        );
+        assert!(!stock("EWeaponA", "m_bUnlimitedAmmo"), "nothing stock until the gamebox names it");
+    }
 }

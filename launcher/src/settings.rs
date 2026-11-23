@@ -142,11 +142,21 @@ mod renderer_note_tests {
 
 /// What a beta feature's switch says, and its hover text, in the order of
 /// `hooks_config::Beta::NAMES`.
-pub const BETA_FEATURES: [(&str, &str); 1] = [(
-    "Mouse turning the same at any frame rate",
-    "Above 60 fps the game turns less for the same mouse movement, so turning feels slow and players cap their frame rate. \
+pub const BETA_FEATURES: [(&str, &str); 3] = [
+    (
+        "Mouse turning the same at any frame rate",
+        "Above 60 fps the game turns less for the same mouse movement, so turning feels slow and players cap their frame rate. \
          This scales the mouse's turn by the frame rate, so it turns as it does at 60 fps. Only the mouse: controllers are left as they are.",
-)];
+    ),
+    (
+        "No camera shake",
+        "The camera no longer shakes from explosions, hits and the like. Only your view: nothing changes for the other players.",
+    ),
+    (
+        "Wider field of view",
+        "You see 10 degrees more to each side than the game's own view. Only your view: nothing changes for the other players.",
+    ),
+];
 
 /// Makes `identity` this PC's, keeping the one it replaces: whether it did.
 pub fn replace_identity(identity: &setup::player_identity::Identity, notices: &mut Notices) -> bool {

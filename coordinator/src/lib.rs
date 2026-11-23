@@ -50,6 +50,7 @@ pub mod hardware;
 mod host_check;
 pub mod limits;
 pub mod maintenance;
+pub mod matches;
 pub mod metrics;
 pub mod notices;
 pub mod players;

@@ -330,7 +330,15 @@ struct Found {
     mission_offset: Option<u16>,
     /// Each setting's properties (objects named so, of whichever class).
     settings: Vec<(&'static str, Vec<usize>)>,
+    /// Each round result's properties ([`RESULTS`]), the same way.
+    results: Vec<(&'static str, Vec<usize>)>,
 }
+
+/// A round's result on the adversarial match manager (0.5.6's RP5), read as it ends: its
+/// number, the winning team (and player, in a free-for-all), how many rounds there are, and for
+/// Spies vs Mercs the hacks done and the round's score. Sent with the match state as
+/// `round_result`, never with the settings (they change every round).
+const RESULTS: [&str; 6] = ["m_iRoundNumber", "m_iRoundWinningTeam", "m_iRoundWinningPlayer", "m_iNumRounds", "m_iNumHackComplete", "m_iRoundScore"];
 
 /// The name indices of `wanted`, from the name table (once: it holds tens of thousands).
 pub(crate) fn name_indices(wanted: &[&'static str]) -> HashMap<&'static str, u32> {
@@ -356,6 +364,7 @@ fn look_up() -> Option<Found> {
     let mut wanted: Vec<&'static str> = ADVERSARIAL.iter().chain(COOPERATIVE.iter()).copied().collect();
     wanted.extend(["Class", "ByteProperty", "m_eRoundState", "m_missionState"]);
     wanted.extend(SETTINGS);
+    wanted.extend(RESULTS);
     let names = name_indices(&wanted);
     let class_name = *names.get("Class")?;
     // A class: the object with the class's name whose own class is named "Class".
@@ -376,6 +385,11 @@ fn look_up() -> Option<Found> {
         read::<u16>(object + 0x3a)
     };
     let settings = SETTINGS
+        .iter()
+        .filter_map(|s| Some((*s, named(pack(*names.get(s)?, 0)))))
+        .filter(|(_, props)| !props.is_empty())
+        .collect();
+    let results = RESULTS
         .iter()
         .filter_map(|s| Some((*s, named(pack(*names.get(s)?, 0)))))
         .filter(|(_, props)| !props.is_empty())
@@ -413,6 +427,7 @@ fn look_up() -> Option<Found> {
         round_offset,
         mission_offset,
         settings,
+        results,
         names,
         classes,
     })
@@ -516,9 +531,15 @@ pub(crate) fn chain(class: usize) -> Vec<u32> {
 /// The round's settings on the match manager `object`: each of [`SETTINGS`] its class (or one
 /// it's made from) has, with its value.
 fn settings_of(found: &Found, object: usize) -> std::collections::BTreeMap<String, f32> {
+    values_of(&found.settings, object)
+}
+
+/// Each of `wanted` (a property name and its property objects) that `object`'s class (or one it's
+/// made from) has, with its value.
+fn values_of(wanted: &[(&'static str, Vec<usize>)], object: usize) -> std::collections::BTreeMap<String, f32> {
     let classes = read_u32(object + 0x24).map(|c| chain(c as usize)).unwrap_or_default();
     let mut out = std::collections::BTreeMap::new();
-    for (name, props) in &found.settings {
+    for (name, props) in wanted {
         let Some(prop) = props.iter().find(|p| read_u32(*p + 0x18).is_some_and(|outer| classes.contains(&outer))) else {
             continue;
         };
@@ -827,8 +848,15 @@ pub fn start() {
             if let Some((object, adversarial)) = live {
                 test_setting(f, object, adversarial);
             }
-            let settings = live.map(|(object, _)| settings_of(f, object)).unwrap_or_default();
+            let mut settings = live.map(|(object, _)| settings_of(f, object)).unwrap_or_default();
+            // FN: co-op sets friendly explosions per player as they join (14 notes in 3 days, all
+            // pairs of new co-op players, 0 against the host's 1), so it isn't sent from co-op.
+            if live.is_some_and(|(_, adversarial)| !adversarial) {
+                settings.remove("m_bIsFriendlyExplosionsEnabled");
+            }
             let (state, under_way) = now.unwrap_or_else(|| ("none".to_string(), false));
+            // D1: the manager's own properties, watched through the round (watched.rs).
+            crate::watched::tick(live.map(|(object, _)| object), under_way);
             let mode = live
                 .and_then(|(object, _)| name_text(read_u32(read_u32(object + 0x24)? as usize + 0x20)?))
                 .unwrap_or_default();
@@ -857,10 +885,23 @@ pub fn start() {
             if changed || again {
                 if changed {
                     info!("Match state: {state}{}", if under_way { " (under way)" } else { "" });
+                    // Out of a match: mutes end with it (match_chat.rs).
+                    if state == "none" {
+                        crate::match_chat::match_left();
+                    }
                 }
                 // Nothing to say before the first match, nor of no match after a joinable one.
                 if under_way || said.as_ref().is_some_and(|(_, u, _)| *u) || (changed && said.is_some()) {
-                    crate::api::match_state(under_way, &state, &settings);
+                    // A round just ended: its result goes with it (RP5).
+                    let result = if changed && state == "RoundState_Ended" {
+                        live.map(|(object, _)| values_of(&f.results, object)).unwrap_or_default()
+                    } else {
+                        std::collections::BTreeMap::new()
+                    };
+                    if !result.is_empty() {
+                        info!("Round result: {result:?}");
+                    }
+                    crate::api::match_state(under_way, &state, &settings, &result);
                 }
                 said = Some((state, under_way, Instant::now()));
                 said_peer = own;

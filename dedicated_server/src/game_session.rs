@@ -499,7 +499,7 @@ const PARTY_BACK_TRIES: u32 = 3;
 /// opens on entering multiplayer, and the configured match room itself. Both name the same
 /// host and live in the same session type - this property is the only thing distinguishing
 /// them.
-const PROPERTY_ROOM_KIND: u32 = 113;
+pub(crate) const PROPERTY_ROOM_KIND: u32 = 113;
 /// The game's data version (`server_api::data_versions`): games whose versions differ can't
 /// join each other.
 pub(crate) const PROPERTY_DATA_VERSION: u32 = 107;

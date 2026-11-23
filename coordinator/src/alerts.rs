@@ -39,6 +39,9 @@ const API_CHECKS_FAILED: usize = 3;
 /// The setting with the webhook's address.
 pub const WEBHOOK_SETTING: &str = "alert_webhook";
 
+/// A recording waiting this long for R2 is an alert (seconds).
+const RECORDINGS_UNSENT: f64 = 86_400.0;
+
 /// A condition that holds now: (kind, server, level, what to say).
 type Condition = (String, String, &'static str, String);
 
@@ -189,6 +192,25 @@ impl Coordinator {
             }
             if last.3 > 0.0 && last.4 / last.3 < DISK_LOW {
                 found.push(("disk".into(), id.clone(), "warn", format!("{n} has {:.0}% of its disk free", last.4 / last.3 * 100.0)));
+            }
+        }
+        // Recordings a server couldn't put in R2 for a day (0.5.6's RP3): its newest sample says.
+        let unsent: Vec<(String, Option<f64>)> = sqlx::query_as(
+            "SELECT s.server_id, CAST(json_extract(s.data, '$.recordings_unsent_secs') AS REAL) FROM samples s
+              WHERE s.at = (SELECT MAX(at) FROM samples t WHERE t.server_id = s.server_id) AND s.at >= ?",
+        )
+        .bind(now - 600)
+        .fetch_all(&self.pool)
+        .await?;
+        for (id, secs) in unsent {
+            if let Some(secs) = secs.filter(|s| *s >= RECORDINGS_UNSENT) {
+                let n = names.get(&id).cloned().unwrap_or_else(|| safe(&id, 64));
+                found.push((
+                    "recordings".into(),
+                    id.clone(),
+                    "warn",
+                    format!("{n} hasn't put a recording in R2 for {:.0} h (its key, or R2, may be down)", secs / 3600.0),
+                ));
             }
         }
         let failed: Vec<(String, Option<f64>, Option<f64>)> = sqlx::query_as(

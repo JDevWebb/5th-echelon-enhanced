@@ -75,6 +75,8 @@ const KINDS: &[&str] = &[
     "unreachable",
     "relay_pings",
     "address_change",
+    "oversized",
+    "round_result",
 ];
 
 /// How long after a relay drop a player leaving their match counts as dropping out, and
@@ -265,6 +267,14 @@ impl Coordinator {
                 "INSERT INTO session_events (server_id, id, at, last_at, player, name, kind, detail, count) VALUES (?1, ?2, ?9, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT (server_id, id) DO UPDATE SET last_at = excluded.last_at, count = excluded.count, detail = excluded.detail"
             };
+            // How many more times it happened than this event said before (a repeat sent again
+            // comes with its whole count): for the matches' table (RP4, RP5).
+            let before: Option<i64> = sqlx::query_scalar("SELECT count FROM session_events WHERE server_id = ? AND id = ?")
+                .bind(server)
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+            let parsed: Value = serde_json::from_str(&detail).unwrap_or_default();
             sqlx::query(sql)
                 .bind(server)
                 .bind(id)
@@ -277,6 +287,10 @@ impl Coordinator {
                 .bind(at)
                 .execute(&mut *tx)
                 .await?;
+            let more = count - before.unwrap_or(0);
+            if more > 0 || before.is_none() {
+                crate::matches::note(&mut tx, server, at, last_at, player, &name, kind, &parsed, more.max(0)).await?;
+            }
             kept += 1;
         }
         tx.commit().await?;
@@ -980,6 +994,7 @@ fn describe(e: &Event) -> String {
             },
             match e.str("where") {
                 "secure" => "the game's sign-in ticket",
+                "api" => "their launcher's or game's sign-in",
                 other => other,
             },
             match e.str("outcome") {
@@ -987,6 +1002,17 @@ fn describe(e: &Event) -> String {
                 "proven" => "signed in (their launcher had signed in from there)",
                 _ => "signed in (a neighbouring address)",
             }
+        ),
+        "round_result" => format!(
+            "Round {} ended{}{}",
+            e.detail["round"].as_i64().map_or_else(|| "?".to_string(), |r| r.to_string()),
+            e.detail["winner_team"].as_i64().map_or_else(String::new, |t| format!(", team {t} won")),
+            if e.detail["host"] == true { " (the host's word)" } else { "" }
+        ),
+        "oversized" => format!(
+            "In a match past its mode's size: {} players in a mode made for {}",
+            e.detail["players"].as_u64().unwrap_or(0),
+            e.detail["size"].as_u64().unwrap_or(0)
         ),
         "relay_pings" => format!(
             "Pings to the relays: nearest {} at {} ms{}",
@@ -1122,6 +1148,13 @@ fn describe(e: &Event) -> String {
                 ": too fast, {}",
                 o.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")
             ))
+        ),
+        "witnessed" if e.str("check") == "fire_rate" => format!(
+            "Seen firing {} faster than other players do by player {} ({} ms between shots, others {} ms)",
+            e.str("weapon"),
+            e.detail["by"],
+            e.detail["fastest_shot_ms"],
+            e.detail["others_ms"]
         ),
         "witnessed" => format!(
             "Seen moving faster than the game allows by player {} ({} s over; fastest {} against a walk of {})",
@@ -1410,6 +1443,7 @@ fn mark_level(e: &Event) -> Option<&'static str> {
         "login_stalled" => Some("warn"),
         "address_change" if e.str("outcome") == "refused" => Some("warn"),
         "address_change" => Some("info"),
+        "oversized" => Some("warn"),
         "crash" if e.detail["fatal"] == true => Some("bad"),
         "crash" => Some("warn"),
         "crash_fixes" if e.detail["missing"].as_array().is_some_and(|m| !m.is_empty()) => Some("warn"),
@@ -1619,7 +1653,9 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
             // rooms, before it's a problem; once, on the event that makes it so.
             "witnessed" => {
                 let Some(list) = by_who.get(&e.who()) else { continue };
-                let mut seen: Vec<&&Event> = list.iter().filter(|o| o.kind == "witnessed" && o.at <= e.at).collect();
+                // Speed and fire rate (W3) each on their own.
+                let check = e.str("check");
+                let mut seen: Vec<&&Event> = list.iter().filter(|o| o.kind == "witnessed" && o.at <= e.at && o.str("check") == check).collect();
                 seen.sort_by_key(|o| o.at);
                 // A witness is new only if neither their account nor any of their PC's or
                 // network's ids (marks: Coordinator::mark_witnesses) was seen already (many
@@ -1643,10 +1679,15 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
                 if !now_enough || (witnesses(before) >= 2 && rooms(before) >= 2) {
                     continue;
                 }
+                let what = if check == "fire_rate" {
+                    format!("fired {} faster than other players do", e.str("weapon"))
+                } else {
+                    "moved faster than the game allows".to_string()
+                };
                 out.push(problem(
                     e,
                     "bad",
-                    format!("{} moved faster than the game allows, seen by {} players", e.name, witnesses(&seen)),
+                    format!("{} {what}, seen by {} players", e.name, witnesses(&seen)),
                     format!(
                         "Independent witnesses in {} matches (witness reports, a research prototype: check before acting)",
                         rooms(&seen)

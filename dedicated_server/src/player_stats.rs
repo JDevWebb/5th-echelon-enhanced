@@ -113,6 +113,44 @@ fn checked_writes(request: &WriteStatsRequest) -> (Vec<StatWrite>, usize) {
     (writes, refused)
 }
 
+/// The stats a match's result shows (RP5), by name: the game's stat ids.
+const RESULT_STATS: [(&str, u32); 14] = [
+    ("kills", 100),
+    ("deaths", 101),
+    ("assists", 103),
+    ("shots", 104),
+    ("hits", 105),
+    ("headshots", 107),
+    ("from_above", 113),
+    ("mark_execute", 114),
+    ("completed", 121),
+    ("wins", 122),
+    ("ties", 123),
+    ("losses", 124),
+    ("time", 126),
+    ("score", 127),
+];
+
+/// A stats write as the `stats` session event's detail (RP5): the match room, the boards and
+/// contexts written ("board:context"), and each result stat's value (the largest over the boards: the game writes
+/// the same increment to its general board and its mode's).
+fn result_of(writes: &[StatWrite], room: Option<u32>) -> serde_json::Value {
+    let mut boards: Vec<String> = writes.iter().map(|w| format!("{}:{}", w.board, w.context)).collect();
+    boards.sort();
+    boards.dedup();
+    let mut detail = serde_json::Map::new();
+    detail.insert("room".into(), serde_json::json!(room));
+    detail.insert("boards".into(), serde_json::json!(boards.into_iter().take(16).collect::<Vec<_>>()));
+    // Flat beside them: the coordinator keeps a nested object to 8 values.
+    for (name, id) in RESULT_STATS {
+        let v = writes.iter().filter(|w| w.stat == id).map(|w| w.value).fold(None::<f64>, |m, v| Some(m.map_or(v, |m| m.max(v))));
+        if let Some(v) = v {
+            detail.insert(name.into(), serde_json::json!((v * 100.0).round() / 100.0));
+        }
+    }
+    serde_json::Value::Object(detail)
+}
+
 /// `wanted` stats of a board (all of the board's when none are named), ratios worked
 /// out and stats never written at their defaults.
 fn stat_values(board: u32, stored: &[(u32, f64)], wanted: &[u32]) -> Vec<PropertyVariant> {
@@ -395,8 +433,11 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         _socket: &std::net::UdpSocket,
     ) -> Result<WriteStatsResponse, Error> {
         let user_id = player(&*ci)?;
-        crate::session_events::note(crate::session_events::Who::Id(user_id), "stats", serde_json::json!({}));
         let (writes, refused) = checked_writes(&request);
+        // The write's own numbers, with the match it's for (0.5.6's RP5): the match's result as
+        // the player's game said it, kept by the coordinator with the match.
+        let room = self.storage.match_room_of(user_id).ok().flatten();
+        crate::session_events::note(crate::session_events::Who::Id(user_id), "stats", result_of(&writes, room));
         if refused > 0 {
             let boards: Vec<u32> = request.player_stat_updates.iter().map(|u| u.board_id).collect();
             info!(logger, "Stats of {user_id}: {} kept, {refused} not on their boards (boards {boards:?})", writes.len());
@@ -567,6 +608,20 @@ mod tests {
     use sc_bl_protocols::player_stats_service::types::PlayerStatUpdate;
 
     use super::*;
+
+    /// RP5: a write's result is its match room and each result stat, the largest over boards.
+    #[test]
+    fn a_stats_write_is_noted_as_the_matchs_result() {
+        let w = |board, stat, value| StatWrite { board, context: 0, stat, value };
+        let d = result_of(&[w(1, 100, 3.0), w(7, 100, 3.0), w(1, 101, 2.0), w(1, 127, 1234.567), w(7, 999, 5.0)], Some(42));
+        assert_eq!(d["room"], 42);
+        assert_eq!(d["kills"], 3.0);
+        assert_eq!(d["deaths"], 2.0);
+        assert_eq!(d["score"], 1234.57);
+        assert!(d.get("wins").is_none(), "not written: left out");
+        assert_eq!(d["boards"], serde_json::json!(["1:0", "7:0"]));
+        assert_eq!(result_of(&[], None)["room"], serde_json::Value::Null);
+    }
 
     fn stat(id: u32, value: Variant) -> PropertyVariant {
         PropertyVariant { id, value }

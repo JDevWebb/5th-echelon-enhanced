@@ -1,5 +1,5 @@
 //! Match recordings brought here for the admin UI's replay viewer (the replay research, step
-//! 2). Players' games send them to their own server, which keeps them a week; an admin asks
+//! 2). Players' games send them to their own server, which keeps them a week (30 days in R2 from 0.5.6); an admin asks
 //! for one (`send_recording`, an action through the server's pulse), and the server posts it
 //! (`POST /v1/recordings/<id>`). Only one asked for in the last [`ASKED_WITHIN`] is taken, and
 //! only once it reads as a recording. Kept as files in the data folder's `recordings`
@@ -21,6 +21,42 @@ const MOST_KEPT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// A recording's id as servers make them: 16 hex characters.
 pub fn valid_id(id: &str) -> bool {
     id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Whether `key` is where a server puts recording `id` in R2: `recordings/YYYY/MM/<id>.fer`.
+fn valid_key(key: &str, id: &str) -> bool {
+    let parts: Vec<&str> = key.split('/').collect();
+    matches!(parts.as_slice(), ["recordings", y, m, f]
+        if y.len() == 4 && y.bytes().all(|b| b.is_ascii_digit()) && m.len() == 2 && m.bytes().all(|b| b.is_ascii_digit())
+            && *f == format!("{id}.{}", replay::EXTENSION))
+}
+
+/// The coordinator's R2 key for recordings (read only: `FE_RECORDINGS_R2_*`), if it has one.
+fn r2_store() -> Option<&'static objstore::Store> {
+    static STORE: std::sync::OnceLock<Option<objstore::Store>> = std::sync::OnceLock::new();
+    STORE
+        .get_or_init(|| match objstore::Store::from_env("FE_RECORDINGS_R2") {
+            Some(Ok(s)) => {
+                tracing::info!("recordings: read from R2 ({}, bucket {}) when a server no longer has one", s.endpoint, s.bucket);
+                Some(s)
+            }
+            Some(Err(e)) => {
+                tracing::warn!("FE_RECORDINGS_R2: {e}; recordings come from the players' servers only");
+                None
+            }
+            None => None,
+        })
+        .as_ref()
+}
+
+#[cfg(test)]
+#[test]
+fn an_r2_key_must_be_the_recordings_own() {
+    let id = "0123456789abcdef";
+    assert!(valid_key(&format!("recordings/2026/11/{id}.{}", replay::EXTENSION), id));
+    assert!(!valid_key(&format!("recordings/2026/11/fedcba9876543210.{}", replay::EXTENSION), id), "another's");
+    assert!(!valid_key(&format!("backups/2026/11/{id}.{}", replay::EXTENSION), id));
+    assert!(!valid_key(&format!("recordings/../11/{id}.{}", replay::EXTENSION), id));
 }
 
 /// Why a posted recording wasn't taken.
@@ -91,6 +127,47 @@ impl Coordinator {
             .bind(id)
             .fetch_one(&self.pool)
             .await
+    }
+
+    /// The R2 key `server`'s `recording` event gave recording `id` (0.5.6's RP3), if any.
+    pub(crate) async fn recording_key(&self, server: &str, id: &str) -> sqlx::Result<Option<String>> {
+        let key: Option<Option<String>> = sqlx::query_scalar(
+            "SELECT json_extract(detail, '$.key') FROM session_events WHERE server_id = ? AND kind = 'recording' AND json_extract(detail, '$.id') = ? ORDER BY at DESC LIMIT 1",
+        )
+        .bind(server)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(key.flatten().filter(|k| valid_key(k, id)))
+    }
+
+    /// Brings `server`'s recording `id` here from R2, when the coordinator has a key and its
+    /// event named where it went (RP3). True when it's here now.
+    pub(crate) async fn recording_from_r2(&self, server: &str, id: &str) -> bool {
+        let (Some(store), Some(path)) = (r2_store(), self.recording_path(server, id)) else {
+            return false;
+        };
+        let Ok(Some(key)) = self.recording_key(server, id).await else { return false };
+        let Ok(client) = reqwest::Client::builder().timeout(std::time::Duration::from_secs(60)).build() else {
+            return false;
+        };
+        match store.get(&client, &key).await {
+            Ok(Some(data)) if data.len() <= MAX_BODY && replay::read_limited(&data[..], 64 * 1024 * 1024).is_ok() => {
+                if let Some(dir) = path.parent() {
+                    let _ = tokio::fs::create_dir_all(dir).await;
+                }
+                tokio::fs::write(&path, data).await.is_ok()
+            }
+            Ok(Some(_)) => {
+                tracing::warn!("recording {id} from R2 isn't a recording");
+                false
+            }
+            Ok(None) => false,
+            Err(e) => {
+                tracing::warn!("recording {id} from R2: {e}");
+                false
+            }
+        }
     }
 
     /// How the latest ask for `server`'s recording `id` went: its status and message.

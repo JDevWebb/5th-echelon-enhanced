@@ -15,6 +15,7 @@ pub mod ragdoll;
 pub mod scheme_pool;
 pub mod storm;
 pub mod tagging_device;
+pub mod teams;
 pub mod texture_upload;
 pub mod umd_read;
 pub mod voice_device;

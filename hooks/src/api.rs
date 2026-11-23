@@ -365,7 +365,7 @@ pub fn match_players() -> Result<Vec<server_api::misc::MatchPlayer>, Error> {
 }
 
 /// Reports a player we played with lately to the network's admins (F5).
-pub fn report_player(id: &str, reason: &str, text: &str) -> Result<(), Error> {
+pub fn report_player(id: &str, reason: &str, text: &str, chat_lines: Vec<String>) -> Result<(), Error> {
     run(signed_in(|| async {
         let mut client = connect!(MiscClient);
         client
@@ -373,10 +373,26 @@ pub fn report_player(id: &str, reason: &str, text: &str) -> Result<(), Error> {
                 id: id.to_string(),
                 reason: reason.to_string(),
                 text: text.to_string(),
+                chat_lines: chat_lines.clone(),
             }))
             .await?;
         Ok(())
     }))
+}
+
+/// Tells the server this game showed player number `peer` as `shown`, which isn't the name it
+/// has for them (match_chat.rs; 0.5.6's N1). Failures are only logged.
+pub fn name_seen(peer: u32, shown: &str) {
+    let result = run(signed_in(|| async {
+        let mut client = connect!(MiscClient);
+        client
+            .name_seen(tonic::Request::new(server_api::misc::NameSeenRequest { peer, shown: shown.to_string() }))
+            .await?;
+        Ok(())
+    }));
+    if let Err(e) = result {
+        tracing::warn!("Saying a name shown failed: {e}");
+    }
 }
 
 /// Tells the server the game gave up on a join without getting into the match (game_state.rs):
@@ -411,7 +427,7 @@ pub fn unreachable_peers(peers: Vec<server_api::misc::UnreachablePeer>) {
 
 /// Tells the server whether this game's match is under way (round_state.rs): it leaves a match
 /// its host says is under way out of searches. Failures are only logged.
-pub fn match_state(under_way: bool, state: &str, settings: &std::collections::BTreeMap<String, f32>) {
+pub fn match_state(under_way: bool, state: &str, settings: &std::collections::BTreeMap<String, f32>, round_result: &std::collections::BTreeMap<String, f32>) {
     let result = run(signed_in(|| async {
         let mut client = connect!(MiscClient);
         let response = client
@@ -427,6 +443,7 @@ pub fn match_state(under_way: bool, state: &str, settings: &std::collections::BT
                 peer: crate::pawns::own_peer(),
                 // The weapon archetypes' hashes (W1), when they're due.
                 weapons: crate::weapons::for_match_state(under_way),
+                round_result: round_result.iter().map(|(k, v)| (k.clone(), *v)).collect(),
             }))
             .await?
             .into_inner();

@@ -76,6 +76,9 @@ mod clan;
 mod clients;
 mod community_api;
 mod config;
+mod fire_rates;
+mod name_witness;
+mod oversized;
 mod escorts;
 mod fair_play_beats;
 mod far_rooms;
@@ -965,6 +968,10 @@ fn main() -> color_eyre::Result<()> {
                 }
                 // Players' session events, saved for the admin UI (sent by the federation).
                 rt.spawn(session_events::run(logger.new(o!("service" => "session_events")), Arc::clone(&storage)));
+                // Recordings up to R2, kept there 30 days (0.5.6's RP3), when this server has a key.
+                if let Some(store) = recordings::r2_store() {
+                    rt.spawn(recordings::keep_uploading(store.clone(), logger.new(o!("service" => "recordings"))));
+                }
                 // Play sessions still going, every minute: where one ends if the server stops.
                 {
                     let storage = Arc::clone(&storage);

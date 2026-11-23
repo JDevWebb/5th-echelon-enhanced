@@ -153,6 +153,14 @@ pub struct Metrics {
     /// Matches that ended since the last report, with at least two players.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub matches: Vec<Match>,
+    /// How long the oldest recording here has waited to go up to R2, in seconds (0.5.6's RP3;
+    /// 0: none waiting).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub recordings_unsent_secs: i64,
+}
+
+fn is_zero(n: &i64) -> bool {
+    *n == 0
 }
 
 /// A finished match.
@@ -319,6 +327,7 @@ pub async fn collect(storage: &Storage) -> (Metrics, Vec<u32>) {
         version: crate::community_api::RELEASE.to_string(),
         uptime_secs: STARTED.get().map_or(0, |t| t.elapsed().as_secs()),
         geo: GEO.get().is_some_and(|g| g.ready()),
+        recordings_unsent_secs: crate::recordings::oldest_unsent_secs(),
         ..Metrics::default()
     };
     if let Ok((online, total)) = storage.player_counts().await {

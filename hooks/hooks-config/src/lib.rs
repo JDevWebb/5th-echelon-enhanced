@@ -308,17 +308,28 @@ pub struct Beta {
     /// movement above 60 fps (`hooks::mouse_turn_fix`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mouse_turn_per_second: bool,
+    /// No camera shake: the camera's own shakes (explosions, hits, sprinting) off
+    /// (`hooks::camera`, 0.5.6's S).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_camera_shake: bool,
+    /// A wider field of view: 10 degrees more than the game's (`hooks::camera`, 0.5.6's S).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wider_field_of_view: bool,
 }
 
 impl Beta {
     /// Every beta feature's name, as reports and logs use them (and the launcher, in this
     /// order).
-    pub const NAMES: [&'static str; 1] = ["mouse_turn_per_second"];
+    pub const NAMES: [&'static str; 3] = ["mouse_turn_per_second", "no_camera_shake", "wider_field_of_view"];
 
     /// The beta features on, by the names reports and logs use.
     #[must_use]
     pub fn on(&self) -> Vec<&'static str> {
-        [(self.mouse_turn_per_second, "mouse_turn_per_second")]
+        [
+            (self.mouse_turn_per_second, "mouse_turn_per_second"),
+            (self.no_camera_shake, "no_camera_shake"),
+            (self.wider_field_of_view, "wider_field_of_view"),
+        ]
             .into_iter()
             .filter(|(on, _)| *on)
             .map(|(_, name)| name)
@@ -344,6 +355,24 @@ fn quick_start_lobby<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Qu
         tracing::warn!("QuickStartLobby = {value} isn't \"svm\" or \"coop\": the quick start is off");
     }
     Ok(lobby)
+}
+
+/// Whose in-match chat a game shows ([`Config::in_match_chat`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InMatchChat {
+    /// Everyone's: the game as it is.
+    #[default]
+    All,
+    /// The player's own team's lines only.
+    Team,
+    /// None.
+    Off,
+}
+
+impl InMatchChat {
+    pub fn is_all(&self) -> bool {
+        *self == Self::All
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
@@ -409,7 +438,7 @@ pub struct Config {
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub replay_recording: bool,
     /// Each finished recording (a minute or longer, two characters or more) goes to the
-    /// player's server, which keeps it a week for its admins (the replay viewer). On with
+    /// player's server, which keeps it 30 days for its admins (the replay viewer). On with
     /// recordings; `ReplayUpload = false` keeps them on this PC (not on the community network).
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub replay_upload: bool,
@@ -442,6 +471,11 @@ pub struct Config {
     /// game needs this. Team chat stays team chat. On by default; `ChatRelay = false` turns it off.
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub chat_relay: bool,
+    /// Whose lines of the game's in-match chat this game shows (0.5.6's TK2): everyone's (the
+    /// game's own), the player's team's only, or nobody's. Blocked players' lines and those of
+    /// players muted in the match are never shown. `InMatchChat = "Team"`.
+    #[serde(default, skip_serializing_if = "InMatchChat::is_all")]
+    pub in_match_chat: InMatchChat,
     /// Opt-in: start straight into an online lobby, `"svm"` (Spies vs Mercs) or `"coop"`
     /// (Co-op), skipping the boot videos and the title screen. Unset by default: the game starts
     /// as it always did. The launcher's Play button sets it on each start (its Play SvM / Play
@@ -1741,7 +1775,12 @@ mod tests {
         assert!(written.contains("[Beta]") && written.contains("MouseTurnPerSecond = true"), "{written}");
         let back: Config = toml::from_str(&written).unwrap();
         assert_eq!(back.beta.on(), ["mouse_turn_per_second"]);
-        assert_eq!(Beta::NAMES.len(), back.beta.on().len(), "every beta has a name");
+        let every = Beta {
+            mouse_turn_per_second: true,
+            no_camera_shake: true,
+            wider_field_of_view: true,
+        };
+        assert_eq!(every.on(), Beta::NAMES, "every beta has its name, in order");
         // As a player would write it by hand.
         let by_hand = format!("{}\n[Beta]\nMouseTurnPerSecond = true\n", toml::to_string(&super::default()).unwrap());
         let back: Config = toml::from_str(&by_hand).unwrap();

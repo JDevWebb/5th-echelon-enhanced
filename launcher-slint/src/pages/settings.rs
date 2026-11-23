@@ -479,6 +479,12 @@ impl SettingsPage {
                 .sub("The game climbs and vaults over edges by itself when you sprint into them. This turns that off, so climbing is only ever manual. Takes effect the next time the game starts."),
         );
         r.add_if(running, || note("Close the game to change automatic climbing."));
+        let chat: Vec<(String, String)> = [("all", "Everyone"), ("team", "Team only"), ("off", "Off")]
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        r.add(note("In-match chat: whose lines the game's text chat shows you in a match. Blocked players are never shown; the overlay's Match tab mutes someone for a match. Takes effect the next time the game starts."));
+        r.add(segments("in_match_chat", "", &chat, &st(g, "in_match_chat")).enabled(!running));
         let levels: Vec<(String, String)> = arr(g, "log_levels").iter().filter_map(|k| k.as_str()).map(|k| (k.to_string(), k.to_string())).collect();
         r.add(choice("log_level", "Client log detail", &levels, &st(g, "log_level")));
         let typed = self.command_line.clone().unwrap_or_else(|| st(g, "command_line"));

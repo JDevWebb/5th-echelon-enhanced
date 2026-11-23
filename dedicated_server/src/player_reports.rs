@@ -119,7 +119,15 @@ impl Refused {
 }
 
 /// `user` reports player `target` for `reason`, in their words `text`: the report's id.
-pub async fn report(storage: &Storage, user: u32, peer: Option<std::net::IpAddr>, target: u32, reason: &str, text: &str) -> eyre::Result<Result<String, Refused>> {
+pub async fn report(
+    storage: &Storage,
+    user: u32,
+    peer: Option<std::net::IpAddr>,
+    target: u32,
+    reason: &str,
+    text: &str,
+    chat_lines: &[String],
+) -> eyre::Result<Result<String, Refused>> {
     if !REASONS.contains(&reason) {
         return Ok(Err(Refused::BadReason));
     }
@@ -155,7 +163,7 @@ pub async fn report(storage: &Storage, user: u32, peer: Option<std::net::IpAddr>
             (String::from("reason"), reason.to_string()),
             (String::from("room"), room.to_string()),
         ]),
-        files: Vec::new(),
+        files: chat_file(&name, chat_lines).into_iter().collect(),
     };
     let id = match crate::reports::accept(storage, user, peer, incoming, false).await {
         Ok(Ok(id)) => id,
@@ -177,6 +185,32 @@ pub async fn report(storage: &Storage, user: u32, peer: Option<std::net::IpAddr>
     Ok(Ok(id))
 }
 
+/// The most chat lines a report carries, and each one's length.
+const MOST_CHAT_LINES: usize = 50;
+const MOST_CHAT_LINE: usize = 200;
+
+/// The reported player's in-match chat lines the reporter's game showed (0.5.6's TK3), as a
+/// report file (`chat-lines.txt`, gzip): the chat never reaches the server otherwise.
+fn chat_file(name: &str, lines: &[String]) -> Option<(String, Vec<u8>, u64)> {
+    use std::io::Write as _;
+    let lines: Vec<String> = lines
+        .iter()
+        .take(MOST_CHAT_LINES)
+        .map(|l| l.chars().filter(|c| !c.is_control()).take(MOST_CHAT_LINE).collect::<String>())
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let text = format!(
+        "{name}'s lines in the in-match chat, as the reporter's game showed them (their sender name as the game gave it):\n{}\n",
+        lines.join("\n")
+    );
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(text.as_bytes()).ok()?;
+    Some((String::from("chat-lines.txt"), gz.finish().ok()?, text.len() as u64))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,5 +222,19 @@ mod tests {
         let r = recent(800_001);
         assert_eq!(r, vec![(3, "Nova".to_string(), 5), (2, "Tank".to_string(), 6)]);
         assert!(recent(800_002).is_empty());
+    }
+
+    /// TK3: the reported player's chat lines go as a file; none, no file.
+    #[test]
+    fn chat_lines_go_with_the_report_as_a_file() {
+        use std::io::Read as _;
+        assert!(chat_file("Levi", &[]).is_none());
+        assert!(chat_file("Levi", &["  ".into()]).is_none());
+        let (name, gz, size) = chat_file("Levi", &["17:20:05 UTC [TEAM] kill them\u{7}".into()]).unwrap();
+        assert_eq!(name, "chat-lines.txt");
+        let mut text = String::new();
+        flate2::read::GzDecoder::new(&gz[..]).read_to_string(&mut text).unwrap();
+        assert!(text.ends_with("17:20:05 UTC [TEAM] kill them\n"), "{text:?}");
+        assert_eq!(size, text.len() as u64);
     }
 }

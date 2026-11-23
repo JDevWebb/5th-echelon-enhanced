@@ -20,6 +20,7 @@ use hooks_addresses::crash_fixes::migration;
 use hooks_addresses::crash_fixes::particle;
 use hooks_addresses::crash_fixes::perception;
 use hooks_addresses::crash_fixes::ragdoll;
+use hooks_addresses::crash_fixes::teams;
 use hooks_addresses::crash_fixes::scheme_pool;
 use hooks_addresses::crash_fixes::storm;
 use hooks_addresses::crash_fixes::tagging_device;
@@ -102,6 +103,7 @@ fn check(path: &Path) -> bool {
         perception::locate(&img).map(|s| format!("hook {:#010x}, no {:#010x}, continue {:#010x}", s.hook, s.skip, s.cont)),
     );
     report("ragdoll-fix", ragdoll::locate(&img).map(|s| format!("hook {:#010x}, continue {:#010x}", s.hook, s.cont)));
+    report("teams-fix", teams::locate(&img).map(|s| format!("hook {:#010x}, continue {:#010x}", s.hook, s.cont)));
     report(
         "gear-list-fix",
         gear_list::locate(&img).map(|s| format!("hook {:#010x}, continue {:#010x}, next name {:#010x}", s.hook, s.cont, s.skip)),

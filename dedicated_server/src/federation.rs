@@ -1276,7 +1276,7 @@ async fn carry_out_actions(logger: &Logger, storage: &Arc<Storage>, client: &Coo
 async fn send_recording(client: &Coordinator<'_>, action: &crate::players::Action) -> crate::players::Outcome {
     let id = action.recording.clone().unwrap_or_default();
     let Some((kept, data)) = tokio::task::spawn_blocking(move || crate::recordings::file(&id)).await.ok().flatten() else {
-        return crate::players::Outcome::failed("No such recording on this server (they're kept a week)");
+        return crate::players::Outcome::failed("No such recording on this server (it keeps them a week, or two days once they're in R2)");
     };
     if kept.player != action.player {
         return crate::players::Outcome::failed("That recording isn't that player's");

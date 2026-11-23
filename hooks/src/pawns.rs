@@ -341,6 +341,15 @@ fn peer_of(t: &Tables, object: usize) -> Option<u8> {
     (low & 0x00ff_ffff == 1 && (1..=32).contains(&peer)).then_some(peer)
 }
 
+/// This game's own player's team (`m_MPTeamId`; -1: not seen yet), for which team lines of the
+/// in-match chat it shows (match_chat.rs).
+static OWN_TEAM: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+/// This game's own player's team, if known.
+pub fn own_team() -> Option<i32> {
+    Some(OWN_TEAM.load(std::sync::atomic::Ordering::Relaxed)).filter(|t| *t >= 0)
+}
+
 /// This game's own player's number (0: not seen yet), for the match state it sends.
 static OWN_PEER: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 /// The other players' names by their numbers, as the server answered (api::match_state).
@@ -369,7 +378,7 @@ pub fn set_peer_names(peers: Vec<(u32, String)>) {
     }
 }
 
-fn peer_name(peer: u8) -> Option<String> {
+pub(crate) fn peer_name(peer: u8) -> Option<String> {
     PEER_NAMES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -401,6 +410,9 @@ fn sample(t: &Tables, object: usize, class: &'static str) -> Option<Sample> {
         if control.as_ref().is_some_and(|c| c.name.is_some()) {
             if OWN_PEER.swap(p, std::sync::atomic::Ordering::Relaxed) != p {
                 info!("Characters: this player's number in the session is {p}");
+            }
+            if let Some(team) = control.as_ref().and_then(|c| c.team) {
+                OWN_TEAM.store(team, std::sync::atomic::Ordering::Relaxed);
             }
         } else if let Some(name) = peer_name(p) {
             control.get_or_insert_with(Control::default).name = Some(name);

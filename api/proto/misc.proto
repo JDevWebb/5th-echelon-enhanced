@@ -55,7 +55,19 @@ service Misc {
     // What the add-on's crash fixes did in this run: which went in, and how often each kept
     // the game from crashing since the last time (the Crashes page's fixes in the field). 0.5.0.
     rpc CrashFixes(CrashFixesRequest) returns (CrashFixesResponse);
+    // A name this game showed for a player of its match that isn't the one the server has for
+    // their number (0.5.6's N1: a cheat table rewrites the name a player's own game sends
+    // others). Two witnesses, and the server tells everyone in the match who it really is.
+    rpc NameSeen(NameSeenRequest) returns (NameSeenResponse);
 }
+
+message NameSeenRequest {
+    // Their number in the match's game session (as MatchStateRequest.peer), and the name this
+    // game showed for them (a chat line's sender).
+    uint32 peer = 1;
+    string shown = 2;
+}
+message NameSeenResponse {}
 
 message CrashRequest {
     // "exception" or "freeze".
@@ -124,6 +136,11 @@ message Witnessed {
     float ground_speed = 3;
     // Seconds they moved over 1.5x that.
     uint32 over_seconds = 4;
+    // W3 (0.5.6): the weapon class they fired most this minute, their shortest gap between two
+    // shots of it (ms, as the game's own shot times say), and how many shots it fired.
+    string weapon = 5;
+    float fastest_shot_ms = 6;
+    uint32 shots = 7;
 }
 message WitnessResponse {}
 
@@ -179,6 +196,9 @@ message ReportPlayerRequest {
     string reason = 2;
     // What happened, in the player's words (at most 500 characters).
     string text = 3;
+    // The reported player's in-match chat lines this game showed lately (0.5.6's TK3), as
+    // "HH:MM:SS UTC [ALL|TEAM] text": only with a report the player makes.
+    repeated string chat_lines = 4;
 }
 
 message MatchStateRequest {
@@ -200,6 +220,9 @@ message MatchStateRequest {
     // archetype's name: sent when they change and every few minutes in a match. The server
     // compares a guest's with its host's: a weapon that differs was edited in one game.
     map<string, uint32> weapons = 6;
+    // When a round just ended (0.5.6's RP5): its result as the match manager has it, by the
+    // script property's name (m_iRoundNumber, m_iRoundWinningTeam, m_iNumHackComplete...).
+    map<string, float> round_result = 7;
 }
 
 message TeamPlayer {

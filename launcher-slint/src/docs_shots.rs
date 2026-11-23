@@ -680,7 +680,7 @@ pub fn run(dir: PathBuf) -> Result<(), slint::PlatformError> {
 fn community_news() -> Vec<setup::server_info::NewsItem> {
     vec![
         news("0.5.2: through when UDP is blocked", "Where a network blocks the game's traffic, it now goes through the server over HTTPS, and the launcher learns how other players reach you on each network you play on."),
-        news("Fair play", "Report a player from the overlay (F5 › Match): the admins see the match with it. Match recordings are kept a week for that."),
+        news("Fair play", "Report a player from the overlay (F5 › Match): the admins see the match with it. Match recordings are kept 30 days for that."),
         news("SvM night, Saturday 8 pm UTC", "Blacklist and Classic, all evening. Bring a friend."),
     ]
 }

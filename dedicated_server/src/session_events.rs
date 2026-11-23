@@ -74,6 +74,11 @@
 //!   `heartbeat`, its checks stopped reporting in a match), `detail`, `value`, `wine`.
 //! - `tunnel`: `open` (0.5.2's T: the player's game came through the HTTPS tunnel, or it closed).
 //!   A game server's close has the tunnel's `secs`, bytes `in` and `out`, and `why` (0.5.6's TL).
+//! - `round_result`: a round's end as a player's game read it from the match manager (0.5.6's RP5):
+//!   `room`, `host` (the host's word), `round`, `winner_team`, `winner_player`, `rounds`, `hacks`,
+//!   `score` (those it has).
+//! - `oversized`: a match room with more players than its mode was made for (0.5.6's R3): `room`,
+//!   `size`, `players`. Noted once a room.
 //! - `address_change`: the player's address changed during a sign-in (0.5.6's IP; see
 //!   [`crate::address_change`]): `where`, `outcome`, `from` and `to` masked, `net`.
 //! - `relay_pings`: at a game's sign-in, once a day, its round trips to every relay (0.5.6's RL;

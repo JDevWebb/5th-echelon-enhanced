@@ -2122,6 +2122,8 @@ Wants=network-online.target
 User=$COORD_USER
 Group=$COORD_USER
 WorkingDirectory=$COORD_DIR
+# Its read-only R2 key for match recordings (docs/recordings.md), when the operator wrote one.
+EnvironmentFile=-$ETC_DIR/recordings-r2.env
 ExecStartPre=-+$UPDATER --verify
 ExecStart=$PROGRAM_DIR/coordinator $coord_args
 Restart=always
@@ -2287,6 +2289,9 @@ User=$USER_NAME
 Group=$USER_NAME
 WorkingDirectory=$STATE_DIR
 Environment=FE_PUBLIC_ADDRESS=$public_address
+# This server's R2 key for match recordings (docs/recordings.md), when the operator wrote one:
+# read by systemd as root, so the file stays root's.
+EnvironmentFile=-$ETC_DIR/recordings-r2.env
 # As root, before it starts: whether the program is the release installed here (never
 # stops it starting; see the updater's --verify).
 ExecStartPre=-+$UPDATER --verify

@@ -1133,6 +1133,7 @@ impl Bot {
                         .collect(),
                     peer: 0,
                     weapons: Default::default(),
+                    round_result: Default::default(),
                 }),
             )
             .await?;
@@ -1351,6 +1352,7 @@ impl Bot {
                 id: id.to_string(),
                 reason: reason.into(),
                 text: text.into(),
+                chat_lines: Vec::new(),
             }))
             .await?
             .into_inner()
@@ -1366,6 +1368,7 @@ impl Bot {
                 team: Vec::new(),
                 peer: 0,
                 weapons: Default::default(),
+                round_result: Default::default(),
             }))
             .await?;
         Ok(())

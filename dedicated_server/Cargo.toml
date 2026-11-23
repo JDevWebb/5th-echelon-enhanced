@@ -17,6 +17,7 @@ color-eyre = { workspace = true }
 dedicated_server_config = { path = "./config" }
 eyre = { workspace = true }
 hmac = { workspace = true }
+objstore = { path = "../objstore" }
 identity = { path = "../identity" }
 replay = { path = "../replay" }
 moderation = { path = "../moderation" }

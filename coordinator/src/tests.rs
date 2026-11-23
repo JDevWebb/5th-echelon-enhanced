@@ -6265,3 +6265,70 @@ async fn urgent_notices_reach_every_launcher_until_ended() {
     let (_, dir) = t.call("GET", "/v1/servers", None, None).await;
     assert!(dir.get("notices").is_none(), "{dir}");
 }
+
+/// RP4/RP5: a match's events fill the matches table: its players, how they left, its end, and
+/// each player's result from their stats writes (a write sent again doesn't count twice).
+#[tokio::test]
+async fn a_matchs_events_make_its_row_and_results() {
+    let t = start("matches").await;
+    let r = admin_router(&t);
+    let a = t.join("server-a").await;
+    let now = identity::now();
+    let since = now - 1200;
+    let room = |extra: Value| {
+        let mut d = json!({ "room": 77, "room_kind": "match", "since": since, "mode": "svm", "game_mode": 7, "map": 615323303, "host": 11, "host_name": "Viper", "private": false });
+        for (k, v) in extra.as_object().unwrap() {
+            d[k] = v.clone();
+        }
+        d
+    };
+    let ev = |id: i64, at: i64, player: i64, name: &str, kind: &str, detail: Value, count: i64| {
+        json!({ "id": id, "at": at, "last_at": at, "player": player, "name": name, "kind": kind, "count": count, "detail": detail })
+    };
+    let stats = json!({ "room": 77, "kills": 3, "deaths": 1, "wins": 1, "score": 900 });
+    let events = json!({ "events": [
+        ev(1, since, 11, "Viper", "room", room(json!({})), 1),
+        ev(2, since + 30, 12, "Gex", "join", room(json!({ "via": "invite" })), 1),
+        ev(3, since + 60, 11, "Viper", "match_state", json!({ "rooms": [77], "state": "RoundState_Started", "under_way": true }), 1),
+        ev(4, since + 900, 11, "Viper", "stats", stats.clone(), 1),
+        ev(5, since + 900, 12, "Gex", "stats", json!({ "room": 77, "kills": 1, "deaths": 3, "losses": 1, "score": 300 }), 1),
+        ev(6, since + 950, 12, "Gex", "leave", room(json!({ "how": "left" })), 1),
+        ev(9, since + 500, 11, "Viper", "round_result", json!({ "room": 77, "host": true, "round": 1, "winner_team": 0, "hacks": 2 }), 1),
+        ev(10, since + 501, 12, "Gex", "round_result", json!({ "room": 77, "host": false, "round": 1, "winner_team": 1 }), 1),
+        ev(7, since + 960, 11, "Viper", "leave", room(json!({ "how": "left", "ended": true })), 1),
+        ev(8, since + 10, 13, "Nova", "room", json!({ "room": 78, "room_kind": "party", "since": since }), 1),
+    ] });
+    let (status, v) = t.call("POST", "/v1/events", Some(&a), Some(events)).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    // The same stats event again: not counted twice. Then a repeat (count 2): once more.
+    let again = json!({ "events": [ev(4, since + 900, 11, "Viper", "stats", stats.clone(), 1)] });
+    assert_eq!(t.call("POST", "/v1/events", Some(&a), Some(again)).await.0, StatusCode::OK);
+
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    let (status, v) = admin_call(&r, "GET", "/api/matches", &cookie, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let list = v["matches"].as_array().unwrap();
+    assert_eq!(list.len(), 1, "the party isn't a match: {v}");
+    let m = &list[0];
+    assert_eq!((m["room"].as_i64(), m["since"].as_i64(), m["mode"].as_str()), (Some(77), Some(since), Some("svm")));
+    assert_eq!((m["under_way"].as_bool(), m["ended_at"].as_i64(), m["results"].as_i64()), (Some(true), Some(since + 960), Some(2)));
+    let players: Vec<(&str, Option<&str>)> = m["players"].as_array().unwrap().iter().map(|p| (p["name"].as_str().unwrap(), p["how"].as_str())).collect();
+    assert_eq!(players, vec![("Viper", Some("left")), ("Gex", Some("left"))]);
+    let (_, v) = admin_call(&r, "GET", "/api/matches?player=gex", &cookie, None).await;
+    assert_eq!(v["matches"].as_array().unwrap().len(), 1, "by part of a name");
+    let (_, v) = admin_call(&r, "GET", "/api/matches?player=nobody", &cookie, None).await;
+    assert!(v["matches"].as_array().unwrap().is_empty());
+    let (_, v) = admin_call(&r, "GET", "/api/matches?recordings=true", &cookie, None).await;
+    assert!(v["matches"].as_array().unwrap().is_empty(), "no recordings");
+
+    let (status, v) = admin_call(&r, "GET", &format!("/api/match-results/server-a/77/{since}"), &cookie, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let lines = v["lines"].as_array().unwrap();
+    let viper = lines.iter().find(|l| l["name"] == "Viper").unwrap();
+    assert_eq!((viper["writes"].as_i64(), viper["result"]["kills"].as_f64(), viper["result"]["score"].as_f64()), (Some(1), Some(3.0), Some(900.0)), "{v}");
+    assert_eq!(v["checks"], json!([]), "4 kills, 4 deaths: they add up");
+    let rounds = v["rounds"].as_array().unwrap();
+    assert_eq!(rounds.len(), 1, "the host's word only: {v}");
+    assert_eq!((rounds[0]["round"].as_i64(), rounds[0]["winner_team"].as_i64(), rounds[0]["hacks"].as_i64()), (Some(1), Some(0), Some(2)));
+    assert_eq!(admin_call(&r, "GET", "/api/matches", "", None).await.0, StatusCode::UNAUTHORIZED);
+}

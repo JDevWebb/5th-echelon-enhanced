@@ -29,6 +29,50 @@ struct Track {
     max_speed: f32,
     ground_speed: f32,
     over_seconds: u32,
+    /// W3: its weapon's newest shot time seen (the game's), and this minute's shots per weapon
+    /// class: (count, the shortest gap in seconds).
+    last_shot: Option<(usize, f32)>,
+    fire: HashMap<String, (u32, f32)>,
+}
+
+/// Two bullet stamps closer than this are one shot's (a shotgun's pellets).
+const SAME_SHOT: f32 = 0.002;
+
+impl Track {
+    /// W3: the new shots of `weapon` (class `class`), from its bullet history (oldest first).
+    fn shots(&mut self, weapon: usize, class: &str, times: &[f32]) {
+        let seen = match self.last_shot {
+            Some((w, t)) if w == weapon => t,
+            // A weapon not watched before: from now on (its history is older shots).
+            _ => {
+                self.last_shot = Some((weapon, times.last().copied().unwrap_or(0.0)));
+                return;
+            }
+        };
+        let mut prev = seen;
+        for &t in times.iter().filter(|t| **t > seen) {
+            let gap = t - prev;
+            if gap < SAME_SHOT {
+                continue;
+            }
+            let e = self.fire.entry(class.to_string()).or_insert((0, f32::MAX));
+            e.0 += 1;
+            if prev > 0.0 {
+                e.1 = e.1.min(gap);
+            }
+            prev = t;
+        }
+        self.last_shot = Some((weapon, prev.max(seen)));
+    }
+
+    /// The weapon class fired most, its shot count and shortest gap (ms), if it fired twice.
+    fn most_fired(&self) -> Option<(String, u32, f32)> {
+        self.fire
+            .iter()
+            .filter(|(_, (n, gap))| *n >= 2 && *gap < f32::MAX)
+            .max_by_key(|(_, (n, _))| *n)
+            .map(|(c, (n, gap))| (c.clone(), *n, gap * 1000.0))
+    }
 }
 
 impl Track {
@@ -76,7 +120,7 @@ impl Witness {
 }
 
 impl pawns::Watcher for Witness {
-    fn sample(&mut self, _: &pawns::Tables, now: Instant, characters: &[pawns::Sample]) {
+    fn sample(&mut self, tables: &pawns::Tables, now: Instant, characters: &[pawns::Sample]) {
         self.tracks.retain(|o, _| characters.iter().any(|c| c.object == *o));
         for c in characters {
             let track = self.tracks.entry(c.object).or_default();
@@ -85,6 +129,14 @@ impl pawns::Watcher for Witness {
             }
             track.ground_speed = c.ground_speed;
             track.sample(c.at, now);
+            if let Some(weapon) = c.weapon {
+                let class = crate::dataversion::read_u32(weapon + 0x24)
+                    .and_then(|k| crate::dataversion::read_u32(k as usize + 0x20))
+                    .and_then(crate::round_state::name_text)
+                    .unwrap_or_else(|| String::from("?"));
+                let times: Vec<f32> = pawns::shots(tables, weapon).into_iter().map(|s| s.2).collect();
+                track.shots(weapon, &class, &times);
+            }
         }
         if self.reported.elapsed() < REPORT {
             return;
@@ -96,11 +148,18 @@ impl pawns::Watcher for Witness {
             .values()
             .filter_map(|t| {
                 let name = t.name.clone()?;
-                (!name.eq_ignore_ascii_case(&self.me) && t.max_speed > 0.0).then(|| server_api::misc::Witnessed {
-                    name,
-                    max_speed: t.max_speed,
-                    ground_speed: t.ground_speed,
-                    over_seconds: t.over_seconds,
+                let fired = t.most_fired();
+                (!name.eq_ignore_ascii_case(&self.me) && (t.max_speed > 0.0 || fired.is_some())).then(|| {
+                    let (weapon, shots, fastest_shot_ms) = fired.unwrap_or_default();
+                    server_api::misc::Witnessed {
+                        name,
+                        max_speed: t.max_speed,
+                        ground_speed: t.ground_speed,
+                        over_seconds: t.over_seconds,
+                        weapon,
+                        fastest_shot_ms,
+                        shots,
+                    }
                 })
             })
             .collect();
@@ -118,6 +177,7 @@ impl pawns::Watcher for Witness {
         }
         for t in self.tracks.values_mut() {
             (t.max_speed, t.over_seconds) = (0.0, 0);
+            t.fire.clear();
         }
     }
 }
@@ -125,6 +185,21 @@ impl pawns::Watcher for Witness {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// W3: shots are counted from the bullet history's new stamps, a shotgun's pellets as one,
+    /// with the shortest gap between shots.
+    #[test]
+    fn shots_and_the_shortest_gap_between_them() {
+        let mut t = Track::default();
+        t.shots(1, "EWeaponAR", &[1.0, 1.1]);
+        assert!(t.most_fired().is_none(), "the history before watching isn't counted");
+        t.shots(1, "EWeaponAR", &[1.0, 1.1, 1.2, 1.35, 1.351, 1.5]);
+        let (class, n, gap) = t.most_fired().unwrap();
+        assert_eq!((class.as_str(), n), ("EWeaponAR", 3), "1.351 is 1.35's pellet");
+        assert!((gap - 100.0).abs() < 1.0, "{gap}");
+        t.shots(2, "EWeaponPistol", &[9.0]);
+        assert_eq!(t.most_fired().unwrap().0, "EWeaponAR", "a new weapon starts from its newest shot");
+    }
 
     #[test]
     fn a_second_over_the_limit_counts_and_a_teleport_doesnt() {

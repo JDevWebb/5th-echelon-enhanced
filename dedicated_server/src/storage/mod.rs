@@ -1996,18 +1996,24 @@ impl Storage {
         Ok(u32::try_from(n).unwrap_or(u32::MAX))
     }
 
-    /// The attributes of each live room `user_id` hosts or is in (as a participant or a guest),
-    /// newest first.
-    pub async fn rooms_attributes_of_async(&self, user_id: u32) -> Result<Vec<String>> {
-        Ok(sqlx::query_scalar(
-            "SELECT COALESCE(g.attributes, '') FROM game_sessions g WHERE g.destroyed_at IS NULL
+    /// The live rooms `user_id` is in, newest first: the room's id, its attributes and how many
+    /// players are in it (its host, participants and guests, each once). For R3's warning.
+    pub async fn rooms_with_players_of_async(&self, user_id: u32) -> Result<Vec<(u32, String, u32)>> {
+        Ok(sqlx::query_as::<_, (i64, String, i64)>(
+            "SELECT g.id, COALESCE(g.attributes, ''),
+                    (SELECT COUNT(*) FROM (SELECT g.creator_id AS u UNION SELECT p.user_id FROM participants p WHERE p.game_id = g.id
+                                           UNION SELECT gu.user_id FROM guests gu WHERE gu.game_id = g.id))
+             FROM game_sessions g WHERE g.destroyed_at IS NULL
                AND (g.creator_id = ?1 OR EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?1)
                     OR EXISTS (SELECT 1 FROM guests gu WHERE gu.game_id = g.id AND gu.user_id = ?1))
              ORDER BY g.id DESC",
         )
         .bind(user_id)
         .fetch_all(&self.pool)
-        .await?)
+        .await?
+        .into_iter()
+        .map(|(id, a, n)| (u32::try_from(id).unwrap_or(0), a, u32::try_from(n).unwrap_or(0)))
+        .collect())
     }
 
     /// Whether two players are in a live session together (either hosting).
@@ -2026,6 +2032,22 @@ impl Storage {
         .bind(b)
         .fetch_one(&self.pool))??;
         Ok(n > 0)
+    }
+
+    /// The newest live match room `user_id` is in (not a lobby), for their stats write (RP5).
+    pub fn match_room_of(&self, user_id: u32) -> Result<Option<u32>> {
+        let rooms: Vec<(i64, String)> = run(sqlx::query_as(
+            "SELECT g.id, COALESCE(g.attributes, '') FROM game_sessions g WHERE g.destroyed_at IS NULL
+               AND (g.creator_id = ?1 OR EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?1)
+                    OR EXISTS (SELECT 1 FROM guests gu WHERE gu.game_id = g.id AND gu.user_id = ?1))
+             ORDER BY g.id DESC",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool))??;
+        Ok(rooms
+            .into_iter()
+            .find(|(_, a)| crate::game_session::attribute_value(a, crate::game_session::PROPERTY_ROOM_KIND) == Some(0))
+            .and_then(|(id, _)| u32::try_from(id).ok()))
     }
 
     /// Whether `a` and `b` share a live session whose members are who they say, for a probe

@@ -830,7 +830,9 @@ fn match_players_now() {
 }
 
 fn report_player_now(id: &str, name: &str, why: &str, text: &str) {
-    match crate::api::report_player(id, why, text) {
+    // The reported player's in-match chat lines this game showed lately (match_chat.rs).
+    let lines = crate::match_chat::lines_of(name);
+    match crate::api::report_player(id, why, text, lines) {
         Ok(()) => {
             update(|s| s.reported.push(id.to_string()));
             say(format!("Reported {name} to the admins. Thanks: they'll look at the match."), false);

@@ -810,6 +810,8 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
             "tagging-device-fix",
             "perception-fix",
             "ragdoll-fix",
+            "teams-fix",
+            "xaudio-fix",
             "gear-list-fix",
             "disruption-fix",
             "load-order-fix",
@@ -831,6 +833,8 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
         crate::tagging_device_fix::guard_tagging_devices();
         crate::perception_fix::guard_perception();
         crate::ragdoll_fix::guard_ragdoll_parts();
+        crate::teams_fix::guard_team_copies();
+        crate::xaudio_fix::guard_xaudio();
         crate::gear_list_fix::guard_gear_list();
         crate::disruption_fix::guard_disruption();
         crate::texture_upload_fix::guard_texture_uploads();
@@ -867,11 +871,17 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
 
     // A player's chat in a match goes on to the others when this game hosts (chat_relay.rs; on
     // unless turned off).
+    // The graphics card and driver, in the log (gpu.rs; 0.5.6's AE).
+    crate::gpu::log_adapters();
+    // Beta: no camera shake, a wider field of view (camera.rs; 0.5.6's S).
     #[cfg(not(feature = "patch-free"))]
-    if config.chat_relay {
-        crate::chat_relay::install();
-    } else {
-        tracing::info!("chat-relay: off (chat_relay)");
+    crate::camera::start(config.beta.no_camera_shake, config.beta.wider_field_of_view);
+
+    // With the in-match chat filter and the lines kept for reports (match_chat.rs).
+    #[cfg(not(feature = "patch-free"))]
+    {
+        crate::match_chat::init(config.in_match_chat);
+        crate::chat_relay::install(config.chat_relay);
     }
 
     // Opt-in: straight into the Spies vs Mercs or Co-op online lobby (see quickstart.rs).

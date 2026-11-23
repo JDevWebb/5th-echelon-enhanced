@@ -25,6 +25,7 @@
 
 pub mod auth;
 mod crashes;
+mod matches;
 mod inbox;
 mod leaderboards;
 pub mod live;
@@ -277,6 +278,7 @@ pub fn router(c: Shared) -> Router {
         .merge(moderation::routes())
         .merge(sessions::routes())
         .merge(crashes::routes())
+        .merge(matches::routes())
         .merge(inbox::routes())
         .merge(recordings::routes())
         .merge(leaderboards::routes());

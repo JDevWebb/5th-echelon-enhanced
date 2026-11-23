@@ -80,6 +80,7 @@ pub struct GameView {
     brightness: u8,
     brightness_range: (u8, u8),
     disable_autoclimb: bool,
+    in_match_chat: &'static str,
     log_level: &'static str,
     log_levels: Vec<&'static str>,
     command_line: String,
@@ -225,6 +226,11 @@ pub fn settings(state: tauri::State<Launcher>) -> View {
             brightness: g.cfg.brightness,
             brightness_range: (setup::gamma::MIN_BRIGHTNESS, setup::gamma::MAX_BRIGHTNESS),
             disable_autoclimb: h.disable_autoclimb,
+            in_match_chat: match h.in_match_chat {
+                hooks_config::InMatchChat::All => "all",
+                hooks_config::InMatchChat::Team => "team",
+                hooks_config::InMatchChat::Off => "off",
+            },
             log_level: level_name(h.logging.level),
             log_levels: LOG_LEVELS.into_iter().map(level_name).collect(),
             command_line: h.internal_command_line.clone(),
@@ -420,6 +426,15 @@ pub fn set(app: tauri::AppHandle, state: tauri::State<Launcher>, key: String, va
             let on = b()?;
             game.update(notices, |c| c.hook_config.disable_autoclimb = on);
         }
+        "in_match_chat" => {
+            let chosen = match value.as_str() {
+                Some("all") => hooks_config::InMatchChat::All,
+                Some("team") => hooks_config::InMatchChat::Team,
+                Some("off") => hooks_config::InMatchChat::Off,
+                _ => return Err("Not a chat choice.".into()),
+            };
+            game.update(notices, |c| c.hook_config.in_match_chat = chosen);
+        }
         "brighten" => launcher::new_options::set_brighten(game, notices, b()?),
         "brightness" => {
             let level = value
@@ -452,6 +467,14 @@ pub fn set(app: tauri::AppHandle, state: tauri::State<Launcher>, key: String, va
         "mouse_turn_per_second" => {
             let on = b()?;
             game.update(notices, |c| c.hook_config.beta.mouse_turn_per_second = on);
+        }
+        "no_camera_shake" => {
+            let on = b()?;
+            game.update(notices, |c| c.hook_config.beta.no_camera_shake = on);
+        }
+        "wider_field_of_view" => {
+            let on = b()?;
+            game.update(notices, |c| c.hook_config.beta.wider_field_of_view = on);
         }
         "nat" => {
             let mode = match s()?.as_str() {

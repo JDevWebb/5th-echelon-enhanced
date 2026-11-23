@@ -10,8 +10,47 @@
   </PageTop>
   <div v-if="error && !data" class="panel"><p class="err">{{ error }}</p></div>
   <div v-else-if="!data" class="empty">Loading…</div>
-  <div v-else-if="!stays.length" class="panel"><div class="empty">Nothing on record for this match (events are kept 30 days).</div></div>
-  <section v-else class="panel">
+  <section v-if="results?.lines?.length" class="panel">
+    <header><h2>Results</h2><span class="small muted">as each player's game wrote its stats</span></header>
+    <p v-for="c in results.checks" :key="c" class="small warn">Doesn't add up: {{ c }} (report only: every number comes from a player's game).</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Player</th><th class="r">Score</th><th class="r">Kills</th><th class="r">Deaths</th><th class="r">Assists</th><th class="r">Accuracy</th><th class="r">Headshots</th><th>Won</th><th class="r">Time</th></tr></thead>
+        <tbody>
+          <tr v-for="l in results.lines" :key="l.player">
+            <td><b>{{ l.name || `#${l.player}` }}</b><span v-if="l.writes > 1" class="small muted"> ({{ l.writes }} writes)</span></td>
+            <td class="r">{{ fmt.n(l.result.score) }}</td>
+            <td class="r">{{ fmt.n(l.result.kills) }}</td>
+            <td class="r">{{ fmt.n(l.result.deaths) }}</td>
+            <td class="r">{{ fmt.n(l.result.assists) }}</td>
+            <td class="r">{{ l.result.shots ? fmt.pct((l.result.hits || 0) / l.result.shots * 100) : '–' }}</td>
+            <td class="r">{{ fmt.n(l.result.headshots) }}</td>
+            <td>{{ l.result.wins ? 'won' : l.result.losses ? 'lost' : l.result.ties ? 'tied' : '–' }}</td>
+            <td class="r">{{ l.result.time ? dur(l.result.time) : '–' }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+  <section v-if="results?.rounds?.length" class="panel">
+    <header><h2>Rounds</h2><span class="small muted">as the host's game read each one's end</span></header>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Round</th><th>Ended</th><th>Winner</th><th class="r">Hacks</th><th class="r">Score</th></tr></thead>
+        <tbody>
+          <tr v-for="r in results.rounds" :key="r.at">
+            <td>{{ r.round ?? '?' }}{{ r.rounds ? ` of ${r.rounds}` : '' }}</td>
+            <td class="small">{{ time(r.at) }}</td>
+            <td>{{ r.winner_team != null && r.winner_team >= 0 ? `team ${r.winner_team}` : r.winner_player != null && r.winner_player >= 0 ? `player ${r.winner_player}` : '–' }}</td>
+            <td class="r">{{ r.hacks ?? '–' }}</td>
+            <td class="r">{{ r.score ?? '–' }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+  <div v-if="!stays.length && data" class="panel"><div class="empty">Nothing on record for this match (events are kept 30 days).</div></div>
+  <section v-if="stays.length" class="panel">
     <header><h2>What happened</h2><span class="small muted">every player's side, in order</span></header>
     <div class="table-wrap">
       <table>
@@ -48,6 +87,13 @@ const { data, error } = useLoad(() => {
   const from = since.value ? Math.max(since.value - 60, to - 7 * 86400) : to - 86400;
   return api('GET', `/sessions?${new URLSearchParams({ server: props.server, from: String(from), to: String(to) })}`);
 }, () => [props.server, props.room, props.since]);
+
+// Its results (0.5.6's RP5), kept for good: none for a match before 0.5.6.
+const { data: results } = useLoad(
+  () => (since.value ? api('GET', `/match-results/${encodeURIComponent(props.server)}/${room.value}/${since.value}`) : Promise.resolve(null)),
+  () => [props.server, props.room, props.since],
+  { refresh: false },
+);
 
 const inRoom = r => r.room === room.value && (!since.value || !r.since || r.since === since.value);
 const stays = computed(() => (data.value?.players || []).flatMap(p => p.rooms.filter(inRoom).map(r => ({ ...r, name: p.name, player: p }))));

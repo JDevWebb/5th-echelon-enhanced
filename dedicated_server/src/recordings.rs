@@ -7,6 +7,12 @@
 //!
 //! A player sends at most one every [`EVERY`] and [`MOST_A_DAY`] a day, each at most
 //! [`MAX_UPLOAD`] (the RPC's limit) and unpacking to at most the crate's limit.
+//!
+//! 0.5.6's RP3: with an R2 key (`FE_RECORDINGS_R2_*`, an environment file the operator writes),
+//! each recording goes up to R2 at [`r2_key`] with its note beside it, where it's kept 30 days
+//! (the bucket's lifecycle rule) for the admins' reviews; the copy here is then a cache, deleted
+//! [`CACHED_FOR`] after it's up ([`upload_pending`]: queued, retried each minute, the ones here at
+//! the start too). One not up after a day is said in the log and the pulse's metrics.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -20,6 +26,10 @@ use serde::Serialize;
 /// The most one recording may be, as sent (packed).
 pub const MAX_UPLOAD: usize = 7 * 1024 * 1024 + 512 * 1024;
 const KEEP_FOR: i64 = 7 * 86_400;
+/// How long a recording that's in R2 stays here too (RP3).
+const CACHED_FOR: i64 = 2 * 86_400;
+/// A recording not in R2 this long after it came is said (RP3).
+const UNSENT_TOO_LONG: i64 = 86_400;
 const MOST_KEPT_BYTES: u64 = 3 * 1024 * 1024 * 1024;
 const EVERY: Duration = Duration::from_secs(60);
 const MOST_A_DAY: u32 = 40;
@@ -182,7 +192,107 @@ pub fn file(id: &str) -> Option<(Kept, Vec<u8>)> {
     Some((kept, data))
 }
 
-/// Recordings past [`KEEP_FOR`] deleted, then the oldest until they fit [`MOST_KEPT_BYTES`].
+/// Where a recording is kept in R2: `recordings/<YYYY>/<MM>/<id>.fer` by when it came (UTC).
+pub fn r2_key(id: &str, received: i64) -> String {
+    let (y, m, _) = objstore::civil(received.div_euclid(86_400));
+    format!("recordings/{y:04}/{m:02}/{id}.{}", replay::EXTENSION)
+}
+
+fn uploaded_marker(dir: &std::path::Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.r2"))
+}
+
+/// The R2 store recordings go to, when this server has a key (`FE_RECORDINGS_R2_*`).
+static STORE: std::sync::OnceLock<Option<objstore::Store>> = std::sync::OnceLock::new();
+
+/// This server's R2 store for recordings, read once from its environment.
+pub fn r2_store() -> Option<&'static objstore::Store> {
+    STORE
+        .get_or_init(|| match objstore::Store::from_env("FE_RECORDINGS_R2") {
+            Some(Ok(s)) => Some(s),
+            Some(Err(e)) => {
+                eprintln!("FE_RECORDINGS_R2: {e}; recordings stay on this server only");
+                None
+            }
+            None => None,
+        })
+        .as_ref()
+}
+
+/// The oldest recording here not yet in R2, as Unix seconds (0: none), for the pulse.
+static OLDEST_UNSENT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// How long the oldest recording here has waited for R2, in seconds (0: none waiting, or no R2).
+pub fn oldest_unsent_secs() -> i64 {
+    let at = OLDEST_UNSENT.load(std::sync::atomic::Ordering::Relaxed);
+    if at == 0 {
+        0
+    } else {
+        (identity::now() - at).max(0)
+    }
+}
+
+/// Every recording here not yet in R2 goes up (the file, then its note); each one up is marked.
+/// Answers how many went up.
+pub async fn upload_pending(store: &objstore::Store, client: &reqwest::Client, logger: &slog::Logger) -> usize {
+    let dir = dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else { return 0 };
+    let mut notes: Vec<Kept> = entries
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| serde_json::from_slice(&std::fs::read(e.path()).ok()?).ok())
+        .filter(|k: &Kept| !uploaded_marker(&dir, &k.id).exists())
+        .collect();
+    notes.sort_by_key(|k| k.received);
+    let mut sent = 0;
+    let mut oldest_unsent = 0;
+    for k in notes {
+        let key = r2_key(&k.id, k.received);
+        let up = async {
+            let data = std::fs::read(dir.join(format!("{}.{}", k.id, replay::EXTENSION))).map_err(|e| e.to_string())?;
+            store.put(client, &key, data, "application/octet-stream").await?;
+            let note = serde_json::to_vec(&k).unwrap_or_default();
+            store.put(client, &key.replace(&format!(".{}", replay::EXTENSION), ".json"), note, "application/json").await?;
+            std::fs::write(uploaded_marker(&dir, &k.id), key.as_bytes()).map_err(|e| e.to_string())
+        }
+        .await;
+        match up {
+            Ok(()) => sent += 1,
+            Err(e) => {
+                if oldest_unsent == 0 {
+                    oldest_unsent = k.received;
+                }
+                if identity::now() - k.received >= UNSENT_TOO_LONG {
+                    slog::warn!(logger, "Recordings: {} has waited over a day for R2 ({e})", k.id);
+                }
+                // The store's down or refusing: the rest wait for the next round.
+                break;
+            }
+        }
+    }
+    OLDEST_UNSENT.store(oldest_unsent, std::sync::atomic::Ordering::Relaxed);
+    sent
+}
+
+/// Uploads what's waiting every minute, for as long as the server runs (RP3).
+pub async fn keep_uploading(store: objstore::Store, logger: slog::Logger) {
+    let Ok(client) = reqwest::Client::builder().timeout(Duration::from_secs(60)).build() else {
+        slog::warn!(logger, "Recordings: no HTTP client; they stay here only");
+        return;
+    };
+    slog::info!(logger, "Recordings: kept in R2 ({}, bucket {}) for 30 days, here a cache", store.endpoint, store.bucket);
+    loop {
+        let sent = upload_pending(&store, &client, &logger).await;
+        if sent > 0 {
+            slog::info!(logger, "Recordings: {sent} up to R2");
+            prune(&dir(), identity::now());
+        }
+        tokio::time::sleep(EVERY).await;
+    }
+}
+
+/// Recordings past [`KEEP_FOR`] deleted (or [`CACHED_FOR`] once in R2), then the oldest until
+/// they fit [`MOST_KEPT_BYTES`].
 fn prune(dir: &std::path::Path, now: i64) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     let mut all: Vec<Kept> = entries
@@ -192,19 +302,39 @@ fn prune(dir: &std::path::Path, now: i64) {
         .collect();
     all.sort_by_key(|k| k.received);
     let mut total: u64 = all.iter().map(|k| k.size).sum();
+    let remove = |k: &Kept| {
+        let _ = std::fs::remove_file(dir.join(format!("{}.{}", k.id, replay::EXTENSION)));
+        let _ = std::fs::remove_file(dir.join(format!("{}.json", k.id)));
+        let _ = std::fs::remove_file(uploaded_marker(dir, &k.id));
+    };
+    let mut kept = Vec::new();
     for k in all {
-        if k.received >= now - KEEP_FOR && total <= MOST_KEPT_BYTES {
+        let up = uploaded_marker(dir, &k.id).exists();
+        if k.received < now - KEEP_FOR || (up && k.received < now - CACHED_FOR) {
+            total = total.saturating_sub(k.size);
+            remove(&k);
+        } else {
+            kept.push(k);
+        }
+    }
+    for k in kept {
+        if total <= MOST_KEPT_BYTES {
             break;
         }
         total = total.saturating_sub(k.size);
-        let _ = std::fs::remove_file(dir.join(format!("{}.{}", k.id, replay::EXTENSION)));
-        let _ = std::fs::remove_file(dir.join(format!("{}.json", k.id)));
+        remove(&k);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_recordings_r2_key_is_by_the_month_it_came() {
+        assert_eq!(r2_key("0123456789abcdef", 1_795_384_123), format!("recordings/2026/11/0123456789abcdef.{}", replay::EXTENSION));
+        assert_eq!(r2_key("0123456789abcdef", 0), format!("recordings/1970/01/0123456789abcdef.{}", replay::EXTENSION));
+    }
 
     fn recording(characters: u16) -> Vec<u8> {
         let mut w = replay::Writer::new(

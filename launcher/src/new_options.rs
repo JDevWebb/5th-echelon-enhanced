@@ -114,6 +114,16 @@ pub const OPTIONS: &[NewOption] = &[
         setting: Setting::Hook(|c, on| c.disable_autoclimb = on),
         blocked: |_| None,
     },
+    NewOption {
+        id: "match-chat-team",
+        title: "In-match chat from your team only",
+        text: "The game's text chat in a match shows only your team's lines, not lines to everyone. Players you've blocked are never shown, and the overlay's Match tab mutes someone for the rest of a match. Settings › Game can turn the chat off too.",
+        recommended: false,
+        setting: Setting::Hook(|c, on| {
+            c.in_match_chat = if on { hooks_config::InMatchChat::Team } else { hooks_config::InMatchChat::All };
+        }),
+        blocked: |_| None,
+    },
 ];
 
 /// Shown for the mouse option while Fusion Fix removes the acceleration itself (here and in

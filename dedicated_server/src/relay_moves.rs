@@ -77,6 +77,30 @@ pub fn signed_in(storage: &Storage, logger: &Logger, user_id: u32, name: &str) {
     }
 }
 
+/// The server's own P2P test reached `user_id`'s game port at `ip` (the launcher's Check this
+/// network, Settings › Network: on its own or through the router's forward, 0.5.6's JC2): a
+/// lasting move made at that address is undone, so the next session there starts direct rather
+/// than waiting out the week. True when one was.
+pub fn reached(storage: &Storage, logger: &Logger, user_id: u32, name: &str, ip: Ipv4Addr) -> bool {
+    let found = match storage.relay_move(user_id, now_secs()) {
+        Ok(found) => found,
+        Err(e) => {
+            slog::warn!(logger, "Looking up {name}'s move to the relay failed: {e}");
+            return false;
+        }
+    };
+    if !found.is_some_and(|(at, _)| at.parse::<Ipv4Addr>().is_ok_and(|at| at == ip)) {
+        return false;
+    }
+    if let Err(e) = storage.forget_relay_move(user_id, now_secs()) {
+        slog::warn!(logger, "Undoing {name}'s move to the relay failed: {e}");
+        return false;
+    }
+    moves().remove(&identity::name_key(name));
+    info!(logger, "{name}'s game port at {ip} answered the server's own test: their lasting move to the relay is undone");
+    true
+}
+
 /// `name` signed out.
 pub fn signed_out(name: &str) {
     moves().remove(&identity::name_key(name));
@@ -120,6 +144,23 @@ mod tests {
         signed_in(&storage, &logger, 41, "MovedOnce");
         assert_eq!(lasting(&key, home), None, "ran out");
         assert_eq!(storage.relay_move(41, 0).unwrap(), None, "and forgotten");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// JC2: the server reaching the game port at the move's own address undoes it; elsewhere not.
+    #[test]
+    fn being_reached_at_home_undoes_the_move() {
+        let (storage, dir) = crate::storage::tests::temp_storage("relay-moves-reached");
+        let logger = Logger::root(slog::Discard, slog::o!());
+        let home: Ipv4Addr = "198.51.100.5".parse().unwrap();
+        let away: Ipv4Addr = "203.0.113.10".parse().unwrap();
+        moved(&storage, &logger, 42, "MovedTwice", home, "unreachable_peer");
+        assert!(!reached(&storage, &logger, 42, "MovedTwice", away), "reached elsewhere: the move stays");
+        assert_eq!(lasting(&identity::name_key("MovedTwice"), home), Some("unreachable_peer"));
+        assert!(reached(&storage, &logger, 42, "MovedTwice", home));
+        assert_eq!(lasting(&identity::name_key("MovedTwice"), home), None);
+        assert!(storage.relay_move(42, identity::now()).unwrap().is_none(), "forgotten");
+        assert!(!reached(&storage, &logger, 42, "MovedTwice", home), "nothing left to undo");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

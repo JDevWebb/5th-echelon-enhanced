@@ -24,6 +24,7 @@ members = [
   "geo",
   "hwid",
   "replay",
+  "objstore",
   "coordinator",
   "setup",
   "tools/umd_browser",

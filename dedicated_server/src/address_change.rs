@@ -3,7 +3,8 @@
 //! they were dropped from matches; only the journal said so. Now each change is a session event,
 //! `address_change`:
 //! - `where`: where it was seen (`secure`: the game's ticket at the secure service, used from
-//!   another address than the one it was issued to);
+//!   another address than the one it was issued to; `api`: the launcher's or game's API sign-in,
+//!   from another address than the one ten minutes or less before);
 //! - `outcome`: `near` (the same /24 or /64: let in), `proven` (the player's API sign-in over TLS
 //!   came from there: let in) or `refused`;
 //! - `from` and `to`: the addresses masked as the client logs mask them (`104.28.x.x`), since
@@ -24,6 +25,12 @@ const KNOWN: &[(&str, Ipv4Addr, u8)] = &[("cloudflare_warp", Ipv4Addr::new(104, 
 /// `TICKET_ADDRESS_MOVED`).
 pub fn ticket_moved(user: u32, issued: IpAddr, used: IpAddr, outcome: &'static str) {
     note(user, "secure", issued, used, outcome);
+}
+
+/// `user`'s API sign-in (over TLS, with their password) came from `to`, ten minutes or less after
+/// one from `from`: their address moved (proven theirs both times).
+pub fn api_moved(user: u32, from: IpAddr, to: IpAddr) {
+    note(user, "api", from, to, "proven");
 }
 
 fn note(user: u32, place: &'static str, from: IpAddr, to: IpAddr, outcome: &'static str) {

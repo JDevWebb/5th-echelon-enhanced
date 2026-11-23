@@ -2579,6 +2579,9 @@ impl MyRenderLoop {
             }
             let label = "Report##fe-report";
             let w = self.button_width(ui, label);
+            // Mute: their in-match chat lines aren't shown to you until the match ends (match_chat.rs).
+            let mute_w = self.button_width(ui, "Unmute##fe-mute");
+            let gap = ui.clone_style().item_spacing[0];
             for (id, name, now) in &self.data.match_players {
                 let reported = self.data.reported.contains(id);
                 let detail = match (reported, now) {
@@ -2587,8 +2590,21 @@ impl MyRenderLoop {
                     (false, false) => "In a match of yours lately",
                 };
                 let open = state.0.as_ref().is_some_and(|(o, ..)| o == id);
-                self.row_colored(ui, None, name, detail, pal().muted, if reported || open { 0.0 } else { w }, || {
-                    if self.button(ui, &format!("Report##fe-report-{:016x}", ui_id(id)), false) {
+                let muted = crate::match_chat::is_muted(name);
+                let detail = if muted && *now { "Muted: their chat lines are hidden until the match ends" } else { detail };
+                let report_w = if reported || open { 0.0 } else { w };
+                let buttons_w = if *now { report_w + mute_w + if report_w > 0.0 { gap } else { 0.0 } } else { report_w };
+                self.row_colored(ui, None, name, detail, pal().muted, buttons_w, || {
+                    if *now {
+                        let mute = if muted { "Unmute" } else { "Mute" };
+                        if self.button(ui, &format!("{mute}##fe-mute-{:016x}", ui_id(id)), false) {
+                            crate::match_chat::set_muted(name, !muted);
+                        }
+                        if report_w > 0.0 {
+                            ui.same_line();
+                        }
+                    }
+                    if report_w > 0.0 && self.button(ui, &format!("Report##fe-report-{:016x}", ui_id(id)), false) {
                         state.0 = Some((id.clone(), name.clone(), 0, String::new()));
                     }
                 });
@@ -2617,7 +2633,7 @@ impl MyRenderLoop {
                 {
                     let _c = ui.push_style_color(StyleColor::Text, pal().muted);
                     ui.text_wrapped(
-                        "The admins get your report with the match and the server's log of it. Reports are for the admins only; the player isn't told who reported them.",
+                        "The admins get your report with the match, the server's log of it, and this player's in-match chat lines your game showed lately. Reports are for the admins only; the player isn't told who reported them.",
                     );
                 }
                 let send = self.button(ui, "Send report##fe-report-send", true);

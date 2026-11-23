@@ -281,11 +281,18 @@ pub fn note_api_address(user: u32, ip: std::net::IpAddr) {
         all.retain(|_, list| list.iter().any(|(_, at)| at.elapsed() < API_ADDRESS_FOR));
     }
     let list = all.entry(user).or_default();
+    // An API sign-in from another address than the last within the window (0.5.6's IP): the
+    // player's address moved during their session.
+    let moved_from = list.iter().rev().find(|(_, at)| at.elapsed() < API_ADDRESS_FOR).map(|(a, _)| *a).filter(|a| *a != ip);
     list.retain(|(a, at)| *a != ip && at.elapsed() < API_ADDRESS_FOR);
     if list.len() >= API_ADDRESSES_KEPT {
         list.remove(0);
     }
     list.push((ip, Instant::now()));
+    drop(all);
+    if let Some(from) = moved_from {
+        crate::address_change::api_moved(user, from, ip);
+    }
 }
 
 /// Whether `ip` is `user`'s by their API sign-in from there in the last ten minutes: the game's
