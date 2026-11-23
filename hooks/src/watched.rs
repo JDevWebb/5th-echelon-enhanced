@@ -24,7 +24,9 @@ use crate::round_state as rs;
 
 /// How often a round's properties are compared with its start.
 const EVERY: Duration = Duration::from_secs(30);
-/// Whether changes are said to the server (else only logged): on once [`EXPECTED`] is filled.
+/// Whether changes are said to the server (else only logged). Off in 0.5.6: the gamebox's clean
+/// Spies vs Mercs and co-op rounds filled [`EXPECTED_PLACES`], but the other modes' (Team
+/// Deathmatch, Extraction, Uplink) haven't been seen; their logs come back with players' reports.
 const REPORTING: bool = false;
 /// The most properties watched.
 const MOST: usize = 2048;
@@ -114,9 +116,16 @@ fn shown(p: &Prop, v: u32) -> String {
     }
 }
 
+/// Unnamed properties (by place) the game changed by itself in the gamebox's clean matches (23 Nov):
+/// Spies vs Mercs' round state and its flags (`+852`'s bits, `+970`, `+971`, `+1296`, `+2088`), co-op's
+/// mission state (`+940`-`+942`) and the object's own flags (`+28`).
+const EXPECTED_PLACES: &[&str] = &["+28", "+852", "+940", "+941", "+942", "+970", "+971", "+1296", "+2088"];
+
 /// Whether the game changes `name` by itself.
 fn expected(name: &str) -> bool {
-    EXPECTED.contains(&name) || EXPECTED_PARTS.iter().any(|part| name.contains(part))
+    EXPECTED.contains(&name)
+        || EXPECTED_PARTS.iter().any(|part| name.contains(part))
+        || EXPECTED_PLACES.iter().any(|p| name == *p || name.strip_prefix(p).is_some_and(|rest| rest.starts_with('.')))
 }
 
 /// Whether a float moved by about `elapsed` seconds either way: a clock the game keeps (the

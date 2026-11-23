@@ -534,6 +534,44 @@ fn settings_of(found: &Found, object: usize) -> std::collections::BTreeMap<Strin
     values_of(&found.settings, object)
 }
 
+/// The round result's properties by their places when their names don't resolve (this build's
+/// name table lacks them, as the round state's): EAdversarialMatchManager's and
+/// ESpyVSMercMatchManager's layout as the engine makes it from the script (blacklist-re
+/// `lead_layout.py`, whose `m_eRoundState` at 970 is where the game has it). Taken only when the
+/// round state was found there.
+const RESULT_PLACES: [(&str, u16); 5] = [
+    ("m_iRoundNumber", 1040),
+    ("m_iRoundWinningPlayer", 1060),
+    ("m_iRoundWinningTeam", 1064),
+    ("m_iRoundScore", 2040),
+    ("m_iNumHackComplete", 2072),
+];
+/// Where the round state is in that layout.
+const ROUND_STATE_PLACE: u16 = 970;
+/// The SvM ones, only on a Spies vs Mercs manager (its class name).
+const SVM_ONLY: [&str; 2] = ["m_iRoundScore", "m_iNumHackComplete"];
+
+/// The round's result on `object`: by name, and by place for those whose names don't resolve.
+fn results_of(found: &Found, object: usize) -> std::collections::BTreeMap<String, f32> {
+    let mut out = values_of(&found.results, object);
+    if found.round_offset != Some(ROUND_STATE_PLACE) {
+        return out;
+    }
+    let svm = read_u32(object + 0x24)
+        .and_then(|c| name_text(read_u32(c as usize + 0x20)?))
+        .is_some_and(|n| n.contains("SpyVSMerc"));
+    for (name, place) in RESULT_PLACES {
+        if out.contains_key(name) || (SVM_ONLY.contains(&name) && !svm) {
+            continue;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        if let Some(v) = read::<i32>(object + usize::from(place)).filter(|v| (-1..=1_000_000).contains(v)) {
+            out.insert(name.to_string(), v as f32);
+        }
+    }
+    out
+}
+
 /// Each of `wanted` (a property name and its property objects) that `object`'s class (or one it's
 /// made from) has, with its value.
 fn values_of(wanted: &[(&'static str, Vec<usize>)], object: usize) -> std::collections::BTreeMap<String, f32> {
@@ -894,7 +932,7 @@ pub fn start() {
                 if under_way || said.as_ref().is_some_and(|(_, u, _)| *u) || (changed && said.is_some()) {
                     // A round just ended: its result goes with it (RP5).
                     let result = if changed && state == "RoundState_Ended" {
-                        live.map(|(object, _)| values_of(&f.results, object)).unwrap_or_default()
+                        live.map(|(object, _)| results_of(f, object)).unwrap_or_default()
                     } else {
                         std::collections::BTreeMap::new()
                     };

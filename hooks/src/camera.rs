@@ -15,8 +15,22 @@ use crate::round_state as rs;
 const EVERY: Duration = Duration::from_secs(2);
 /// Degrees the wider view adds.
 pub const WIDER_BY: f32 = 10.0;
-/// Camera instances looked through (`ECamera_0`, `_1`, ...).
-const NUMBERS: u32 = 16;
+/// Where the two are when their names don't resolve (this build's name table lacks most of
+/// echelon.u's): their places in ECamera's layout as the engine makes it from the script
+/// (blacklist-re `lead_layout.py`: `m_playCameraShakes` bit 1 of the word at 880, `m_freeFOV` at
+/// 1488 and `m_fFreeFOVOffset` after it at 1492). Taken only when `m_freeFOV` there reads as a field
+/// of view, so another layout is left alone.
+const SHAKE_PLACE: (u16, u32) = (880, 1 << 1);
+const FREE_FOV_AT: u16 = 1488;
+const FREE_FOV_OFFSET_AT: u16 = 1492;
+
+/// Whether `camera`'s layout is the one the places above are for.
+fn layout_known(camera: usize) -> bool {
+    read::<f32>(camera + usize::from(FREE_FOV_AT)).is_some_and(|fov| (30.0..=150.0).contains(&fov))
+}
+
+/// How often the live cameras are looked for again (a whole scan of the object table).
+const LOOK_EVERY: Duration = Duration::from_secs(10);
 
 /// Starts the thread, when either is on.
 pub fn start(no_shake: bool, wider: bool) {
@@ -40,22 +54,46 @@ fn run(no_shake: bool, wider: bool) {
         }
         std::thread::sleep(Duration::from_secs(5));
     };
-    let mut said = (false, false);
+    let mut said = (false, false, false);
     let mut class = None;
+    let mut cameras: Vec<usize> = Vec::new();
+    let mut looked: Option<std::time::Instant> = None;
     loop {
         std::thread::sleep(EVERY);
         if class.is_none() {
             class = rs::class_named(&names, "ECamera");
         }
         let Some(class) = class else { continue };
-        let Some(index) = names.get("ECamera") else { continue };
-        let cameras: Vec<usize> = (0..NUMBERS)
-            .flat_map(|n| rs::named(rs::pack(*index, n)))
-            .filter(|o| rs::of_class(*o, rs::pack(*index, 0)) && rs::alive(*o))
-            .collect();
-        for camera in cameras {
+        // Every live object made from ECamera (its instances aren't found by a low number:
+        // the gamebox, 23 Nov), looked for again every [`LOOK_EVERY`].
+        if looked.is_none_or(|at: std::time::Instant| at.elapsed() >= LOOK_EVERY) || cameras.iter().any(|c| !rs::alive(*c)) {
+            looked = Some(std::time::Instant::now());
+            let Some(index) = names.get("ECamera") else { continue };
+            let packed = rs::pack(*index, 0);
+            let mut found = Vec::new();
+            rs::each_object(|o| {
+                if found.len() < 8 && read_u32(o + 0x24).is_some_and(|c| rs::made_from(c as usize, packed)) && rs::alive(o) {
+                    found.push(o);
+                }
+            });
+            if found.len() != cameras.len() {
+                info!("Camera: {} live cameras", found.len());
+            }
+            cameras = found;
+            if !cameras.is_empty() && !said.2 {
+                said.2 = true;
+                info!(
+                    "Camera: shake switch {:?}, free view offset at {:?} by name; the layout's places {} (free view {:?})",
+                    shake_place(&names, class),
+                    rs::offset_in(&names, "m_fFreeFOVOffset", class),
+                    if layout_known(cameras[0]) { "fit" } else { "don't fit" },
+                    read::<f32>(cameras[0] + usize::from(FREE_FOV_AT))
+                );
+            }
+        }
+        for &camera in &cameras {
             if no_shake {
-                if let Some((offset, mask)) = shake_place(&names, class) {
+                if let Some((offset, mask)) = shake_place(&names, class).or_else(|| layout_known(camera).then_some(SHAKE_PLACE)) {
                     let at = camera + usize::from(offset);
                     if let Some(w) = read_u32(at).filter(|w| w & mask != 0) {
                         // SAFETY: the live camera's bool word, read just before.
@@ -68,7 +106,7 @@ fn run(no_shake: bool, wider: bool) {
                 }
             }
             if wider {
-                if let Some(offset) = rs::offset_in(&names, "m_fFreeFOVOffset", class) {
+                if let Some(offset) = rs::offset_in(&names, "m_fFreeFOVOffset", class).or_else(|| layout_known(camera).then_some(FREE_FOV_OFFSET_AT)) {
                     let at = camera + usize::from(offset);
                     if read::<f32>(at).is_some_and(|v| v.is_finite() && (v - WIDER_BY).abs() > 0.01 && v.abs() < 90.0) {
                         // SAFETY: the live camera's float, read just before.

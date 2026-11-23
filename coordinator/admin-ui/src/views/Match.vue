@@ -38,8 +38,8 @@
       <table>
         <thead><tr><th>Round</th><th>Ended</th><th>Winner</th><th class="r">Hacks</th><th class="r">Score</th></tr></thead>
         <tbody>
-          <tr v-for="r in results.rounds" :key="r.at">
-            <td>{{ r.round ?? '?' }}{{ r.rounds ? ` of ${r.rounds}` : '' }}</td>
+          <tr v-for="(r, i) in results.rounds" :key="r.at">
+            <td>{{ r.round ?? i + 1 }}{{ r.rounds ? ` of ${r.rounds}` : '' }}</td>
             <td class="small">{{ time(r.at) }}</td>
             <td>{{ r.winner_team != null && r.winner_team >= 0 ? `team ${r.winner_team}` : r.winner_player != null && r.winner_player >= 0 ? `player ${r.winner_player}` : '–' }}</td>
             <td class="r">{{ r.hacks ?? '–' }}</td>
