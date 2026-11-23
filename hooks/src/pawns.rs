@@ -363,9 +363,14 @@ pub fn unnamed_seen() -> bool {
     UNNAMED_SEEN.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// This game's own player's number in the session, 0 while not known.
+/// This game's own player's number in the session, 0 while not known: from the own character's
+/// network id, else from the session's player list (DX9's own character carries none: the
+/// Surface, 24 Nov).
 pub fn own_peer() -> u32 {
-    u32::from(OWN_PEER.load(std::sync::atomic::Ordering::Relaxed))
+    match OWN_PEER.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => crate::net_names::own_peer().map_or(0, u32::from),
+        p => u32::from(p),
+    }
 }
 
 /// The room's players' numbers and names, as the server has them.
@@ -467,20 +472,21 @@ fn sample(t: &Tables, object: usize, class: &'static str) -> Option<Sample> {
     // names come from the server by their numbers (peer_names on the server).
     let peer = peer_of(t, object);
     let mut control = control_of(t, object);
-    if let Some(p) = peer {
-        if control.as_ref().is_some_and(|c| c.name.is_some()) {
+    if control.as_ref().is_some_and(|c| c.name.is_some()) {
+        // The own character (DX9's carries no number: own_peer() then asks the session's list).
+        if let Some(p) = peer {
             if OWN_PEER.swap(p, std::sync::atomic::Ordering::Relaxed) != p {
                 info!("Characters: this player's number in the session is {p}");
             }
-            if let Some(team) = control.as_ref().and_then(|c| c.team) {
-                OWN_TEAM.store(team, std::sync::atomic::Ordering::Relaxed);
-            }
-            if let Some(name) = control.as_ref().and_then(|c| c.name.clone()) {
-                own_name_seen(&name);
-            }
-        } else if let Some(name) = peer_name(p) {
-            control.get_or_insert_with(Control::default).name = Some(name);
         }
+        if let Some(team) = control.as_ref().and_then(|c| c.team) {
+            OWN_TEAM.store(team, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(name) = control.as_ref().and_then(|c| c.name.clone()) {
+            own_name_seen(&name);
+        }
+    } else if let Some(name) = peer.and_then(peer_name) {
+        control.get_or_insert_with(Control::default).name = Some(name);
     }
     Some(Sample {
         object,

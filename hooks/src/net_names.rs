@@ -106,6 +106,12 @@ pub fn members() -> Vec<Member> {
     std::panic::catch_unwind(|| members_of(SESSION_AT)).ok().flatten().unwrap_or_default()
 }
 
+/// The own player's number in the game session (its Storm peer id + 1), from the session's list.
+pub fn own_peer() -> Option<u8> {
+    let own = own()?.id;
+    members().into_iter().find(|m| m.id == own).and_then(|m| u8::try_from(m.storm + 1).ok()).filter(|p| *p >= 1)
+}
+
 /// The own player's description.
 pub fn own() -> Option<Member> {
     std::panic::catch_unwind(|| describe(-1, read_u32(net_core()? + OWN_AT)? as usize)).ok().flatten()
