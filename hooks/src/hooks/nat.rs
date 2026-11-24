@@ -80,7 +80,9 @@ const DETECT_WAIT: Duration = Duration::from_millis(1500);
 /// own echo, said in the log.
 /// Nine since the tunnel fallback (2.25 s): a game the helper doesn't hear is registered
 /// through the tunnel about 1.7 s after its first ask ([`TUNNEL_AFTER_ASKED`]), and the game
-/// takes its address only as the answer to an ask (2026-11-15).
+/// takes its address only as the answer to an ask (2026-11-15). A helper that answered without
+/// registering it gets 3 s ([`TUNNEL_AFTER_ANSWERED`]), past the held asks: the game's own ask
+/// to the server then has its answer held until the tunnel registers it.
 const ECHO_ASKS_HELD: u32 = 9;
 
 /// This game's session key (made for each run): its public half goes with the sign-in, so the
@@ -169,6 +171,9 @@ struct State {
     /// The helper's last answer, and whether its silence since was said (the server's
     /// admins see these lines: a game the relay stops knowing can't be joined).
     last_answer: Option<Instant>,
+    /// The helper's first answer since this game last registered from scratch: the game
+    /// waiting for its address gives the helper [`TUNNEL_AFTER_ANSWERED`] from it.
+    first_answer: Option<Instant>,
     silence_said: bool,
     /// When the first probe since the Storm socket was bound went (silence before any answer).
     probing_since: Option<Instant>,
@@ -226,6 +231,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     tag: [0; 8],
     sent: [0; 4],
     last_answer: None,
+    first_answer: None,
     silence_said: false,
     probing_since: None,
     tunnel_fallback_tried: false,
@@ -253,15 +259,22 @@ const TUNNEL_AFTER_FIRST: Duration = Duration::from_secs(20);
 const TUNNEL_AFTER_LOST: Duration = Duration::from_secs(50);
 /// Sooner while the game waits for its address: the game takes the first address it's given,
 /// and only as an answer to its ask (about 2.5 s of asks, the server's answer held 10 s more),
-/// so the helper has to register it through the tunnel by then.
+/// so the helper has to register it through the tunnel by then. 1 s from the first ask while
+/// the helper hasn't answered at all; once it has, 3 s from its first answer, as registering
+/// takes a round trip or two more: a far relay (the matchmaking server in yto, ~200 ms from
+/// NZ) took the relay pass and was 0.6 s from registering when the 1 s was up, and games
+/// whose UDP worked went through the tunnel (2026-11-25).
 const TUNNEL_AFTER_ASKED: Duration = Duration::from_millis(1000);
+const TUNNEL_AFTER_ANSWERED: Duration = Duration::from_secs(3);
 
 /// Whether the helper's silence moves its traffic to the tunnel now: `never_answered` for
 /// `quiet` (since the first probe), or silent `quiet` since its last answer; `game_waiting`: the
-/// game asked for its address, hasn't been given one, and the helper hasn't registered it.
+/// game asked for its address, hasn't been given one, and the helper hasn't registered it
+/// (`quiet` then since the first probe, or since the helper's first answer once it answered).
 fn tunnel_due(quiet: Duration, never_answered: bool, game_waiting: bool) -> bool {
     let after = match (never_answered, game_waiting) {
-        (_, true) => TUNNEL_AFTER_ASKED,
+        (true, true) => TUNNEL_AFTER_ASKED,
+        (false, true) => TUNNEL_AFTER_ANSWERED,
         (true, false) => TUNNEL_AFTER_FIRST,
         (false, false) => TUNNEL_AFTER_LOST,
     };
@@ -722,6 +735,7 @@ fn forget_registration(st: &mut State) {
     st.last_probe = None;
     st.tag = [0; 8];
     st.last_answer = None;
+    st.first_answer = None;
     st.probing_since = None;
     st.silence_said = false;
     st.send_failing = false;
@@ -941,6 +955,7 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
                 st.pass_sent = [0; PASS_NONCES];
                 st.ticket = ticket;
                 st.last_answer = Some(Instant::now());
+                st.first_answer.get_or_insert(Instant::now());
                 st.last_probe = None;
             }
             continue;
@@ -968,6 +983,7 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
                     st.silence_said = false;
                 }
                 st.last_answer = Some(Instant::now());
+                st.first_answer.get_or_insert(Instant::now());
                 // Another PC behind this router is registered from this address and port: our
                 // forward collides with it (J7). Not registered; the forward moves to another port.
                 if flags & reply_flags::PORT_TAKEN != 0 {
@@ -1390,9 +1406,14 @@ fn worker(host: String, port: u16) {
             // type), which doesn't register this game; the desktop behind the gamebox's router
             // waited 50 s for the tunnel that way (2026-11-15).
             let game_waiting = st.echo_requests > 0 && st.told_game.is_none() && st.reply.is_none();
-            // Waiting, from the first probe: answers that don't register it don't count.
+            // Waiting: from the first probe, or from the helper's first answer (later answers
+            // that don't register it don't count).
             let since = if game_waiting {
-                st.probing_since.or(st.last_answer)
+                if never_answered {
+                    st.probing_since
+                } else {
+                    st.first_answer.or(st.probing_since)
+                }
             } else {
                 st.last_answer.or(st.probing_since)
             };
@@ -1744,7 +1765,8 @@ mod tests {
         assert!(tunnel_due(Duration::from_secs(20), true, false));
         assert!(!tunnel_due(Duration::from_millis(900), true, true), "the game waiting for its address: 1 s");
         assert!(tunnel_due(Duration::from_millis(1000), true, true));
-        assert!(tunnel_due(Duration::from_millis(1000), false, true), "answered, not registered, the game waiting: 1 s");
+        assert!(!tunnel_due(Duration::from_millis(2900), false, true), "answered, not registered, the game waiting: 3 s");
+        assert!(tunnel_due(Duration::from_secs(3), false, true));
         assert!(!tunnel_due(Duration::from_secs(25), false, false), "a missed keepalive or so: not yet");
         assert!(tunnel_due(Duration::from_secs(50), false, false), "heard before, silent 50 s");
     }
