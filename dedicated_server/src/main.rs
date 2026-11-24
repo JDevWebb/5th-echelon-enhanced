@@ -87,6 +87,7 @@ mod game_session;
 mod game_session_ex;
 mod hardware;
 mod join_fallback;
+mod join_now;
 mod join_targets;
 mod keys;
 mod ladder;

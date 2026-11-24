@@ -241,22 +241,25 @@ pub fn invite_friend(id: &str) -> Result<(), Error> {
     }))
 }
 
-/// Asks the server to join a friend's game (`JoinNow`): on success our game joins on its next
-/// event poll. Returns the server's answer (status + why-not), for the overlay to show.
+/// Asks the server to join a friend's game (`JoinNow`), as a game that starts the join itself
+/// (`direct`): into a public match the answer says so and no invitation comes; otherwise our
+/// game joins on its next event poll, with the invitation. Returns the server's answer
+/// (status + why-not), for the overlay to show.
 pub fn join_friend(id: &str) -> Result<JoinNowResponse, Error> {
     run(signed_in(|| async {
         let mut client = connect!(FriendsClient);
-        let request = tonic::Request::new(JoinNowRequest { id: id.into() });
+        let request = tonic::Request::new(JoinNowRequest { id: id.into(), direct: true });
         Ok(client.join_now(request).await?.into_inner())
     }))
 }
 
-/// Joins a public match picked from the overlay's list by its room (`JoinRoom`): its host's
-/// invitation comes on our next event poll; the answer names that host (`host_id`).
+/// Joins a public match picked from the overlay's list by its room (`JoinRoom`), as a game
+/// that starts the join itself (`direct`; an older server sends its host's invitation on our
+/// next event poll instead); the answer names that host (`host_id`).
 pub fn join_room(room: u32) -> Result<JoinNowResponse, Error> {
     run(signed_in(|| async {
         let mut client = connect!(FriendsClient);
-        Ok(client.join_room(tonic::Request::new(JoinRoomRequest { room })).await?.into_inner())
+        Ok(client.join_room(tonic::Request::new(JoinRoomRequest { room, direct: true })).await?.into_inner())
     }))
 }
 

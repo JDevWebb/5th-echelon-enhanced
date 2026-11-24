@@ -1068,6 +1068,25 @@ async fn join_now(ctx: &mut Ctx) -> Result<()> {
     );
     host.set_session(lobby, false).await?;
 
+    // A game that starts the join itself (`direct`) still gets the invitation into a party:
+    // only a public match is joined without one.
+    let asker = ctx.player("Guest").await?;
+    befriend(&host, &asker).await?;
+    let answer = asker.join_now_direct(&host.id).await?;
+    ensure!(
+        answer.status() == JoinStatus::Ok && !answer.direct,
+        "JoinNow (direct) into a party answered {:?} (direct {}): {}",
+        answer.status(),
+        answer.direct,
+        answer.detail
+    );
+    let got = asker.poll_invite_event(Duration::from_secs(3)).await?;
+    ensure!(
+        got.as_ref().is_some_and(|(from, requested)| *from == host.name && *requested),
+        "a direct join into a party didn't queue the requested invitation: {got:?}"
+    );
+    asker.disconnect().await?;
+
     ensure!(guest.join_now(&guest.id).await.is_err(), "joining oneself wasn't refused");
     let refused = guest.join_now(&other.id).await?;
     ensure!(refused.status() == JoinStatus::Offline, "joining someone not in a game answered {:?}", refused.status());
@@ -1196,6 +1215,12 @@ async fn join_now_match(ctx: &mut Ctx) -> Result<()> {
     private.add_participants(game, &[], &[private.pid]).await?;
     let refused = fan.join_now(&private.id).await?;
     ensure!(refused.status() == JoinStatus::Private, "joining a private match answered {:?}", refused.status());
+    let refused = fan.join_now_direct(&private.id).await?;
+    ensure!(
+        refused.status() == JoinStatus::Private && !refused.direct,
+        "joining a private match (direct) answered {:?}",
+        refused.status()
+    );
     ensure!(fan.poll_invite_event(Duration::from_secs(1)).await?.is_none(), "a refused join still queued an invitation");
 
     // A friend hosting a private match, with the anteroom every game opens beside it: the
@@ -1280,6 +1305,64 @@ async fn join_now_match(ctx: &mut Ctx) -> Result<()> {
         "the search for the public match's host doesn't lead to the match: {found:?}"
     );
 
+    // The same join by a game that starts it itself (`direct`): no invitation; its search for
+    // the friend is answered as an invitation's would be - the match and the host's anteroom,
+    // the joiner already among the match's players - and its join ends the ask.
+    let mut quick = ctx.player("Guest").await?;
+    befriend(&public_host, &quick).await?;
+    quick.register_urls(&["prudp:/address=127.0.0.1;port=3301;sid=15;type=3"]).await?;
+    let answer = quick.join_now_direct(&public_host.id).await?;
+    ensure!(
+        answer.status() == JoinStatus::Ok && answer.direct,
+        "JoinNow (direct) into a friend's public match answered {:?} (direct {}): {}",
+        answer.status(),
+        answer.direct,
+        answer.detail
+    );
+    ensure!(
+        quick.poll_invite_event(Duration::from_secs(1)).await?.is_none(),
+        "a direct join into a public match queued an invitation"
+    );
+    let found = quick.search_with_participants(&[public_host.pid]).await?;
+    let rooms: Vec<u32> = found.iter().map(|r| r.game_session_search_result.session_key.session_id).collect();
+    ensure!(
+        rooms.contains(&public_game) && rooms.contains(&anteroom),
+        "the direct join's friend search isn't answered with the match and the anteroom: {rooms:?}"
+    );
+    ensure!(
+        found
+            .iter()
+            .find(|r| r.game_session_search_result.session_key.session_id == public_game)
+            .is_some_and(|r| r.participant_ids.contains(&quick.pid)),
+        "the joiner isn't put in the match before the answer: {found:?}"
+    );
+    quick.join_session(public_game).await?;
+    match quick.join_now_direct(&public_host.id).await {
+        Err(status) if status.code() == tonic::Code::InvalidArgument => {}
+        other => eyre::bail!("a direct join into a match the caller got into answered {other:?}"),
+    }
+    quick.disconnect().await?;
+    // Its round under way (as its host's game says): joined mid-round, directly all the same.
+    public_host.match_state(true, "RoundState_Started").await?;
+    let mut mid_round = ctx.player("Guest").await?;
+    befriend(&public_host, &mid_round).await?;
+    mid_round.register_urls(&["prudp:/address=127.0.0.1;port=3305;sid=15;type=3"]).await?;
+    let answer = mid_round.join_now_direct(&public_host.id).await?;
+    ensure!(
+        answer.status() == JoinStatus::Ok && answer.direct,
+        "JoinNow (direct) into a match under way answered {:?} (direct {}): {}",
+        answer.status(),
+        answer.direct,
+        answer.detail
+    );
+    let found = mid_round.search_with_participants(&[public_host.pid]).await?;
+    ensure!(
+        found.iter().any(|r| r.game_session_search_result.session_key.session_id == public_game),
+        "the direct join's search doesn't lead into the match under way: {found:?}"
+    );
+    mid_round.disconnect().await?;
+    public_host.match_state(false, "RoundState_PreRound").await?;
+
     // A match its host's game turned a joiner away from as started (LOCKED_SESSION): the
     // friend list stops offering Join there, and JoinNow says it has started.
     let mut turned_away = ctx.player("Guest").await?;
@@ -1313,6 +1396,13 @@ async fn join_now_match(ctx: &mut Ctx) -> Result<()> {
     );
     let refused = later.join_now(&public_host.id).await?;
     ensure!(refused.status() == JoinStatus::Started, "joining a started match answered {:?}", refused.status());
+    let refused = later.join_now_direct(&public_host.id).await?;
+    ensure!(
+        refused.status() == JoinStatus::Started && !refused.direct,
+        "joining a started match (direct) answered {:?} (direct {})",
+        refused.status(),
+        refused.direct
+    );
     // Nor does matchmaking hand it out any more: a searcher's game waited on it or was
     // turned away, and one started match kept everyone from playing (eu1, 24-25 Oct).
     let mut next = ctx.player("Guest").await?;
@@ -1367,6 +1457,28 @@ async fn join_now_match(ctx: &mut Ctx) -> Result<()> {
         found.iter().any(|r| r.game_session_search_result.session_key.session_id == stranger_game),
         "the search for the public match's guest doesn't lead to the match: {found:?}"
     );
+    // Through them by a game that starts the join itself: no invitation, the same match.
+    let mut buddy = ctx.player("Guest").await?;
+    befriend(&player, &buddy).await?;
+    let answer = buddy.join_now_direct(&player.id).await?;
+    ensure!(
+        answer.status() == JoinStatus::Ok && answer.direct,
+        "JoinNow (direct) through a guest of a public match answered {:?} (direct {}): {}",
+        answer.status(),
+        answer.direct,
+        answer.detail
+    );
+    ensure!(
+        buddy.poll_invite_event(Duration::from_secs(1)).await?.is_none(),
+        "a direct join through a guest queued an invitation"
+    );
+    buddy.register_urls(&["prudp:/address=127.0.0.1;port=3302;sid=15;type=3"]).await?;
+    let found = buddy.search_with_participants(&[player.pid]).await?;
+    ensure!(
+        found.iter().any(|r| r.game_session_search_result.session_key.session_id == stranger_game),
+        "the direct join's search for the guest doesn't lead to the match: {found:?}"
+    );
+    buddy.disconnect().await?;
     // A host who blocked the caller isn't named (as with invitations): the friend answers as
     // not in a game.
     stranger_host.friend_change("block", &fan.name).await?;
@@ -1404,7 +1516,19 @@ async fn join_now_match(ctx: &mut Ctx) -> Result<()> {
         got.as_ref().is_some_and(|(_, requested)| *requested),
         "the join request isn't delivered as requested: {got:?}"
     );
+    // So for a direct join (no invitation): the match it asked for stops leading in.
+    let mut later_one = ctx.player("Guest").await?;
+    befriend(&closing, &later_one).await?;
+    let answer = later_one.join_now_direct(&closing.id).await?;
+    ensure!(answer.status() == JoinStatus::Ok && answer.direct, "JoinNow (direct) answered {:?}", answer.status());
     closing.set_session(closing_game, true).await?;
+    later_one.register_urls(&["prudp:/address=127.0.0.1;port=3303;sid=15;type=3"]).await?;
+    let found = later_one.search_with_participants(&[closing.pid]).await?;
+    ensure!(
+        !found.iter().any(|r| r.game_session_search_result.session_key.session_id == closing_game),
+        "a direct join still leads into a match its host made private: {found:?}"
+    );
+    later_one.disconnect().await?;
     late.register_urls(&["prudp:/address=127.0.0.1;port=3087;sid=15;type=3"]).await?;
     let found = late.search_with_participants(&[closing.pid]).await?;
     ensure!(
@@ -1581,6 +1705,26 @@ async fn choose_match(ctx: &mut Ctx) -> Result<()> {
         got.as_ref().is_some_and(|(from, requested)| *from == seeker.name && *requested),
         "the picked match's host's invitation isn't delivered as the requested join: {got:?}"
     );
+    // Picked by a game that starts the join itself (`direct`): no invitation, the host named,
+    // and the game's search for the host leads into the match.
+    let mut chooser = ctx.player("Guest").await?;
+    let answer = chooser.join_room_direct(fresh).await?;
+    ensure!(
+        answer.status() == JoinStatus::Ok && answer.direct && answer.host_id == seeker.id,
+        "joining a picked public match (direct) answered {:?} (direct {}, host {:?}): {}",
+        answer.status(),
+        answer.direct,
+        answer.host_id,
+        answer.detail
+    );
+    ensure!(chooser.poll_invite_event(Duration::from_secs(1)).await?.is_none(), "a direct pick queued an invitation");
+    chooser.register_urls(&["prudp:/address=127.0.0.1;port=3304;sid=15;type=3"]).await?;
+    let found = chooser.search_with_participants(&[seeker.pid]).await?;
+    ensure!(
+        found.iter().any(|r| r.game_session_search_result.session_key.session_id == fresh),
+        "the direct pick's search for the host doesn't lead to the match: {found:?}"
+    );
+    chooser.disconnect().await?;
     // Not a match: a party, a private match, a room that isn't there.
     let mut partying = ctx.player("Host").await?;
     partying.register_urls(&["prudp:/address=127.0.0.1;port=3094;sid=15;type=3"]).await?;
@@ -3126,7 +3270,8 @@ async fn nat_key(ctx: &mut Ctx) -> Result<()> {
 /// turning a joiner away (a locked refusal of the room the search offered) leaves it out.
 async fn match_state(ctx: &mut Ctx) -> Result<()> {
     let map = 920_000 + ctx.run;
-    let open = format!("113 => 0;103 => 1;3 => 8;4 => 0;102 => 8;101 => {map}");
+    // Blacklist's game mode (7): made for 8, as many seats as it has.
+    let open = format!("113 => 0;103 => 1;3 => 8;4 => 0;102 => 7;101 => {map}");
     let mut host = ctx.player("Host").await?;
     host.register_urls(&["prudp:/address=127.0.0.1;port=3097;sid=15;type=3"]).await?;
     let game = host.create_session(&open).await?;
@@ -3139,16 +3284,32 @@ async fn match_state(ctx: &mut Ctx) -> Result<()> {
     ensure!(finds(&seeker.search_sessions(&open).await?), "someone else's word hid the host's match");
     host.match_state(true, "RoundState_Started").await?;
     ensure!(finds(&seeker.search_sessions(&open).await?), "a match under way wasn't offered (joining mid-round)");
-    // A second match, still in its lobby: offered before the one under way.
+    // A second match, still in its lobby: offered after the one under way (filling a match
+    // mid-round first).
     let mut lobby_host = ctx.player("Host").await?;
     lobby_host.register_urls(&["prudp:/address=127.0.0.1;port=3099;sid=15;type=3"]).await?;
     let lobby = lobby_host.create_session(&open).await?;
     lobby_host.add_participants(lobby, &[lobby_host.pid], &[]).await?;
     let order: Vec<u32> = seeker.search_sessions(&open).await?.iter().map(|(s, _)| *s).collect();
     ensure!(
-        order.iter().position(|s| *s == lobby) < order.iter().position(|s| *s == game) && order.contains(&game),
-        "a match under way was offered before one in its lobby: {order:?} (lobby {lobby}, under way {game})"
+        order.contains(&game) && order.contains(&lobby) && order.iter().position(|s| *s == game) < order.iter().position(|s| *s == lobby),
+        "a match in its lobby was offered before one under way: {order:?} (lobby {lobby}, under way {game})"
     );
+    // A third, under way but raised past its mode's 8 (the overlay's "Most players"): still
+    // offered, but after the lobby. The search names no seats, so it finds all three.
+    let mut raised_host = ctx.player("Host").await?;
+    raised_host.register_urls(&["prudp:/address=127.0.0.1;port=3100;sid=15;type=3"]).await?;
+    let raised = raised_host.create_session(&format!("113 => 0;103 => 1;3 => 10;4 => 0;102 => 7;101 => {map}")).await?;
+    raised_host.add_participants(raised, &[raised_host.pid], &[]).await?;
+    raised_host.match_state(true, "RoundState_Started").await?;
+    let any_seats = format!("113 => 0;103 => 1;102 => 7;101 => {map}");
+    let order: Vec<u32> = seeker.search_sessions(&any_seats).await?.iter().map(|(s, _)| *s).collect();
+    let at = |room: u32| order.iter().position(|s| *s == room);
+    ensure!(
+        at(game).is_some() && at(game) < at(lobby) && at(lobby) < at(raised) && at(raised).is_some(),
+        "a match under way past its mode's size wasn't offered after the lobby: {order:?} (under way {game}, lobby {lobby}, raised {raised})"
+    );
+    raised_host.disconnect().await?;
     lobby_host.disconnect().await?;
     host.match_state(false, "RoundState_PreRound").await?;
     ensure!(finds(&seeker.search_sessions(&open).await?), "the host said it's joinable, but it isn't found");

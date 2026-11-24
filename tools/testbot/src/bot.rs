@@ -1085,16 +1085,35 @@ impl Bot {
     /// Asks to join the game of the player with account id `id` without an invitation, as the
     /// launcher's and the overlay's Join do (`JoinNow`): the server's answer, or its refusal.
     pub async fn join_now(&self, id: &str) -> std::result::Result<server_api::friends::JoinNowResponse, tonic::Status> {
+        self.join_now_as(id, false).await
+    }
+
+    /// [`Self::join_now`] as a game that starts the join itself (`direct`): into a public match,
+    /// no invitation; the game's friend search is answered with the match.
+    pub async fn join_now_direct(&self, id: &str) -> std::result::Result<server_api::friends::JoinNowResponse, tonic::Status> {
+        self.join_now_as(id, true).await
+    }
+
+    async fn join_now_as(&self, id: &str, direct: bool) -> std::result::Result<server_api::friends::JoinNowResponse, tonic::Status> {
         Ok(FriendsClient::new(self.api.clone())
-            .join_now(self.authed(server_api::friends::JoinNowRequest { id: id.into() }))
+            .join_now(self.authed(server_api::friends::JoinNowRequest { id: id.into(), direct }))
             .await?
             .into_inner())
     }
 
     /// Joins a public match picked from the lobby browser by its room (`JoinRoom`).
     pub async fn join_room(&self, room: u32) -> std::result::Result<server_api::friends::JoinNowResponse, tonic::Status> {
+        self.join_room_as(room, false).await
+    }
+
+    /// [`Self::join_room`] as a game that starts the join itself (`direct`).
+    pub async fn join_room_direct(&self, room: u32) -> std::result::Result<server_api::friends::JoinNowResponse, tonic::Status> {
+        self.join_room_as(room, true).await
+    }
+
+    async fn join_room_as(&self, room: u32, direct: bool) -> std::result::Result<server_api::friends::JoinNowResponse, tonic::Status> {
         Ok(FriendsClient::new(self.api.clone())
-            .join_room(self.authed(server_api::friends::JoinRoomRequest { room }))
+            .join_room(self.authed(server_api::friends::JoinRoomRequest { room, direct }))
             .await?
             .into_inner())
     }
@@ -1719,7 +1738,7 @@ impl ApiPlayer {
     /// host invite this player's game (which takes it by itself with AutoJoinInvite).
     pub async fn join_room(&self, room: u32) -> std::result::Result<server_api::friends::JoinNowResponse, tonic::Status> {
         Ok(FriendsClient::new(self.api.clone())
-            .join_room(self.authed(server_api::friends::JoinRoomRequest { room }))
+            .join_room(self.authed(server_api::friends::JoinRoomRequest { room, direct: false }))
             .await?
             .into_inner())
     }

@@ -260,7 +260,7 @@ pub fn join_friend(cfg: &Config, game_dir: &Path, friend_id: &str, friend_name: 
     // told here, first, so a game polling for events (or one just started) finds it in time.
     let request = game_dir.join(hooks_config::join_request::FILE);
     let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-    if let Err(e) = std::fs::write(&request, hooks_config::join_request::contents(friend_id, at)) {
+    if let Err(e) = hooks_config::join_request::write(game_dir, friend_id, at, false) {
         tracing::warn!("couldn't write the join request {}: {e}", request.display());
         return Err("The join request couldn't be written to the game folder.".into());
     }
@@ -268,6 +268,15 @@ pub fn join_friend(cfg: &Config, game_dir: &Path, friend_id: &str, friend_name: 
     let resp = with_api_token(cfg, |url, token| crate::services::rt().block_on(crate::network::join_now(url, &token, friend_id.clone())));
     let answer = match resp {
         Ok(resp) => match JoinStatus::try_from(resp.status).unwrap_or(JoinStatus::Offline) {
+            // Into a public match, no invitation comes: the request says so, and the game starts
+            // the join itself when it reads it.
+            JoinStatus::Ok if resp.direct => match hooks_config::join_request::write(game_dir, &friend_id, at, true) {
+                Ok(()) => Ok(format!("Joining {friend_name} — the game joins their match.")),
+                Err(e) => {
+                    tracing::warn!("couldn't write the join request {}: {e}", request.display());
+                    Err("The join request couldn't be written to the game folder.".into())
+                }
+            },
             JoinStatus::Ok => Ok(format!("Joining {friend_name} — the game joins their party or match.")),
             _ if !resp.detail.is_empty() => Err(hooks_config::text::clip(&resp.detail, 200)),
             JoinStatus::NotFound => Err(format!("{friend_name} isn't on this server.")),

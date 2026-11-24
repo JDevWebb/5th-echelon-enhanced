@@ -594,7 +594,7 @@ struct MyRenderLoop {
 ///
 /// The event kind decides which join route the game takes from there; see
 /// [`hooks_config::InviteAcceptEvent`].
-fn invite_accept_event(user_id: String) -> Event {
+pub(crate) fn invite_accept_event(user_id: String) -> Event {
     match hooks_config::get().map(|cfg| cfg.invite_accept_event).unwrap_or_default() {
         hooks_config::InviteAcceptEvent::Friends => Event::FriendsGameInviteAccepted(user_id),
         hooks_config::InviteAcceptEvent::Party => Event::PartyGameInviteAccepted(user_id),

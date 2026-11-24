@@ -94,9 +94,10 @@ fn plural(n: u32, one: &'static str, many: &'static str) -> &'static str {
     }
 }
 
-/// Joins the public match in `room`: the server queues its host's invitation, and the game
-/// (running, or started for it) takes it without a click, as the join request beside it names
-/// that host. A line for the player either way.
+/// Joins the public match in `room`: the game (running, or started for it) joins it by itself
+/// once it reads the join request beside it, naming the match's host (the server keeps the match
+/// for its search); an older server queues the host's invitation instead, which the game takes
+/// without a click. A line for the player either way.
 pub fn join(cfg: &Config, game_dir: &Path, room: u32) -> Result<String, String> {
     use server_api::friends::join_now_response::Status as JoinStatus;
     if !cfg.current_profile().is_some_and(|p| !p.server.is_empty() && p.has_account()) {
@@ -111,13 +112,18 @@ pub fn join(cfg: &Config, game_dir: &Path, room: u32) -> Result<String, String> 
         JoinStatus::Queued => return Err("Players are waiting for this match: join its queue.".into()),
         _ => return Err("That match isn't open any more.".into()),
     }
-    // The game takes the invitation as the join asked for only from the host the request names
-    // (`hooks_config::join_request`); it reads the request when the invitation arrives, a poll
-    // after this, so written now it's there in time.
+    // The game starts the join for the host the request names (`direct`), or takes the
+    // invitation as the join asked for only from that host (`hooks_config::join_request`); it
+    // reads the request within a second, or when the invitation arrives, a poll after this, so
+    // written now it's there in time.
     let request = game_dir.join(hooks_config::join_request::FILE);
     let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-    if resp.host_id.is_empty() || std::fs::write(&request, hooks_config::join_request::contents(&resp.host_id, at)).is_err() {
+    if resp.host_id.is_empty() || hooks_config::join_request::write(game_dir, &resp.host_id, at, resp.direct).is_err() {
         tracing::warn!("couldn't write the join request for room {room} ({})", request.display());
+        // Without the request a direct join never starts: no invitation comes to accept.
+        if resp.direct {
+            return Err("The join request couldn't be written to the game folder.".into());
+        }
         return Ok("Joining the match - accept the invitation in the game.".into());
     }
     // What happens next, in plain words.

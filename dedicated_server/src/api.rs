@@ -400,6 +400,36 @@ impl MyFriends {
             (seats as usize).saturating_sub(s.player_ids.len())
         }))
     }
+
+    /// `me` joins the public match `target` without an invitation (JoinNow's and JoinRoom's
+    /// `direct`): their game raises the accept event for `target.friend` itself, and its friend
+    /// search is answered with the match (join_now.rs), checked then as the invitation would
+    /// be. Their pending invitations stay as they are. `host_id` goes back in the answer.
+    async fn join_directly(&self, me: u32, target: crate::join_now::Target, call: &str, host_id: String) -> Result<Response<friends::JoinNowResponse>, Status> {
+        use friends::join_now_response::Status as JoinStatus;
+        if !crate::join_now::ask(me, target) {
+            return Err(Status::resource_exhausted("Too many players are joining at once; try again in a minute"));
+        }
+        let crate::join_now::Target { room, host, via, .. } = target;
+        crate::session_events::note(
+            crate::session_events::Who::Id(me),
+            "join-request",
+            serde_json::json!({ "host": host, "room": room, "via": via, "direct": true }),
+        );
+        match via {
+            None => info!(self.logger, "{call}: {me} joins {host}'s public match {room} (no invitation: its game joins by itself)"),
+            Some(via) => info!(
+                self.logger,
+                "{call}: {me} joins {host}'s public match {room} through {via} (no invitation: its game joins by itself)"
+            ),
+        }
+        Ok(Response::new(friends::JoinNowResponse {
+            status: JoinStatus::Ok as i32,
+            host_id,
+            direct: true,
+            ..Default::default()
+        }))
+    }
 }
 
 #[tonic::async_trait]
@@ -500,7 +530,9 @@ impl Friends for MyFriends {
     /// invitation is the friend's, bound to that room, and holds as a member's invitation does
     /// (`invite_holds_sql`: in a party while its host has the friend as a friend; in a public
     /// match while the friend is in it). A friend in a private match, theirs or not, still
-    /// needs a real invitation.
+    /// needs a real invitation. A caller whose game starts the join itself (`direct`) gets no
+    /// invitation into a public match: the server keeps the match for its friend search
+    /// ([`Self::join_directly`]).
     async fn join_now(&self, request: Request<friends::JoinNowRequest>) -> Result<Response<friends::JoinNowResponse>, Status> {
         use friends::join_now_response::Status as JoinStatus;
         let me = caller(&request)?;
@@ -514,7 +546,7 @@ impl Friends for MyFriends {
                 ..Default::default()
             }))
         };
-        let target = request.into_inner().id;
+        let friends::JoinNowRequest { id: target, direct } = request.into_inner();
         let Some(friend) = self.storage.find_user_id_by_ubi_id_async(&target).await.map_err(internal)? else {
             return reply(JoinStatus::NotFound, "That player isn't on this server.");
         };
@@ -648,10 +680,22 @@ impl Friends for MyFriends {
             };
             return reply(JoinStatus::Started, detail);
         }
+        let via = (host != friend).then_some(friend);
+        // Into a public match, a game that starts the join itself needs no invitation (anyone
+        // may join one): the room is kept for its friend search instead (join_now.rs).
+        if direct && public_match.is_some() {
+            let target = crate::join_now::Target {
+                session_type,
+                room: room_id,
+                host,
+                via,
+                friend,
+            };
+            return self.join_directly(me, target, "JoinNow", String::new()).await;
+        }
         // The invitation this queues is the one delivered as a requested join (its row says
         // so): another one already waiting for the caller goes out as the ordinary invitation
         // it is.
-        let via = (host != friend).then_some(friend);
         let invite = self.storage.add_join_request_async(host, via, me, session_type, room_id).await.map_err(|e| {
             warn!(self.logger, "JoinNow: {me} couldn't queue the join to {host}'s session {room_id}: {e}");
             Status::resource_exhausted("Couldn't queue the join: answer or let some of your waiting invitations go first.")
@@ -682,7 +726,7 @@ impl Friends for MyFriends {
         // Gone, private, a party rather than a match, one they're in or their own, or one whose
         // host blocked them: all the same answer, so nobody learns they were blocked.
         const GONE: &str = "That match isn't open any more.";
-        let room = request.into_inner().room;
+        let friends::JoinRoomRequest { room, direct } = request.into_inner();
         let Some((host, session_type, attributes)) = self.storage.joinable_public_room_async(room, me).await.map_err(internal)? else {
             return reply(JoinStatus::NotFound, GONE);
         };
@@ -718,6 +762,17 @@ impl Friends for MyFriends {
                 serde_json::json!({ "room": room, "host": host, "told": "let_in", "place": place, "waiting": waiting, "free": free }),
             );
         }
+        let host_id = self.storage.find_ubi_id_by_user_id_async(host).await.map_err(internal)?.unwrap_or_default();
+        if direct {
+            let target = crate::join_now::Target {
+                session_type,
+                room,
+                host,
+                via: None,
+                friend: host,
+            };
+            return self.join_directly(me, target, "JoinRoom", host_id).await;
+        }
         let invite = self.storage.add_join_request_async(host, None, me, session_type, room).await.map_err(|e| {
             warn!(self.logger, "JoinRoom: {me} couldn't queue the join to {host}'s session {room}: {e}");
             Status::resource_exhausted("Couldn't queue the join: answer or let some of your waiting invitations go first.")
@@ -728,7 +783,7 @@ impl Friends for MyFriends {
         );
         Ok(Response::new(friends::JoinNowResponse {
             status: JoinStatus::Ok as i32,
-            host_id: self.storage.find_ubi_id_by_user_id_async(host).await.map_err(internal)?.unwrap_or_default(),
+            host_id,
             ..Default::default()
         }))
     }
@@ -848,7 +903,9 @@ impl Friends for MyFriends {
         if !crate::search_steer::new_match(me) {
             return Err(Status::resource_exhausted("Too many players asked at once; try again in a minute"));
         }
-        // Nor does an invitation they haven't taken lead their search into its room.
+        // Nor does an invitation they haven't taken lead their search into its room, nor a
+        // join they asked for.
+        crate::join_now::forget(me);
         let dropped = self.storage.drop_invites_to_async(me, None).await.map_err(internal)?;
         info!(
             self.logger,
