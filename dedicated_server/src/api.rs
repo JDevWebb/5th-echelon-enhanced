@@ -695,7 +695,9 @@ impl Friends for MyFriends {
         }
         // The invitation this queues is the one delivered as a requested join (its row says
         // so): another one already waiting for the caller goes out as the ordinary invitation
-        // it is.
+        // it is. A direct join asked for before goes: the game's search for this friend is to
+        // find the invitation's room, not that one (join_now.rs).
+        crate::join_now::forget(me);
         let invite = self.storage.add_join_request_async(host, via, me, session_type, room_id).await.map_err(|e| {
             warn!(self.logger, "JoinNow: {me} couldn't queue the join to {host}'s session {room_id}: {e}");
             Status::resource_exhausted("Couldn't queue the join: answer or let some of your waiting invitations go first.")
@@ -763,7 +765,9 @@ impl Friends for MyFriends {
             );
         }
         let host_id = self.storage.find_ubi_id_by_user_id_async(host).await.map_err(internal)?.unwrap_or_default();
-        if direct {
+        // Direct only with the host's account id to answer with: the game raises the accept
+        // event for it, and without one no join would start (an invitation then, as before).
+        if direct && !host_id.is_empty() {
             let target = crate::join_now::Target {
                 session_type,
                 room,
@@ -773,6 +777,7 @@ impl Friends for MyFriends {
             };
             return self.join_directly(me, target, "JoinRoom", host_id).await;
         }
+        crate::join_now::forget(me);
         let invite = self.storage.add_join_request_async(host, None, me, session_type, room).await.map_err(|e| {
             warn!(self.logger, "JoinRoom: {me} couldn't queue the join to {host}'s session {room}: {e}");
             Status::resource_exhausted("Couldn't queue the join: answer or let some of your waiting invitations go first.")

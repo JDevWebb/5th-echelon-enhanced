@@ -4881,8 +4881,9 @@ async fn run() -> Result<()> {
             "reconnect" | "closing-note" => 180,
             // About a dozen players and three parts (private refusals, a public match, one
             // started): 18-21 s of the 30 on main's CI, and over it in every run of PRs #7
-            // and #8 (MPW1412's note on #7).
-            "join-now-match" => 60,
+            // and #8 (MPW1412's note on #7). PR #18's direct joins added two players: 49-57 s
+            // of the 60 on the homelab's capped build, and over it one run in four.
+            "join-now-match" => 90,
             // A host's 20 s of silence, and an abandon 11 s before its split.
             "host-migration-silent" | "host-migration-host-returns" => 90,
             "host-migration-claims" => 60,

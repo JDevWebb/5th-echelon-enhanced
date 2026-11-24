@@ -36,6 +36,10 @@ static STRICT: AtomicBool = AtomicBool::new(false);
 const KM_PER_RTT_MS: f64 = 100.0;
 /// The players' own lines and the routes' detours, added to the distance's share.
 const BASE_MS: u32 = 20;
+/// Hosts within this of each other count as equally near (the estimate is from relays' pings or
+/// distance, not to the millisecond): among them the fuller room comes first, then the order
+/// they came in (newest first).
+const BAND_MS: u32 = 30;
 
 /// Each account's game's round trips to the relays (relay id, ms), from its last sign-in.
 static PINGS: Mutex<Option<HashMap<u32, Vec<(String, u32)>>>> = Mutex::new(None);
@@ -131,9 +135,10 @@ pub struct Found {
     pub members: u32,
 }
 
-/// `rooms` nearest first, the fuller first when as near, and those it can't place last (never
-/// left out); the far ones (past `[matchmaking] far_ms`) left out as configured. Also how many
-/// were left out. Rooms that tie keep the order they came in (newest first).
+/// `rooms` nearest first in bands of [`BAND_MS`], the fuller first within a band, and those it
+/// can't place last (never left out); the far ones (past `[matchmaking] far_ms`) left out as
+/// configured. Also how many were left out. Rooms that tie keep the order they came in (newest
+/// first).
 pub fn order<T>(rooms: Vec<(T, Found)>) -> (Vec<T>, usize) {
     order_with(rooms, u32::from(FAR_MS.load(Ordering::Relaxed)), STRICT.load(Ordering::Relaxed))
 }
@@ -141,7 +146,7 @@ pub fn order<T>(rooms: Vec<(T, Found)>) -> (Vec<T>, usize) {
 fn order_with<T>(rooms: Vec<(T, Found)>, far_ms: u32, strict: bool) -> (Vec<T>, usize) {
     let far = |f: &Found| far_ms > 0 && f.ms.is_some_and(|ms| ms > far_ms);
     let mut rooms = rooms;
-    rooms.sort_by_key(|(_, f)| (f.ms.is_none(), f.ms.unwrap_or(0), std::cmp::Reverse(f.members)));
+    rooms.sort_by_key(|(_, f)| (f.ms.is_none(), f.ms.unwrap_or(0) / BAND_MS, std::cmp::Reverse(f.members)));
     let near = rooms.iter().filter(|(_, f)| !far(f)).count();
     let left_out = if strict || near > 0 { rooms.len() - near } else { 0 };
     if left_out > 0 {
@@ -202,7 +207,14 @@ mod tests {
             (5, room(Some(51), 8)),
             (6, room(Some(12), 1)),
         ];
-        assert_eq!(order_with(rooms, 120, true), (vec![6, 3, 1, 4, 5, 2], 0), "no bands: 51 ms is farther than 50");
+        // 50 and 51 ms share a band (30-59 ms): the fuller first there (5 with 8 players, 3
+        // with 5), then 1 and 4 in the order they came.
+        assert_eq!(order_with(rooms, 120, true), (vec![6, 5, 3, 1, 4, 2], 0));
+        // A full room a little farther comes before an empty one in the same band, not after.
+        let near = vec![(1, room(Some(41), 1)), (2, room(Some(42), 7))];
+        assert_eq!(order_with(near, 0, false), (vec![2, 1], 0));
+        let apart = vec![(1, room(Some(41), 1)), (2, room(Some(95), 7))];
+        assert_eq!(order_with(apart, 0, false), (vec![1, 2], 0), "a band apart: the nearer first");
     }
 
     #[test]

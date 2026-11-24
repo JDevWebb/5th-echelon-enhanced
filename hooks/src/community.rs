@@ -436,11 +436,24 @@ pub fn poll_launcher_join_request() {
 /// Takes the launcher's join request file, if there is one, as a request of ours: deleted
 /// once read, so it's good for one join only. A direct one starts the join now.
 fn take_launcher_join_request() {
+    // One taker at a time (the event poll, the overlay's start, an invitation arriving): each
+    // reads the file before deleting it, so two at once would both start a direct join.
+    // The last request taken is kept, so one that couldn't be deleted isn't taken again at
+    // every look.
+    static TAKEN: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
     let Some(path) = folder().map(|d| d.join(join_request::FILE)) else { return };
-    let Ok(bytes) = std::fs::read(&path) else { return };
-    if let Err(e) = std::fs::remove_file(&path) {
-        warn!("Couldn't delete the launcher's join request {}: {e}", path.display());
-    }
+    let bytes = {
+        let mut taken = TAKEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Ok(bytes) = std::fs::read(&path) else { return };
+        if let Err(e) = std::fs::remove_file(&path) {
+            if *taken == bytes {
+                return;
+            }
+            warn!("Couldn't delete the launcher's join request {}: {e}", path.display());
+        }
+        taken.clone_from(&bytes);
+        bytes
+    };
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
     let join_request::Asked { id, age, direct } = match join_request::read(&bytes, now) {
         Ok(request) => request,
@@ -824,6 +837,9 @@ fn join_room_now(room: u32, line: &str) {
                 say(format!("Joining {line}..."), false);
                 start_join(&resp.host_id);
             }
+            // Direct, but no host to start the join for (no server of ours answers so): nothing
+            // would come of it.
+            JoinStatus::Ok if resp.direct => say(String::from("Couldn't start the join - try again."), true),
             // The invitation comes on a later poll: the host it's from is the join asked for.
             JoinStatus::Ok if !resp.host_id.is_empty() => {
                 note_join_request(&resp.host_id);

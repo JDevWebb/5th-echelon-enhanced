@@ -1547,6 +1547,9 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                 logger,
                 "User {user_id} joined session {} through an invitation (via AddParticipants)", request.game_session_key.session_id
             );
+            // A direct join asked for before is done with too: it would answer their next
+            // search for that friend with its old room (join_now.rs).
+            crate::join_now::forget(user_id);
             self.drop_other_invites(logger, user_id, request.game_session_key.session_id);
         }
         // So is a join into a public match asked for without an invitation (join_now.rs), the
@@ -2589,6 +2592,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         )?;
         if invited {
             info!(logger, "User {user_id} joined session {} through an invitation", key.session_id);
+            crate::join_now::forget(user_id);
         }
         // A public match asked to join without an invitation (join_now.rs): done. Nothing more
         // is let in by it - a public match lets anyone in.

@@ -1594,7 +1594,8 @@ impl Storage {
     /// [`Self::find_pending_invited_session`] answers for an invitation: while the invitation
     /// it stands in for would hold (from `target`'s member joined through, else its host;
     /// marked a join request, so only while the room is still a public match, the member in
-    /// it, and nobody blocked: [`invite_holds_sql`]), its host still in it.
+    /// it, and nobody blocked: [`invite_holds_sql`]), its host still in it, and the friend the
+    /// game searches for still in it (the host, a member or a guest).
     pub fn find_join_target_session(&self, receiver_id: u32, target: &crate::join_now::Target) -> Result<Option<GameSession>> {
         run(self.find_join_target_session_async(receiver_id, target))?
     }
@@ -1608,6 +1609,9 @@ impl Storage {
             INNER JOIN participants p ON p.game_id = g.id AND p.user_id = g.creator_id
             WHERE {holds}
               AND g.destroyed_at IS NULL
+              AND (g.creator_id = ?5
+                   OR EXISTS (SELECT 1 FROM participants f WHERE f.game_id = g.id AND f.user_id = ?5)
+                   OR EXISTS (SELECT 1 FROM guests fg WHERE fg.game_id = g.id AND fg.user_id = ?5))
             ",
             holds = invite_holds_sql("i")
         ))
@@ -1615,6 +1619,9 @@ impl Storage {
         .bind(receiver_id)
         .bind(target.session_type)
         .bind(target.room)
+        // The friend the game searches for is still in it: one who left (a host migration
+        // moved the join on) leads elsewhere, as their own game's room would.
+        .bind(target.friend)
         .fetch_optional(&self.pool)
         .await?;
         self.invited_room_with_participants(session, receiver_id).await
@@ -3046,6 +3053,10 @@ pub(crate) mod tests {
         assert!(found(None).is_none(), "private seats only: a private match now");
         storage.update_game_session(1, game, "113 => 0;3 => 8;4 => 0".into()).unwrap();
         assert!(found(None).is_some(), "public again");
+        // The friend the game searches for gone from it (a host migration moved the join on
+        // to a new host): not that room.
+        let gone = crate::join_now::Target { friend: joiner, ..target(None) };
+        assert!(storage.find_join_target_session(joiner, &gone).unwrap().is_none(), "the friend searched for isn't in it");
         let other = crate::join_now::Target { session_type: 2, ..target(None) };
         assert!(storage.find_join_target_session(joiner, &other).unwrap().is_none(), "another session type");
         drop(storage);

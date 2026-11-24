@@ -20,6 +20,10 @@ pub const FILE: &str = "5th-echelon-join-request.json";
 /// the launcher started to boot and sign in, short enough that it can't attach to a later,
 /// unrelated invitation from the same friend.
 pub const GOOD_FOR: Duration = Duration::from_secs(5 * 60);
+/// A direct request (no invitation comes) is good for less: the server keeps the match for the
+/// game's search only this long (the dedicated server's `join_now::FOR`), and a join started
+/// after that finds nothing and leaves the player in a party of their own.
+pub const DIRECT_GOOD_FOR: Duration = Duration::from_secs(4 * 60);
 
 /// How far ahead of the game's clock a request may be dated (the launcher's clock is the same
 /// PC's, so only a little).
@@ -85,7 +89,7 @@ pub fn read(bytes: &[u8], now: i64) -> Result<Asked, Refused> {
         return Err(Refused::Invalid);
     }
     let age = Duration::from_secs(now.saturating_sub(request.at).max(0) as u64);
-    if age >= GOOD_FOR {
+    if age >= if request.direct { DIRECT_GOOD_FOR } else { GOOD_FOR } {
         return Err(Refused::Stale(age));
     }
     Ok(Asked {
@@ -147,6 +151,16 @@ mod tests {
         assert_eq!(read(direct.as_bytes(), NOW).map(|a| a.direct), Ok(true));
         assert_eq!(contents("friend", NOW, false), format!(r#"{{"id":"friend","at":{NOW}}}"#), "as an older launcher wrote it");
         assert_eq!(read(format!(r#"{{"id":"friend","at":{NOW}}}"#).as_bytes(), NOW).map(|a| a.direct), Ok(false));
+    }
+
+    #[test]
+    fn a_direct_request_lapses_with_the_servers_hold() {
+        let nearly = contents("friend", NOW - DIRECT_GOOD_FOR.as_secs() as i64 + 1, true);
+        assert!(read(nearly.as_bytes(), NOW).is_ok());
+        let lapsed = contents("friend", NOW - DIRECT_GOOD_FOR.as_secs() as i64, true);
+        assert_eq!(read(lapsed.as_bytes(), NOW), Err(Refused::Stale(DIRECT_GOOD_FOR)));
+        let invited = contents("friend", NOW - DIRECT_GOOD_FOR.as_secs() as i64, false);
+        assert!(read(invited.as_bytes(), NOW).is_ok(), "an invitation's request keeps its five minutes");
     }
 
     #[test]
