@@ -138,7 +138,7 @@ fn hash(bytes: &[u8]) -> u32 {
 /// 37 floats from 104 to 252 in the script's layout, blacklist-re `lead_layout.py`), so a scope is
 /// never an edit of the weapon; the attachments are hashed the same way, by name, so an edited
 /// one is. Taken only when the block reads as that layout says (finite; the FOV multiplier, at
-/// 240, between 0 and 5).
+/// 240, from 0, no change, to 5).
 const ATTACHMENT_MODIFIERS: std::ops::Range<usize> = 104..252;
 const ATTACHMENT_FOV_AT: usize = 240;
 
@@ -151,8 +151,9 @@ fn attachment_hash(o: usize) -> Option<u32> {
         }
         bytes.extend_from_slice(&v.to_bits().to_le_bytes());
     }
+    // 0: no change to the view (the red dot and the muzzle brake, the Surface, 24 Nov).
     let fov = read::<f32>(o + ATTACHMENT_FOV_AT)?;
-    (fov > 0.0 && fov <= 5.0).then(|| hash(&bytes))
+    (0.0..=5.0).contains(&fov).then(|| hash(&bytes))
 }
 
 /// The attachment archetypes' own class name isn't in this build's name table (the gamebox,
@@ -164,8 +165,9 @@ fn attachment_hash(o: usize) -> Option<u32> {
 const WEAPON_UPGRADES_AT: usize = 1892;
 const UPGRADE_ATTACHMENT_NAME_AT: usize = 1788;
 const UPGRADE_ATTACHMENT_AT: usize = 1792;
-/// The most upgrades read on one weapon.
-const MOST_UPGRADES: u32 = 16;
+/// The most upgrade places read on one weapon (the 416 has 17: the Surface, 24 Nov, with its red
+/// dot in place 1 and muzzle brake in place 4; 16 left it out altogether).
+const MOST_UPGRADES: u32 = 32;
 
 /// The attachments on live weapons: (attachment archetype's name, its object).
 fn attachments() -> Vec<(String, usize)> {
@@ -335,15 +337,20 @@ pub fn test_firing_words() {
         crate::pawns::live_weapons().into_iter().for_each(|o| {
             {
                 let arr = |at: usize| (read_u32(o + at), read_u32(o + at + 4));
-                if let (Some(data), Some(n)) = arr(WEAPON_UPGRADES_AT) {
-                    for k in 0..n.min(3) as usize {
+                // Both lists in full: the upgrades (1892) and the one before it (1880).
+                for (list, at) in [("upgrade", WEAPON_UPGRADES_AT), ("starting", WEAPON_UPGRADES_AT - 12)] {
+                    let (Some(data), Some(n)) = arr(at) else { continue };
+                    for k in 0..n.min(32) as usize {
                         let u = read_u32(data as usize + k * 4).unwrap_or(0) as usize;
                         if u == 0 {
+                            seen.push(format!("  {list} {k}: none"));
                             continue;
                         }
                         let class = read_u32(u + 0x24).and_then(|c| read_u32(c as usize + 0x20)).and_then(name_text);
+                        let named = read_u32(u + UPGRADE_ATTACHMENT_NAME_AT).and_then(name_text);
+                        let archetype = read_u32(u + UPGRADE_ATTACHMENT_AT).filter(|a| *a != 0).and_then(|a| read_u32(a as usize + 0x20)).and_then(name_text);
                         let words: Vec<String> = (1776..1808).step_by(4).map(|at| format!("{at}:{:x}", read_u32(u + at).unwrap_or(0))).collect();
-                        seen.push(format!("  upgrade {k}: {:?} class {class:?} {}", read_u32(u + 0x20).and_then(name_text), words.join(" ")));
+                        seen.push(format!("  {list} {k}: {:?} class {class:?} named {named:?} archetype {archetype:?} {}", read_u32(u + 0x20).and_then(name_text), words.join(" ")));
                     }
                 }
                 seen.push(format!(
@@ -355,6 +362,11 @@ pub fn test_firing_words() {
             }
         });
         tracing::info!("Weapons: test: live weapons {seen:?}; attachments {:?}", attachments());
+        // Each attachment archetype's block around its modifiers, as floats (W1's layout check).
+        for (name, a) in attachments() {
+            let floats: Vec<String> = (96..264).step_by(4).map(|at| format!("{at}:{:?}", read::<f32>(a + at).unwrap_or(f32::NAN))).collect();
+            tracing::info!("Weapons: test: attachment {name} class {:?} {}", read_u32(a + 0x24).and_then(|c| read_u32(c as usize + 0x20)).and_then(name_text), floats.join(" "));
+        }
     }
     let Some(f) = found() else { return };
     let Some((class, switches)) = &f.firing else { return };
