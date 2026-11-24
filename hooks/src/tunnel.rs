@@ -324,7 +324,11 @@ async fn run(url: String, forwarders: Vec<Forwarder>) {
                     );
                 }
                 if let Some(slow) = slowed_reopen(short) {
-                    warn!("Tunnel: {short} closed within {} s of opening in a row; waiting {} s before opening it again", SHORT_LIFE.as_secs(), slow.as_secs());
+                    warn!(
+                        "Tunnel: {short} closed within {} s of opening in a row; waiting {} s before opening it again",
+                        SHORT_LIFE.as_secs(),
+                        slow.as_secs()
+                    );
                     tokio::time::sleep(slow).await;
                     continue;
                 }

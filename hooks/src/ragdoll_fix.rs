@@ -217,7 +217,10 @@ pub unsafe fn guard_ragdoll_parts() {
         return;
     }
     crate::fix_stats::installed("ragdoll-fix", &[&STOPPED]);
-    info!("ragdoll-fix: the ragdoll's parts merge @ {hook:#010x} checks its parts list first (stub {:#010x})", stub as u32);
+    info!(
+        "ragdoll-fix: the ragdoll's parts merge @ {hook:#010x} checks its parts list first (stub {:#010x})",
+        stub as u32
+    );
 
     std::thread::spawn(|| {
         let mut logged = 0;
@@ -245,7 +248,11 @@ mod tests {
         let stub = 0x1000_0000;
         let code = assemble(stub, 0x1100_0000, 0x9bd515, 0x2000_0000);
         let target = |at: usize| (stub + at as u32 + 4).wrapping_add(u32::from_le_bytes(code[at..at + 4].try_into().unwrap()));
-        assert_eq!(&code[0..7], &[0x50, 0x51, 0x52, 0xFF, 0x74, 0x24, 0x10], "saves, then pushes the list (past 3 saves and the return)");
+        assert_eq!(
+            &code[0..7],
+            &[0x50, 0x51, 0x52, 0xFF, 0x74, 0x24, 0x10],
+            "saves, then pushes the list (past 3 saves and the return)"
+        );
         assert_eq!(code[7], 0xE8);
         assert_eq!(target(8), 0x1100_0000, "calls the check");
         assert_eq!(&code[12..17], &[0x85, 0xC0, 0x5A, 0x59, 0x58]);

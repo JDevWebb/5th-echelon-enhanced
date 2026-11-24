@@ -78,7 +78,10 @@ pub unsafe fn guard_team_copies() {
         return;
     }
     crate::fix_stats::installed("teams-fix", &[&STOPPED]);
-    info!("teams-fix: the team service's copy @ {hook:#010x} checks its list's count first (stub {:#010x})", stub as u32);
+    info!(
+        "teams-fix: the team service's copy @ {hook:#010x} checks its list's count first (stub {:#010x})",
+        stub as u32
+    );
     std::thread::spawn(|| {
         let mut logged = 0;
         loop {

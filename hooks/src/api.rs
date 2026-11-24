@@ -387,7 +387,11 @@ pub fn name_seen(peer: u32, shown: &str, account: u32) {
     let result = run(signed_in(|| async {
         let mut client = connect!(MiscClient);
         client
-            .name_seen(tonic::Request::new(server_api::misc::NameSeenRequest { peer, shown: shown.to_string(), account }))
+            .name_seen(tonic::Request::new(server_api::misc::NameSeenRequest {
+                peer,
+                shown: shown.to_string(),
+                account,
+            }))
             .await?;
         Ok(())
     }));

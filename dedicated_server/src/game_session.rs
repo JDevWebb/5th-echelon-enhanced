@@ -3557,7 +3557,11 @@ mod tests {
         assert_eq!(seen(mate), vec![relayed], "the relay only, once their LAN failed");
         // Both ways: the host isn't given the mate's LAN address either.
         super::note_house_urls(mate, home, vec!["prudp:/address=192.168.0.120;port=13000".into()]);
-        let host_sees = super::with_house_urls(vec![room(mate, &[relayed])], host, home).remove(0).participants.remove(0).station_urls;
+        let host_sees = super::with_house_urls(vec![room(mate, &[relayed])], host, home)
+            .remove(0)
+            .participants
+            .remove(0)
+            .station_urls;
         assert_eq!(host_sees, vec![relayed]);
         super::note_house_urls(host, home, Vec::new());
         super::note_house_urls(mate, home, Vec::new());

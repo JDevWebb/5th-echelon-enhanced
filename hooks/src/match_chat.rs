@@ -79,7 +79,9 @@ fn test_commands() {
         let Ok(text) = std::fs::read_to_string(&file) else { continue };
         let text = text.trim().to_string();
         let mut words = text.splitn(3, ' ');
-        let (Some(verb), arg) = (words.next(), words.next().unwrap_or_default()) else { continue };
+        let (Some(verb), arg) = (words.next(), words.next().unwrap_or_default()) else {
+            continue;
+        };
         let rest = words.next().unwrap_or_default();
         match verb {
             "mute" | "unmute" => set_muted(arg, verb == "mute"),
@@ -235,7 +237,9 @@ fn check_name(message: usize, shown: &str) {
     }
     tracing::warn!("Match chat: number {peer} ({real} to the server) writes as another name");
     let shown = shown.to_string();
-    let _ = std::thread::Builder::new().name("fe-name-seen".into()).spawn(move || crate::api::name_seen(u32::from(peer), &shown, 0));
+    let _ = std::thread::Builder::new()
+        .name("fe-name-seen".into())
+        .spawn(move || crate::api::name_seen(u32::from(peer), &shown, 0));
 }
 
 /// At the chat display, before the game shows a line: whether it shows it. A line shown is kept
@@ -306,7 +310,14 @@ fn lines_from<'a>(lines: impl Iterator<Item = &'a Line>, names: &[String]) -> Ve
         .filter(|l| l.at.elapsed() < KEPT_FOR && names.contains(&key(&l.name)))
         .map(|l| {
             let t = l.unix.rem_euclid(86_400);
-            format!("{:02}:{:02}:{:02} UTC [{}] {}", t / 3600, t / 60 % 60, t % 60, if l.team_only { "TEAM" } else { "ALL" }, l.text)
+            format!(
+                "{:02}:{:02}:{:02} UTC [{}] {}",
+                t / 3600,
+                t / 60 % 60,
+                t % 60,
+                if l.team_only { "TEAM" } else { "ALL" },
+                l.text
+            )
         })
         .collect()
 }
@@ -342,10 +353,31 @@ mod tests {
     fn a_reports_lines_are_the_reported_players_only() {
         let at = Instant::now();
         let lines = [
-            Line { at, unix: 3600 * 17 + 60 * 20 + 5, name: "LeviChuKing".into(), team_only: true, text: "kill them".into() },
-            Line { at, unix: 3600 * 17 + 60 * 21, name: "Tea_bag".into(), team_only: false, text: "stop".into() },
-            Line { at, unix: 3600 * 17 + 60 * 22, name: "levichuking".into(), team_only: false, text: "lol".into() },
+            Line {
+                at,
+                unix: 3600 * 17 + 60 * 20 + 5,
+                name: "LeviChuKing".into(),
+                team_only: true,
+                text: "kill them".into(),
+            },
+            Line {
+                at,
+                unix: 3600 * 17 + 60 * 21,
+                name: "Tea_bag".into(),
+                team_only: false,
+                text: "stop".into(),
+            },
+            Line {
+                at,
+                unix: 3600 * 17 + 60 * 22,
+                name: "levichuking".into(),
+                team_only: false,
+                text: "lol".into(),
+            },
         ];
-        assert_eq!(lines_from(lines.iter(), &[key("LeviChuKing")]), vec!["17:20:05 UTC [TEAM] kill them", "17:22:00 UTC [ALL] lol"]);
+        assert_eq!(
+            lines_from(lines.iter(), &[key("LeviChuKing")]),
+            vec!["17:20:05 UTC [TEAM] kill them", "17:22:00 UTC [ALL] lol"]
+        );
     }
 }

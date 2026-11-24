@@ -407,7 +407,11 @@ fn other_name(shown: &str, account: &str) -> bool {
 
 fn own_name_seen(shown: &str) {
     #[cfg(feature = "test-commands")]
-    let account = SELF_NAME_TEST.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().or_else(crate::api::username);
+    let account = SELF_NAME_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+        .or_else(crate::api::username);
     #[cfg(not(feature = "test-commands"))]
     let account = crate::api::username();
     let Some(account) = account else { return };

@@ -338,7 +338,14 @@ struct Found {
 /// number, the winning team (and player, in a free-for-all), how many rounds there are, and for
 /// Spies vs Mercs the hacks done and the round's score. Sent with the match state as
 /// `round_result`, never with the settings (they change every round).
-const RESULTS: [&str; 6] = ["m_iRoundNumber", "m_iRoundWinningTeam", "m_iRoundWinningPlayer", "m_iNumRounds", "m_iNumHackComplete", "m_iRoundScore"];
+const RESULTS: [&str; 6] = [
+    "m_iRoundNumber",
+    "m_iRoundWinningTeam",
+    "m_iRoundWinningPlayer",
+    "m_iNumRounds",
+    "m_iNumHackComplete",
+    "m_iRoundScore",
+];
 
 /// The name indices of `wanted`, from the name table (once: it holds tens of thousands).
 pub(crate) fn name_indices(wanted: &[&'static str]) -> HashMap<&'static str, u32> {
@@ -537,9 +544,7 @@ pub(crate) fn profile_xp() -> Option<u32> {
         // object (Default__EEchelonProfileExtension).
         let mut object: Option<(usize, i32)> = None;
         each_object(|o| {
-            if read_u32(o + 0x24).is_some_and(|c| made_from(c as usize, packed))
-                && alive(o)
-                && !read_u32(o + 0x20).and_then(name_text).is_some_and(|n| n.starts_with("Default__"))
+            if read_u32(o + 0x24).is_some_and(|c| made_from(c as usize, packed)) && alive(o) && !read_u32(o + 0x20).and_then(name_text).is_some_and(|n| n.starts_with("Default__"))
             {
                 let xp = read::<i32>(o + XP_AT).unwrap_or(0);
                 if xp > 0 && object.is_none_or(|(_, best)| xp > best) {
@@ -549,14 +554,17 @@ pub(crate) fn profile_xp() -> Option<u32> {
         });
         let object = object.map(|(o, _)| o);
         *found = object.map(|o| (o, Instant::now()));
-        info!("Profile: {}", match object {
-            Some(o) => format!(
-                "the profile extension {:?} found, XP {:?} at its place",
-                read_u32(o + 0x20).and_then(name_text),
-                read::<i32>(o + XP_AT)
-            ),
-            None => String::from("no profile extension found"),
-        });
+        info!(
+            "Profile: {}",
+            match object {
+                Some(o) => format!(
+                    "the profile extension {:?} found, XP {:?} at its place",
+                    read_u32(o + 0x20).and_then(name_text),
+                    read::<i32>(o + XP_AT)
+                ),
+                None => String::from("no profile extension found"),
+            }
+        );
     }
     let (object, _) = (*found)?;
     let names = name_indices(&["EEchelonProfileExtension", "m_iXP", "Class"]);
@@ -577,12 +585,18 @@ pub(crate) fn kind_name(object: usize) -> Option<String> {
     // at 1856 in the script's layout, blacklist-re `lead_layout.py`; its archetype pointer follows
     // at 1860, checked to be set).
     if read_u32(object + WEAPON_ARCHETYPE_INFO_AT).is_some_and(|a| a != 0) {
-        if let Some(name) = read_u32(object + WEAPON_ARCHETYPE_NAME_AT).and_then(name_text).filter(|n| !n.is_empty() && !n.contains(' ')) {
+        if let Some(name) = read_u32(object + WEAPON_ARCHETYPE_NAME_AT)
+            .and_then(name_text)
+            .filter(|n| !n.is_empty() && !n.contains(' '))
+        {
             return Some(name);
         }
     }
     let archetype = read_u32(object + 0x28).filter(|a| *a != 0).map(|a| a as usize);
-    if let Some(name) = archetype.and_then(|a| name_text(read_u32(a + 0x20)?)).filter(|n| !n.is_empty() && !n.starts_with("Default__")) {
+    if let Some(name) = archetype
+        .and_then(|a| name_text(read_u32(a + 0x20)?))
+        .filter(|n| !n.is_empty() && !n.starts_with("Default__"))
+    {
         return Some(name);
     }
     let class = read_u32(object + 0x24).filter(|c| *c != 0)? as usize;

@@ -252,7 +252,9 @@ pub async fn upload_pending(store: &objstore::Store, client: &reqwest::Client, l
             let data = std::fs::read(dir.join(format!("{}.{}", k.id, replay::EXTENSION))).map_err(|e| e.to_string())?;
             store.put(client, &key, data, "application/octet-stream").await?;
             let note = serde_json::to_vec(&k).unwrap_or_default();
-            store.put(client, &key.replace(&format!(".{}", replay::EXTENSION), ".json"), note, "application/json").await?;
+            store
+                .put(client, &key.replace(&format!(".{}", replay::EXTENSION), ".json"), note, "application/json")
+                .await?;
             std::fs::write(uploaded_marker(&dir, &k.id), key.as_bytes()).map_err(|e| e.to_string())
         }
         .await;
@@ -332,7 +334,10 @@ mod tests {
 
     #[test]
     fn a_recordings_r2_key_is_by_the_month_it_came() {
-        assert_eq!(r2_key("0123456789abcdef", 1_795_384_123), format!("recordings/2026/11/0123456789abcdef.{}", replay::EXTENSION));
+        assert_eq!(
+            r2_key("0123456789abcdef", 1_795_384_123),
+            format!("recordings/2026/11/0123456789abcdef.{}", replay::EXTENSION)
+        );
         assert_eq!(r2_key("0123456789abcdef", 0), format!("recordings/1970/01/0123456789abcdef.{}", replay::EXTENSION));
     }
 

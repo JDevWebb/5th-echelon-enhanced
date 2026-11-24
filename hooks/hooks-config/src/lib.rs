@@ -330,10 +330,10 @@ impl Beta {
             (self.no_camera_shake, "no_camera_shake"),
             (self.wider_field_of_view, "wider_field_of_view"),
         ]
-            .into_iter()
-            .filter(|(on, _)| *on)
-            .map(|(_, name)| name)
-            .collect()
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, name)| name)
+        .collect()
     }
 
     #[must_use]

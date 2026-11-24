@@ -143,7 +143,11 @@ fn result_of(writes: &[StatWrite], room: Option<u32>) -> serde_json::Value {
     detail.insert("boards".into(), serde_json::json!(boards.into_iter().take(16).collect::<Vec<_>>()));
     // Flat beside them: the coordinator keeps a nested object to 8 values.
     for (name, id) in RESULT_STATS {
-        let v = writes.iter().filter(|w| w.stat == id).map(|w| w.value).fold(None::<f64>, |m, v| Some(m.map_or(v, |m| m.max(v))));
+        let v = writes
+            .iter()
+            .filter(|w| w.stat == id)
+            .map(|w| w.value)
+            .fold(None::<f64>, |m, v| Some(m.map_or(v, |m| m.max(v))));
         if let Some(v) = v {
             detail.insert(name.into(), serde_json::json!((v * 100.0).round() / 100.0));
         }

@@ -96,7 +96,9 @@ pub fn find(text: &str) {
         for (needle, how) in [(&ascii, "ascii"), (&wide, "utf16")] {
             let mut from = 0;
             while hits.len() < MOST_HITS {
-                let Some(i) = bytes[from..].windows(needle.len()).position(|w| w == needle.as_slice()) else { break };
+                let Some(i) = bytes[from..].windows(needle.len()).position(|w| w == needle.as_slice()) else {
+                    break;
+                };
                 let at = base + from + i;
                 // Not the logs' own text (this tool's lines, the add-on's).
                 let around = &bytes[(from + i).saturating_sub(48)..(from + i)];
@@ -112,7 +114,10 @@ pub fn find(text: &str) {
     // within 4 KB: objects are smaller than that, as the game's classes go).
     let mut objects: BTreeMap<usize, String> = BTreeMap::new();
     crate::round_state::each_object(|o| {
-        let class = read_u32(o + 0x24).and_then(|c| read_u32(c as usize + 0x20)).and_then(crate::round_state::name_text).unwrap_or_default();
+        let class = read_u32(o + 0x24)
+            .and_then(|c| read_u32(c as usize + 0x20))
+            .and_then(crate::round_state::name_text)
+            .unwrap_or_default();
         objects.insert(o, class);
     });
     // A copy's owner may point at its record's start, a little before the text.
@@ -163,7 +168,11 @@ pub fn find(text: &str) {
                     .collect()
             })
             .unwrap_or_default();
-        info!("Find text: test: {at:#x} {how} in {}; before {}; pointed at by {by:?}", kind_of(&regions, *at), before.join(" "));
+        info!(
+            "Find text: test: {at:#x} {how} in {}; before {}; pointed at by {by:?}",
+            kind_of(&regions, *at),
+            before.join(" ")
+        );
         // Each owner's words around its pointer (-32..+32), for telling which structure it is.
         for (_, p) in owners.iter().take(3) {
             let words: Vec<String> = (0..16).filter_map(|k| read_u32(p - 32 + k * 4)).map(|w| format!("{w:x}")).collect();

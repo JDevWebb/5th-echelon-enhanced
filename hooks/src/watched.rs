@@ -34,7 +34,9 @@ const MOST: usize = 2048;
 /// Names the game changes by itself during a round (the gamebox's clean matches), and parts of
 /// names that always do (timers, states, counts).
 const EXPECTED: &[&str] = &[];
-const EXPECTED_PARTS: &[&str] = &["Timer", "Time", "State", "Round", "Score", "Num", "Count", "Progress", "Hack", "Current", "Last", "Delay", "Kill", "Winning"];
+const EXPECTED_PARTS: &[&str] = &[
+    "Timer", "Time", "State", "Round", "Score", "Num", "Count", "Progress", "Hack", "Current", "Last", "Delay", "Kill", "Winning",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
@@ -76,7 +78,9 @@ fn props_of(class: usize) -> Vec<Prop> {
         if out.len() >= MOST || !read_u32(o + 0x18).is_some_and(|outer| chain.contains(&outer)) {
             return;
         }
-        let Some((_, kind)) = kinds.iter().find(|(packed, _)| rs::of_class(o, *packed)) else { return };
+        let Some((_, kind)) = kinds.iter().find(|(packed, _)| rs::of_class(o, *packed)) else {
+            return;
+        };
         let Some(offset) = read::<u16>(o + 0x3a) else { return };
         let kind = match *kind {
             "IntProperty" => Kind::Int,
@@ -159,7 +163,15 @@ pub fn tick(object: Option<usize>, under_way: bool) {
     if guard.as_ref().is_none_or(|w| w.object != object || w.class != class) {
         let props = props_of(class as usize);
         info!("Watched: the match manager's {} properties", props.len());
-        *guard = Some(Watched { object, class, props, base: None, based_at: None, read_at: None, said: false });
+        *guard = Some(Watched {
+            object,
+            class,
+            props,
+            base: None,
+            based_at: None,
+            read_at: None,
+            said: false,
+        });
     }
     let Some(w) = guard.as_mut() else { return };
     if !under_way {
@@ -198,7 +210,10 @@ pub fn tick(object: Option<usize>, under_way: bool) {
     info!("Watched: the match manager changed during the round: {}", found.join(", "));
     if REPORTING && !w.said {
         w.said = true;
-        let detail = format!("the match manager changed during the round: {}", found.iter().take(8).cloned().collect::<Vec<_>>().join(", "));
+        let detail = format!(
+            "the match manager changed during the round: {}",
+            found.iter().take(8).cloned().collect::<Vec<_>>().join(", ")
+        );
         let n = found.len();
         let _ = std::thread::Builder::new().name("fe-watched".into()).spawn(move || {
             #[allow(clippy::cast_precision_loss)]
@@ -213,8 +228,17 @@ mod tests {
 
     #[test]
     fn only_unexpected_changes_are_said() {
-        let p = |name: &str, kind| Prop { name: name.into(), offset: 0, kind };
-        let props = [p("m_fRoundStateTimer", Kind::Float), p("m_bIsFriendlyFireEnabled", Kind::Bool(1)), p("m_iScoreLimit", Kind::Int), p("m_iSomething", Kind::Int)];
+        let p = |name: &str, kind| Prop {
+            name: name.into(),
+            offset: 0,
+            kind,
+        };
+        let props = [
+            p("m_fRoundStateTimer", Kind::Float),
+            p("m_bIsFriendlyFireEnabled", Kind::Bool(1)),
+            p("m_iScoreLimit", Kind::Int),
+            p("m_iSomething", Kind::Int),
+        ];
         let base = [1.0f32.to_bits(), 0, 3, 5];
         let now = [9.0f32.to_bits(), 1, 3, (-1i32) as u32];
         assert_eq!(changes(&props, &base, &now, 0.0), vec!["m_bIsFriendlyFireEnabled 0→1", "m_iSomething 5→-1"]);

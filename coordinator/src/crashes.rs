@@ -306,7 +306,10 @@ impl Coordinator {
     /// Once: the crashes in the reports already here (the last 30 days'), for the first start
     /// with CT.
     pub async fn crashes_from_stored_reports(&self) -> sqlx::Result<()> {
-        let done: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?").bind(FROM_REPORTS_DONE).fetch_optional(&self.pool).await?;
+        let done: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+            .bind(FROM_REPORTS_DONE)
+            .fetch_optional(&self.pool)
+            .await?;
         if done.is_some() {
             return Ok(());
         }

@@ -1756,7 +1756,10 @@ impl Misc for MyMisc {
         let match_size = rooms.iter().find_map(|(_, a, _)| crate::game_session::mode_size(a)).unwrap_or(0);
         // R3: a match room with more players than its mode was made for (a host raised it past
         // its size): the player is told once, and still plays.
-        if let Some((room, size, players)) = rooms.iter().find_map(|(room, a, n)| crate::game_session::mode_size(a).filter(|s| n > s).map(|s| (*room, s, *n))) {
+        if let Some((room, size, players)) = rooms
+            .iter()
+            .find_map(|(room, a, n)| crate::game_session::mode_size(a).filter(|s| n > s).map(|s| (*room, s, *n)))
+        {
             crate::oversized::seen(user_id, room, size, players);
         }
 
@@ -2091,7 +2094,11 @@ impl Misc for MyMisc {
                     .map(|(room, ..)| room),
             };
             if let Some(room) = room {
-                crate::session_events::note(crate::session_events::Who::Id(user_id), "round_result", round_result(room, !rooms.is_empty(), &r.round_result));
+                crate::session_events::note(
+                    crate::session_events::Who::Id(user_id),
+                    "round_result",
+                    round_result(room, !rooms.is_empty(), &r.round_result),
+                );
             }
         }
         // N2: the XP their game's profile says (the rank shown comes from it), once a day a player,
@@ -2444,7 +2451,11 @@ impl Misc for MyMisc {
         let Some(room) = rooms.first().map(|s| s.session_id) else {
             return Ok(Response::new(misc::NameSeenResponse {}));
         };
-        let sessions = self.storage.with_participants_async(rooms, crate::storage::UrlsFor::AllBut(user_id)).await.map_err(internal)?;
+        let sessions = self
+            .storage
+            .with_participants_async(rooms, crate::storage::UrlsFor::AllBut(user_id))
+            .await
+            .map_err(internal)?;
         let mut players: Vec<(u32, String)> = sessions.iter().flat_map(|s| s.participants.iter().map(|p| (p.user_id, p.name.clone()))).collect();
         players.sort();
         players.dedup();
@@ -2478,7 +2489,10 @@ impl Misc for MyMisc {
                 );
             }
             crate::name_witness::Seen2::Tell => {
-                warn!(self.logger, "Fair play: {real} ({target}) is shown as {shown:?} in room {room} (two witnesses): the match is told");
+                warn!(
+                    self.logger,
+                    "Fair play: {real} ({target}) is shown as {shown:?} in room {room} (two witnesses): the match is told"
+                );
                 for (id, _) in &players {
                     crate::reports::tell(*id, String::from("A player's name isn't theirs"), format!("{shown} is really {real}."), None);
                 }

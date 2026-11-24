@@ -22,7 +22,11 @@ pub struct Store {
 impl std::fmt::Debug for Store {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Never the secret.
-        f.debug_struct("Store").field("endpoint", &self.endpoint).field("bucket", &self.bucket).field("key_id", &self.key_id).finish_non_exhaustive()
+        f.debug_struct("Store")
+            .field("endpoint", &self.endpoint)
+            .field("bucket", &self.bucket)
+            .field("key_id", &self.key_id)
+            .finish_non_exhaustive()
     }
 }
 
@@ -63,7 +67,11 @@ impl Store {
     fn sign(&self, method: &str, key: &str, payload_sha: &str, amz_date: &str) -> Vec<(String, String)> {
         let date = &amz_date[..8];
         let path = format!("/{}/{}", self.bucket, encode_path(key));
-        let headers = [("host", self.host().to_string()), ("x-amz-content-sha256", payload_sha.to_string()), ("x-amz-date", amz_date.to_string())];
+        let headers = [
+            ("host", self.host().to_string()),
+            ("x-amz-content-sha256", payload_sha.to_string()),
+            ("x-amz-date", amz_date.to_string()),
+        ];
         let canonical_headers: String = headers.iter().map(|(k, v)| format!("{k}:{v}\n")).collect();
         let signed: Vec<&str> = headers.iter().map(|(k, _)| *k).collect();
         let signed = signed.join(";");
@@ -135,7 +143,13 @@ fn encode_path(key: &str) -> String {
     key.split('/')
         .map(|seg| {
             seg.bytes()
-                .map(|b| if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') { (b as char).to_string() } else { format!("%{b:02X}") })
+                .map(|b| {
+                    if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                        (b as char).to_string()
+                    } else {
+                        format!("%{b:02X}")
+                    }
+                })
                 .collect::<String>()
         })
         .collect::<Vec<_>>()
@@ -191,8 +205,17 @@ mod tests {
         assert_eq!(hex(&k), "f4780e2d9f65fa895f9c67b32ce1baf0b0d8a43505a000a1a9e090d414db404d");
         let s = Store::new("https://acct.r2.cloudflarestorage.com", "recordings", "KEY", "SECRET").unwrap();
         let h = s.sign("GET", "recordings/2026/11/x.fer", &hex(&sha2::Sha256::digest(b"")), "20261123T000000Z");
-        assert!(h[2].1.starts_with("AWS4-HMAC-SHA256 Credential=KEY/20261123/auto/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature="), "{}", h[2].1);
-        assert_eq!(h, s.sign("GET", "recordings/2026/11/x.fer", &hex(&sha2::Sha256::digest(b"")), "20261123T000000Z"), "the same request signs the same");
+        assert!(
+            h[2].1
+                .starts_with("AWS4-HMAC-SHA256 Credential=KEY/20261123/auto/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature="),
+            "{}",
+            h[2].1
+        );
+        assert_eq!(
+            h,
+            s.sign("GET", "recordings/2026/11/x.fer", &hex(&sha2::Sha256::digest(b"")), "20261123T000000Z"),
+            "the same request signs the same"
+        );
     }
 
     #[test]

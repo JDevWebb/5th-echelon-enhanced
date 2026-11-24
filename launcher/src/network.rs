@@ -637,7 +637,10 @@ mod tests {
         assert_eq!(list.len(), 2, "{body}");
         assert_eq!(list[0], serde_json::json!({ "server": "tqzfwr7a4dhc67lp", "ms": 21, "picked": true }));
         assert_eq!(list[1]["picked"], false);
-        assert!(relay_pings_body(&crate::relays::Picked { pings: vec![], ..relay }, "x").is_none(), "none answered: nothing sent");
+        assert!(
+            relay_pings_body(&crate::relays::Picked { pings: vec![], ..relay }, "x").is_none(),
+            "none answered: nothing sent"
+        );
     }
 
     /// The community network typed by the name players know (its matchmaking server's) or its

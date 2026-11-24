@@ -58,10 +58,13 @@ fn masked(ip: IpAddr) -> String {
 /// The known service `ip` is in, if any.
 fn known(ip: IpAddr) -> Option<&'static str> {
     let IpAddr::V4(v4) = ip.to_canonical() else { return None };
-    KNOWN.iter().find(|(_, net, len)| {
-        let mask = u32::MAX.checked_shl(32 - u32::from(*len)).unwrap_or(0);
-        u32::from(v4) & mask == u32::from(*net) & mask
-    }).map(|(name, ..)| *name)
+    KNOWN
+        .iter()
+        .find(|(_, net, len)| {
+            let mask = u32::MAX.checked_shl(32 - u32::from(*len)).unwrap_or(0);
+            u32::from(v4) & mask == u32::from(*net) & mask
+        })
+        .map(|(name, ..)| *name)
 }
 
 /// What kind of change it was: a known service's, else the /16 kept or changed.

@@ -61,7 +61,10 @@ pub fn reported(storage: &Storage, logger: &Logger, reporter: u32, peers: &[Peer
             .find_map(|a| crate::game_session::house_lan_unreachable(reporter, a).map(|user| (a, user)));
         if let Some((address, user)) = lan {
             let name = storage.find_username_by_user_id(user).ok().flatten().unwrap_or_default();
-            info!(logger, "{reporter}'s game couldn't reach its housemate {name} on their LAN ({address}); they meet at the relay from now on");
+            info!(
+                logger,
+                "{reporter}'s game couldn't reach its housemate {name} on their LAN ({address}); they meet at the relay from now on"
+            );
             crate::session_events::note(
                 crate::session_events::Who::Id(reporter),
                 "unreachable",

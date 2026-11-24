@@ -1533,15 +1533,24 @@ async fn a_launchers_relay_pings_are_one_batch_with_the_pick() {
     ] });
     let (status, v) = t.call("POST", "/v1/pings", None, Some(report)).await;
     assert_eq!((status, v["recorded"].as_u64()), (StatusCode::OK, Some(2)), "{v}");
-    let rows: Vec<(String, i64, bool, String)> = sqlx::query_as("SELECT server_id, ms, picked, batch FROM player_pings ORDER BY ms").fetch_all(&t.c.pool).await.unwrap();
+    let rows: Vec<(String, i64, bool, String)> = sqlx::query_as("SELECT server_id, ms, picked, batch FROM player_pings ORDER BY ms")
+        .fetch_all(&t.c.pool)
+        .await
+        .unwrap();
     assert_eq!(
         rows,
-        vec![("relay-a".into(), 21, true, "00ff00ff00ff00ff".into()), ("relay-b".into(), 180, false, "00ff00ff00ff00ff".into())]
+        vec![
+            ("relay-a".into(), 21, true, "00ff00ff00ff00ff".into()),
+            ("relay-b".into(), 180, false, "00ff00ff00ff00ff".into())
+        ]
     );
     t.join("relay-c").await;
     let odd = json!({ "batch": "not a batch; DROP", "pings": [{ "server": "relay-c", "ms": 50 }] });
     assert_eq!(t.call("POST", "/v1/pings", None, Some(odd)).await.0, StatusCode::OK);
-    let batch: String = sqlx::query_scalar("SELECT batch FROM player_pings WHERE server_id = 'relay-c'").fetch_one(&t.c.pool).await.unwrap();
+    let batch: String = sqlx::query_scalar("SELECT batch FROM player_pings WHERE server_id = 'relay-c'")
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
     assert_eq!(batch, "");
 }
 
@@ -3671,14 +3680,21 @@ async fn crashes_in_a_reports_logs_count_once() {
     assert_eq!(from_report["latest"]["fatal"], true, "it closed on it");
     assert_eq!(from_report["latest"]["stack"], "Blacklist_DX11_game.exe+0x3d7646, Blacklist_DX11_game.exe+0x38d1dc");
     let game_sent = groups.iter().find(|g| g["signature"] == other).unwrap();
-    assert_eq!((game_sent["count"].as_i64(), game_sent["from_reports"].as_i64()), (Some(1), Some(0)), "the game's own: {game_sent}");
+    assert_eq!(
+        (game_sent["count"].as_i64(), game_sent["from_reports"].as_i64()),
+        (Some(1), Some(0)),
+        "the game's own: {game_sent}"
+    );
     assert!(v["diagnostics"]["signed_in"].is_i64(), "{v}");
 
     // Reading the stored reports again (the first start's catch-up) adds nothing.
     t.c.crashes_from_stored_reports().await.unwrap();
     let (_, v) = admin_call(&r, "GET", "/api/crashes?days=7", &cookie, None).await;
     assert_eq!(v["crashes"].as_i64(), Some(2));
-    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM session_events WHERE kind = 'crash' AND id < 0").fetch_one(&t.c.pool).await.unwrap();
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM session_events WHERE kind = 'crash' AND id < 0")
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
     assert_eq!(rows, 3, "one per crash per report, kept as found");
 }
 
@@ -6117,7 +6133,9 @@ async fn admins_read_the_whole_chat() {
     send(json!({ "room": "global", "from": moa.global_id(), "text": "hello from moa" })).await;
     send(json!({ "room": "global", "from": kiwi.global_id(), "text": "evening all" })).await;
     send(json!({ "room": "direct", "from": kiwi.global_id(), "to": tank.global_id(), "text": "psst tank" })).await;
-    let gone = send(json!({ "room": "direct", "from": tank.global_id(), "to": kiwi.global_id(), "text": "oops 100%" })).await["message"]["id"].as_i64().unwrap();
+    let gone = send(json!({ "room": "direct", "from": tank.global_id(), "to": kiwi.global_id(), "text": "oops 100%" })).await["message"]["id"]
+        .as_i64()
+        .unwrap();
     t.call("POST", "/v1/chat/delete", Some(&a), Some(json!({ "for": tank.global_id(), "id": gone }))).await;
 
     let admin = admin_cookie(&t, "admin1", 3600).await;
@@ -6149,12 +6167,18 @@ async fn admins_read_the_whole_chat() {
     assert_eq!(v["messages"].as_array().unwrap().len(), 1);
     let (_, v) = admin_call(&r, "GET", "/api/moderation/chat?q=moa", &admin, None).await;
     assert_eq!(v["messages"].as_array().unwrap().len(), 1, "by sender's name or text: {v}");
-    let newest_global = sqlx::query_scalar::<_, i64>("SELECT MAX(id) FROM chat_messages WHERE room = 'global'").fetch_one(&t.c.pool).await.unwrap();
+    let newest_global = sqlx::query_scalar::<_, i64>("SELECT MAX(id) FROM chat_messages WHERE room = 'global'")
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
     let (_, v) = admin_call(&r, "GET", &format!("/api/moderation/chat?room=global&before={newest_global}"), &admin, None).await;
     assert_eq!(v["messages"][0]["body"], "hello from moa");
     assert_eq!(admin_call(&r, "GET", "/api/moderation/chat?room=party", &admin, None).await.0, StatusCode::BAD_REQUEST);
 
-    let reads: Vec<String> = sqlx::query_scalar("SELECT detail FROM audit WHERE event = 'chat: transcript read' ORDER BY id").fetch_all(&t.c.pool).await.unwrap();
+    let reads: Vec<String> = sqlx::query_scalar("SELECT detail FROM audit WHERE event = 'chat: transcript read' ORDER BY id")
+        .fetch_all(&t.c.pool)
+        .await
+        .unwrap();
     assert_eq!(reads, [format!("player {}", tank.global_id()), format!("conversation {conv}")]);
 }
 
@@ -6342,15 +6366,14 @@ async fn a_matchs_events_make_its_row_and_results() {
     let now = identity::now();
     let since = now - 1200;
     let room = |extra: Value| {
-        let mut d = json!({ "room": 77, "room_kind": "match", "since": since, "mode": "svm", "game_mode": 7, "map": 615323303, "host": 11, "host_name": "Viper", "private": false });
+        let mut d =
+            json!({ "room": 77, "room_kind": "match", "since": since, "mode": "svm", "game_mode": 7, "map": 615323303, "host": 11, "host_name": "Viper", "private": false });
         for (k, v) in extra.as_object().unwrap() {
             d[k] = v.clone();
         }
         d
     };
-    let ev = |id: i64, at: i64, player: i64, name: &str, kind: &str, detail: Value, count: i64| {
-        json!({ "id": id, "at": at, "last_at": at, "player": player, "name": name, "kind": kind, "count": count, "detail": detail })
-    };
+    let ev = |id: i64, at: i64, player: i64, name: &str, kind: &str, detail: Value, count: i64| json!({ "id": id, "at": at, "last_at": at, "player": player, "name": name, "kind": kind, "count": count, "detail": detail });
     let stats = json!({ "room": 77, "kills": 3, "deaths": 1, "wins": 1, "score": 900 });
     let events = json!({ "events": [
         ev(1, since, 11, "Viper", "room", room(json!({})), 1),
@@ -6377,7 +6400,10 @@ async fn a_matchs_events_make_its_row_and_results() {
     assert_eq!(list.len(), 1, "the party isn't a match: {v}");
     let m = &list[0];
     assert_eq!((m["room"].as_i64(), m["since"].as_i64(), m["mode"].as_str()), (Some(77), Some(since), Some("svm")));
-    assert_eq!((m["under_way"].as_bool(), m["ended_at"].as_i64(), m["results"].as_i64()), (Some(true), Some(since + 960), Some(2)));
+    assert_eq!(
+        (m["under_way"].as_bool(), m["ended_at"].as_i64(), m["results"].as_i64()),
+        (Some(true), Some(since + 960), Some(2))
+    );
     let players: Vec<(&str, Option<&str>)> = m["players"].as_array().unwrap().iter().map(|p| (p["name"].as_str().unwrap(), p["how"].as_str())).collect();
     assert_eq!(players, vec![("Viper", Some("left")), ("Gex", Some("left"))]);
     let (_, v) = admin_call(&r, "GET", "/api/matches?player=gex", &cookie, None).await;
@@ -6391,10 +6417,17 @@ async fn a_matchs_events_make_its_row_and_results() {
     assert_eq!(status, StatusCode::OK, "{v}");
     let lines = v["lines"].as_array().unwrap();
     let viper = lines.iter().find(|l| l["name"] == "Viper").unwrap();
-    assert_eq!((viper["writes"].as_i64(), viper["result"]["kills"].as_f64(), viper["result"]["score"].as_f64()), (Some(1), Some(3.0), Some(900.0)), "{v}");
+    assert_eq!(
+        (viper["writes"].as_i64(), viper["result"]["kills"].as_f64(), viper["result"]["score"].as_f64()),
+        (Some(1), Some(3.0), Some(900.0)),
+        "{v}"
+    );
     assert_eq!(v["checks"], json!([]), "4 kills, 4 deaths: they add up");
     let rounds = v["rounds"].as_array().unwrap();
     assert_eq!(rounds.len(), 1, "the host's word only: {v}");
-    assert_eq!((rounds[0]["round"].as_i64(), rounds[0]["winner_team"].as_i64(), rounds[0]["hacks"].as_i64()), (Some(1), Some(0), Some(2)));
+    assert_eq!(
+        (rounds[0]["round"].as_i64(), rounds[0]["winner_team"].as_i64(), rounds[0]["hacks"].as_i64()),
+        (Some(1), Some(0), Some(2))
+    );
     assert_eq!(admin_call(&r, "GET", "/api/matches", "", None).await.0, StatusCode::UNAUTHORIZED);
 }

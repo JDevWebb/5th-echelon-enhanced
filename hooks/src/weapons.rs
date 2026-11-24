@@ -173,13 +173,19 @@ const MOST_UPGRADES: u32 = 32;
 fn attachments() -> Vec<(String, usize)> {
     let mut out: Vec<(String, usize)> = Vec::new();
     for o in crate::pawns::live_weapons() {
-        let (Some(data), Some(count)) = (read_u32(o + WEAPON_UPGRADES_AT), read_u32(o + WEAPON_UPGRADES_AT + 4)) else { continue };
+        let (Some(data), Some(count)) = (read_u32(o + WEAPON_UPGRADES_AT), read_u32(o + WEAPON_UPGRADES_AT + 4)) else {
+            continue;
+        };
         if data == 0 || count > MOST_UPGRADES {
             continue;
         }
         for k in 0..count as usize {
-            let Some(upgrade) = read_u32(data as usize + k * 4).filter(|u| *u != 0).map(|u| u as usize) else { continue };
-            let Some(archetype) = read_u32(upgrade + UPGRADE_ATTACHMENT_AT).filter(|a| *a != 0).map(|a| a as usize) else { continue };
+            let Some(upgrade) = read_u32(data as usize + k * 4).filter(|u| *u != 0).map(|u| u as usize) else {
+                continue;
+            };
+            let Some(archetype) = read_u32(upgrade + UPGRADE_ATTACHMENT_AT).filter(|a| *a != 0).map(|a| a as usize) else {
+                continue;
+            };
             let name = read_u32(upgrade + UPGRADE_ATTACHMENT_NAME_AT)
                 .and_then(name_text)
                 .or_else(|| read_u32(archetype + 0x20).and_then(name_text))
@@ -348,9 +354,16 @@ pub fn test_firing_words() {
                         }
                         let class = read_u32(u + 0x24).and_then(|c| read_u32(c as usize + 0x20)).and_then(name_text);
                         let named = read_u32(u + UPGRADE_ATTACHMENT_NAME_AT).and_then(name_text);
-                        let archetype = read_u32(u + UPGRADE_ATTACHMENT_AT).filter(|a| *a != 0).and_then(|a| read_u32(a as usize + 0x20)).and_then(name_text);
+                        let archetype = read_u32(u + UPGRADE_ATTACHMENT_AT)
+                            .filter(|a| *a != 0)
+                            .and_then(|a| read_u32(a as usize + 0x20))
+                            .and_then(name_text);
                         let words: Vec<String> = (1776..1808).step_by(4).map(|at| format!("{at}:{:x}", read_u32(u + at).unwrap_or(0))).collect();
-                        seen.push(format!("  {list} {k}: {:?} class {class:?} named {named:?} archetype {archetype:?} {}", read_u32(u + 0x20).and_then(name_text), words.join(" ")));
+                        seen.push(format!(
+                            "  {list} {k}: {:?} class {class:?} named {named:?} archetype {archetype:?} {}",
+                            read_u32(u + 0x20).and_then(name_text),
+                            words.join(" ")
+                        ));
                     }
                 }
                 seen.push(format!(
@@ -365,7 +378,11 @@ pub fn test_firing_words() {
         // Each attachment archetype's block around its modifiers, as floats (W1's layout check).
         for (name, a) in attachments() {
             let floats: Vec<String> = (96..264).step_by(4).map(|at| format!("{at}:{:?}", read::<f32>(a + at).unwrap_or(f32::NAN))).collect();
-            tracing::info!("Weapons: test: attachment {name} class {:?} {}", read_u32(a + 0x24).and_then(|c| read_u32(c as usize + 0x20)).and_then(name_text), floats.join(" "));
+            tracing::info!(
+                "Weapons: test: attachment {name} class {:?} {}",
+                read_u32(a + 0x24).and_then(|c| read_u32(c as usize + 0x20)).and_then(name_text),
+                floats.join(" ")
+            );
         }
     }
     let Some(f) = found() else { return };

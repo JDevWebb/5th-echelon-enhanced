@@ -573,7 +573,15 @@ unsafe fn other_threads(skip: &[u32]) -> ([u32; MOST_OTHER_THREADS], usize) {
         return (found, 0);
     }
     let me = GetCurrentProcessId();
-    let mut entry = ThreadEntry { size: std::mem::size_of::<ThreadEntry>() as u32, usage: 0, thread: 0, process: 0, base_priority: 0, delta_priority: 0, flags: 0 };
+    let mut entry = ThreadEntry {
+        size: std::mem::size_of::<ThreadEntry>() as u32,
+        usage: 0,
+        thread: 0,
+        process: 0,
+        base_priority: 0,
+        delta_priority: 0,
+        flags: 0,
+    };
     let mut more = Thread32First(snapshot, &mut entry) != 0;
     while more && n < MOST_OTHER_THREADS {
         if entry.process == me && !skip.contains(&entry.thread) {

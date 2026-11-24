@@ -26,8 +26,8 @@ static STOPPED: AtomicU32 = AtomicU32::new(0);
 /// The function, from the module's base, and its bytes up to the call through the target.
 const APPLY: usize = 0x3da50;
 const APPLY_BYTES: [u8; 40] = [
-    0x8B, 0xFF, 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08, 0x89, 0x4D, 0xF8, 0xC7, 0x45, 0xFC, 0x00, 0x00, 0x00, 0x00, 0x8B, 0x45, 0x08, 0x50, 0x8B, 0x4D, 0x08,
-    0x8B, 0x51, 0x0C, 0x8B, 0x45, 0x08, 0x8B, 0x48, 0x0C, 0x8B, 0x12, 0x8B, 0x02, 0xFF, 0xD0,
+    0x8B, 0xFF, 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08, 0x89, 0x4D, 0xF8, 0xC7, 0x45, 0xFC, 0x00, 0x00, 0x00, 0x00, 0x8B, 0x45, 0x08, 0x50, 0x8B, 0x4D, 0x08, 0x8B, 0x51, 0x0C, 0x8B,
+    0x45, 0x08, 0x8B, 0x48, 0x0C, 0x8B, 0x12, 0x8B, 0x02, 0xFF, 0xD0,
 ];
 /// The release of an operation, `thiscall(this, op)`, `ret 4`; its first bytes, checked too.
 const RELEASE: usize = 0x3daa0;
@@ -44,7 +44,7 @@ fn assemble(stub: u32, release: u32, cont: u32, counter: u32) -> Vec<u8> {
     code.extend_from_slice(&[0x74, 0x18]); // jz run (no operation: as the game would)
     code.extend_from_slice(&[0x83, 0x78, 0x0C, 0x00]); // cmp dword [eax+0xc],0
     code.extend_from_slice(&[0x75, 0x12]); // jnz run (it has a target)
-    // No target: release it (ecx is still `this`), count it, and say done.
+                                           // No target: release it (ecx is still `this`), count it, and say done.
     code.extend_from_slice(&[0x50]); // push eax (the operation)
     code.push(0xE8); // call release
     let r = rel(&code, release);
@@ -53,7 +53,7 @@ fn assemble(stub: u32, release: u32, cont: u32, counter: u32) -> Vec<u8> {
     code.extend_from_slice(&counter.to_le_bytes());
     code.extend_from_slice(&[0x31, 0xC0]); // xor eax,eax (S_OK)
     code.extend_from_slice(&[0xC2, 0x04, 0x00]); // ret 4
-    // run: the replaced bytes, then back.
+                                                 // run: the replaced bytes, then back.
     code.extend_from_slice(&APPLY_BYTES[..HOOK_LEN]);
     code.push(0xE9); // jmp cont
     let r = rel(&code, cont);
@@ -65,7 +65,10 @@ fn module_base() -> Option<usize> {
     use windows::core::PCSTR;
     use windows::Win32::System::LibraryLoader::GetModuleHandleA;
     // SAFETY: a lookup by name; nothing is loaded.
-    unsafe { GetModuleHandleA(PCSTR(b"XAudio2_7.dll\0".as_ptr())) }.ok().map(|h| h.0 as usize).filter(|b| *b != 0)
+    unsafe { GetModuleHandleA(PCSTR(b"XAudio2_7.dll\0".as_ptr())) }
+        .ok()
+        .map(|h| h.0 as usize)
+        .filter(|b| *b != 0)
 }
 
 /// Waits for the game to load XAudio2 2.7, then guards it (a thread: the game loads it with its
@@ -109,7 +112,10 @@ unsafe fn install(base: usize) {
         return;
     }
     crate::fix_stats::installed("xaudio-fix", &[&STOPPED]);
-    info!("xaudio-fix: XAudio2's apply of an operation @ {apply:#010x} skips one whose voice is gone (stub {:#010x})", stub as u32);
+    info!(
+        "xaudio-fix: XAudio2's apply of an operation @ {apply:#010x} skips one whose voice is gone (stub {:#010x})",
+        stub as u32
+    );
     let mut logged = 0;
     loop {
         std::thread::sleep(Duration::from_secs(5));

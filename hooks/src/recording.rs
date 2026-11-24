@@ -149,7 +149,12 @@ pub fn match_left() {
 
 /// How many teamkills `name` has in this match as this game saw them (witness reports).
 pub fn teamkills_of(name: &str) -> u32 {
-    TEAMKILLS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(|m| m.get(&name.to_lowercase()).copied()).unwrap_or(0)
+    TEAMKILLS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .and_then(|m| m.get(&name.to_lowercase()).copied())
+        .unwrap_or(0)
 }
 
 /// Whether a character is a player's (RP1): it has a player's number in the session or a name.
@@ -465,7 +470,12 @@ fn record(o: &mut Open, tables: &pawns::Tables, characters: &[pawns::Sample]) ->
             // TK4: a kill within one team (both teams known, not oneself).
             if let (Some((_, kn, kt)), Some((_, vn, vt))) = (o.described.get(killer), o.described.get(victim)) {
                 if is_teamkill(kn, *kt, vn, *vt) {
-                    *TEAMKILLS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert_with(HashMap::new).entry(kn.to_lowercase()).or_insert(0) += 1;
+                    *TEAMKILLS
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .get_or_insert_with(HashMap::new)
+                        .entry(kn.to_lowercase())
+                        .or_insert(0) += 1;
                     info!("Recording: a teamkill seen ({kn} killed a teammate)");
                 }
             }

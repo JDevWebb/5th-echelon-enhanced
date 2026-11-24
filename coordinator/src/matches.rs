@@ -19,7 +19,20 @@ use crate::Coordinator;
 
 /// The result stats a `stats` event carries, summed over a player's writes for one match.
 pub const RESULT_STATS: [&str; 14] = [
-    "kills", "deaths", "assists", "shots", "hits", "headshots", "from_above", "mark_execute", "completed", "wins", "ties", "losses", "time", "score",
+    "kills",
+    "deaths",
+    "assists",
+    "shots",
+    "hits",
+    "headshots",
+    "from_above",
+    "mark_execute",
+    "completed",
+    "wins",
+    "ties",
+    "losses",
+    "time",
+    "score",
 ];
 /// Matches on a page of the list.
 const PAGE: i64 = 50;

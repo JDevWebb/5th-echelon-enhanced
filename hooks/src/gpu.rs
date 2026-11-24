@@ -7,9 +7,9 @@
 use tracing::info;
 use windows::core::Interface as _;
 use windows::Win32::Graphics::Dxgi::CreateDXGIFactory1;
-use windows::Win32::Graphics::Dxgi::DXGI_ADAPTER_DESC1;
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Graphics::Dxgi::IDXGIFactory1;
+use windows::Win32::Graphics::Dxgi::DXGI_ADAPTER_DESC1;
 
 /// A driver version as DXGI packs it into 64 bits: four 16-bit parts, high first.
 fn driver_version(packed: i64) -> String {

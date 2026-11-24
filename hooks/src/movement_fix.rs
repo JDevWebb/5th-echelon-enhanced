@@ -74,7 +74,10 @@ pub unsafe fn guard_speed_updates() {
         return;
     }
     crate::fix_stats::installed("movement-fix", &[&STOPPED]);
-    info!("movement-fix: a character's speed update @ {hook:#010x} checks its movement history first (stub {:#010x})", stub as u32);
+    info!(
+        "movement-fix: a character's speed update @ {hook:#010x} checks its movement history first (stub {:#010x})",
+        stub as u32
+    );
     std::thread::spawn(|| {
         let mut logged = 0;
         loop {

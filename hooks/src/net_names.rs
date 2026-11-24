@@ -67,8 +67,12 @@ const LONGEST: usize = 160;
 /// A DataString's text, by its block's length (the text isn't ended by a 0: the gamebox read
 /// "gbox1wn" past "gbox1").
 fn text(description: usize, at: usize) -> String {
-    let Some(block) = read_u32(description + at + GEAR_AT + 8).filter(|b| *b != 0).map(|b| b as usize) else { return String::new() };
-    let Some(len) = read_u32(block + 4).map(|l| l as usize).filter(|l| *l <= LONGEST) else { return String::new() };
+    let Some(block) = read_u32(description + at + GEAR_AT + 8).filter(|b| *b != 0).map(|b| b as usize) else {
+        return String::new();
+    };
+    let Some(len) = read_u32(block + 4).map(|l| l as usize).filter(|l| *l <= LONGEST) else {
+        return String::new();
+    };
     let bytes: Vec<u8> = (0..len).map_while(|i| read::<u8>(block + 0xc + i)).collect();
     String::from_utf8_lossy(&bytes).into_owned()
 }
@@ -208,7 +212,12 @@ pub fn tick(in_match: bool) {
             let real = crate::pawns::peer_name(seen.peer).unwrap_or_default();
             tracing::warn!("Net names: number {} ({real} to the server) is shown to everyone as {:?}", seen.peer, seen.shown);
         } else {
-            tracing::info!("Net names: number {} (account {}) has no name from the server yet: asking it about {:?}", seen.peer, seen.account, seen.shown);
+            tracing::info!(
+                "Net names: number {} (account {}) has no name from the server yet: asking it about {:?}",
+                seen.peer,
+                seen.account,
+                seen.shown
+            );
         }
         let _ = std::thread::Builder::new()
             .name("fe-name-seen".into())
@@ -264,7 +273,13 @@ mod tests {
     use super::*;
 
     fn m(storm: i32, id: u64, name: &str) -> Member {
-        Member { storm, id, name: name.into(), tag: String::new(), second: String::new() }
+        Member {
+            storm,
+            id,
+            name: name.into(),
+            tag: String::new(),
+            second: String::new(),
+        }
     }
 
     #[test]
@@ -281,12 +296,28 @@ mod tests {
         let renamed = [m(0, 1003, "gbox1"), m(1, 1004, "Tea_bag"), m(2, 1008, "nobody known")];
         assert!(compare(&mut w, &renamed, Some(1003), real, t).is_empty(), "one read isn't enough");
         let said = compare(&mut w, &renamed, Some(1003), real, t);
-        assert_eq!(said, vec![Seen { peer: 2, account: 1004, shown: "Tea_bag".into(), checked: true }]);
+        assert_eq!(
+            said,
+            vec![Seen {
+                peer: 2,
+                account: 1004,
+                shown: "Tea_bag".into(),
+                checked: true
+            }]
+        );
         assert!(compare(&mut w, &renamed, Some(1003), real, t).is_empty(), "said once");
         // Number 3 has no name from the server: after UNNAMED_FOR the server checks it by account.
         let later = t + UNNAMED_FOR;
         let said = compare(&mut w, &renamed, Some(1003), real, later);
-        assert_eq!(said, vec![Seen { peer: 3, account: 1008, shown: "nobody known".into(), checked: false }]);
+        assert_eq!(
+            said,
+            vec![Seen {
+                peer: 3,
+                account: 1008,
+                shown: "nobody known".into(),
+                checked: false
+            }]
+        );
         assert!(compare(&mut w, &renamed, Some(1003), real, later).is_empty(), "asked once");
         // The own player is the own check's (pawns.rs), not this one's.
         let mut w = Witness::default();

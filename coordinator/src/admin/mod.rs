@@ -25,10 +25,10 @@
 
 pub mod auth;
 mod crashes;
-mod matches;
 mod inbox;
 mod leaderboards;
 pub mod live;
+mod matches;
 mod moderation;
 mod planning;
 mod players;

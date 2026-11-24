@@ -97,7 +97,10 @@ pub fn reached(storage: &Storage, logger: &Logger, user_id: u32, name: &str, ip:
         return false;
     }
     moves().remove(&identity::name_key(name));
-    info!(logger, "{name}'s game port at {ip} answered the server's own test: their lasting move to the relay is undone");
+    info!(
+        logger,
+        "{name}'s game port at {ip} answered the server's own test: their lasting move to the relay is undone"
+    );
     true
 }
 
