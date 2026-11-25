@@ -4887,6 +4887,9 @@ async fn run() -> Result<()> {
             // A host's 20 s of silence, and an abandon 11 s before its split.
             "host-migration-silent" | "host-migration-host-returns" => 90,
             "host-migration-claims" => 60,
+            // Escorted parties into private matches: 23 s of the 30 alone on the homelab, and
+            // over it once in a full run (25 Nov).
+            "party-escort" => 60,
             _ => 30,
         };
         let result = tokio::time::timeout(Duration::from_secs(limit), async {

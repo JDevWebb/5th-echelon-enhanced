@@ -24,6 +24,12 @@ use tokio::net::UdpSocket;
 
 /// How long a call waits for its response.
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(5);
+/// A handshake packet unanswered this long goes again, as the game resends it: one lost
+/// datagram failed a whole scenario before (`rename` on the Windows CI, 25 Nov 2026: "the
+/// server didn't answer the handshake").
+const HANDSHAKE_RESEND: Duration = Duration::from_secs(1);
+/// How long a handshake step waits in all, its resends included.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 const LOCAL: VPort = VPort {
     port: 15,
@@ -106,35 +112,40 @@ impl Conn {
         };
         let slow = SLOW_HANDSHAKE.load(std::sync::atomic::Ordering::Relaxed);
         let is_syn_ack = |p: &QPacket| p.packet_type == PacketType::Syn && p.flags.contains(PacketFlag::Ack);
-        c.send_maybe_twice(
-            QPacket {
-                packet_type: PacketType::Syn,
-                flags: PacketFlag::NeedAck.into(),
-                conn_signature: Some(0),
-                ..Default::default()
-            },
-            slow,
-        )
-        .await?;
-        let syn_ack = c.expect(is_syn_ack).await?;
+        let syn = c
+            .send_maybe_twice(
+                QPacket {
+                    packet_type: PacketType::Syn,
+                    flags: PacketFlag::NeedAck.into(),
+                    conn_signature: Some(0),
+                    ..Default::default()
+                },
+                slow,
+            )
+            .await?;
+        let syn_ack = c.expect_resending(&syn, is_syn_ack).await?;
         c.server_signature = syn_ack.conn_signature.ok_or_else(|| eyre!("SYN ack without a connection signature"))?;
 
-        c.send_maybe_twice(
-            QPacket {
-                packet_type: PacketType::Connect,
-                flags: PacketFlag::NeedAck.into(),
-                conn_signature: Some(rand::random()),
-                payload: connect_payload,
-                ..Default::default()
-            },
-            slow,
-        )
-        .await?;
+        let connect = c
+            .send_maybe_twice(
+                QPacket {
+                    packet_type: PacketType::Connect,
+                    flags: PacketFlag::NeedAck.into(),
+                    conn_signature: Some(rand::random()),
+                    payload: connect_payload,
+                    ..Default::default()
+                },
+                slow,
+            )
+            .await?;
         let mut connect_ack = None;
         let mut second_syn_ack = !slow;
         while connect_ack.is_none() || !second_syn_ack {
+            // Resent until the CONNECT's answer comes; once it has, a slow handshake's second SYN
+            // answer is only waited for.
+            let resend = connect_ack.is_none().then_some(connect.as_slice()).unwrap_or_default();
             let p = c
-                .expect(|p| is_syn_ack(p) || (p.packet_type == PacketType::Connect && p.flags.contains(PacketFlag::Ack)))
+                .expect_resending(resend, |p| is_syn_ack(p) || (p.packet_type == PacketType::Connect && p.flags.contains(PacketFlag::Ack)))
                 .await?;
             if is_syn_ack(&p) {
                 // The answer to the repeated SYN: like the game, use its signature from now on.
@@ -147,8 +158,9 @@ impl Conn {
         Ok((c, connect_ack.map(|p| p.payload).unwrap_or_default()))
     }
 
-    /// Sends a handshake packet, twice (the same packet, as a resend) if `twice`.
-    async fn send_maybe_twice(&mut self, mut p: QPacket, twice: bool) -> Result<()> {
+    /// Sends a handshake packet, twice (the same packet, as a resend) if `twice`. Its bytes, for
+    /// resending ([`Self::expect_resending`]).
+    async fn send_maybe_twice(&mut self, mut p: QPacket, twice: bool) -> Result<Vec<u8>> {
         p.source = LOCAL;
         p.destination = REMOTE;
         p.session_id = self.session_id;
@@ -160,7 +172,33 @@ impl Conn {
         if twice {
             self.socket.send(&bytes).await?;
         }
-        Ok(())
+        Ok(bytes)
+    }
+
+    /// Waits for a handshake packet matching `want`, sending `resend` again (the same bytes, as
+    /// the game does) each [`HANDSHAKE_RESEND`] it goes unanswered; nothing is resent when
+    /// `resend` is empty.
+    async fn expect_resending(&mut self, resend: &[u8], want: impl Fn(&QPacket) -> bool) -> Result<QPacket> {
+        let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+        let mut next_resend = Instant::now() + HANDSHAKE_RESEND;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            // Nothing to resend: the whole wait at once (not a loop on an elapsed resend time).
+            let wait = if resend.is_empty() {
+                left
+            } else {
+                left.min(next_resend.saturating_duration_since(Instant::now()))
+            };
+            match self.recv(wait).await? {
+                Some(p) if want(&p) => return Ok(p),
+                Some(_) => {}
+                None if !resend.is_empty() && Instant::now() >= next_resend => {
+                    self.socket.send(resend).await?;
+                    next_resend = Instant::now() + HANDSHAKE_RESEND;
+                }
+                None => {}
+            }
+        }
+        bail!("the server didn't answer the handshake")
     }
 
     async fn send(&mut self, mut p: QPacket) -> Result<()> {
