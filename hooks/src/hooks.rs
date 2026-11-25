@@ -886,6 +886,11 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
         crate::chat_relay::install(config.chat_relay);
     }
 
+    // The boot videos skipped on every start (boot_videos.rs): the game stood still while they
+    // played as it loaded. The quick start skips them the same way.
+    #[cfg(not(feature = "patch-free"))]
+    crate::boot_videos::skip();
+
     // Opt-in: straight into the Spies vs Mercs or Co-op online lobby (see quickstart.rs).
     #[cfg(not(feature = "patch-free"))]
     if let Some(lobby) = config.quick_start_lobby {

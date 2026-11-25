@@ -36,6 +36,7 @@ mod api;
 mod async_linker_fix;
 mod autoclimb;
 mod bink;
+mod boot_videos;
 mod camera;
 mod chat;
 mod chat_relay;

@@ -186,6 +186,24 @@ fn opens_as(img: &Image, va: usize, opens: &str) -> bool {
     img.text_range().contains(&va) && img.bytes(va, want.len()).is_some_and(|have| have.iter().zip(&want).all(|(b, w)| w.is_none_or(|w| *b == w)))
 }
 
+/// The video gate alone, in whichever build `img` is: its `jne` and the skip branch it's
+/// pointed at (the boot videos skipped on every start, not only the quick start's).
+pub fn locate_video_gate(img: &Image) -> Result<(usize, usize), String> {
+    let in_build = |b: &Build| -> Result<(usize, usize), String> {
+        let sig = b
+            .items
+            .iter()
+            .find_map(|(item, find)| match (item, find) {
+                (Item::VideoGate, Find::Code(sig)) => Some(*sig),
+                _ => None,
+            })
+            .ok_or("no video gate signature")?;
+        let gate = img.find(&signature(sig)).map_err(|n| format!("the video gate found {n} times, not once"))?;
+        video_gate(img, gate)
+    };
+    in_build(&DX11).or_else(|dx11| in_build(&DX9).map_err(|dx9| format!("not DX11 ({dx11}), not DX9 ({dx9})")))
+}
+
 /// The video gate's `jne` (20 bytes after the `push <"menu">` the signature found) and its skip
 /// branch: right after the two `jne`s further on that go where the gate's goes
 /// (`cmp ecx,edi / jne <far> / cmp esi,edi / jne <far>`). The pushed string must be `menu`.

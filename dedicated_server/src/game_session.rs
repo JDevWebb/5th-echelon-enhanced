@@ -1805,7 +1805,11 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         if allowed.len() != sent.len() {
             warn!(logger, "User {user_id} registers station URLs other players can't be sent to; left out");
         }
-        let mut urls = station_urls_for_peers(allowed.clone(), ci.address().ip(), trusted);
+        // Where the player really is: a sign-in a relay's tunnel carries (SR) comes from the
+        // relay, whose address matched nobody's checked one (the "carrier-grade NAT?" note for 21
+        // of 22 such players, ca1, 22-24 Nov), and made their own public address look foreign.
+        let real = crate::tunnel::source_ip(*ci.address());
+        let mut urls = station_urls_for_peers(allowed.clone(), real, trusted);
         let mut house = Vec::new();
         // Outside the trusted network: the address the NAT helper checked
         // (the player's public one, or the relay's), in place of the one
@@ -1814,19 +1818,18 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             let name = self.storage.find_username_by_user_id(user_id).ok().flatten();
             // This server's own helper, else (on the network's matchmaking server) a relay
             // elsewhere that reported the player lately (relays.rs).
-            let checked =
-                name.and_then(|name| crate::nat_helper::advertised_for(&name, ci.address().ip()).or_else(|| crate::relays::remote_advertised_for(&name, ci.address().ip())));
+            let checked = name.and_then(|name| crate::nat_helper::advertised_for(&name, real).or_else(|| crate::relays::remote_advertised_for(&name, real)));
             if let Some(advertise) = checked {
                 urls = crate::nat_helper::urls_with_public_address(urls, advertise);
                 let with_local = urls.clone();
-                urls = crate::nat_helper::without_local_when_relayed(urls, advertise, ci.address().ip());
+                urls = crate::nat_helper::without_local_when_relayed(urls, advertise, real);
                 house = with_local.into_iter().filter(|u| !urls.contains(u)).collect();
             }
         }
         // A relayed player's LAN address, left out for everyone else: kept for a housemate. Only
         // private addresses, as the filter below lets through: a "LAN" URL naming a public
         // address (someone else's) is never passed on to anyone sharing this player's IP.
-        let house = only_reachable_addresses(house, ci.address().ip(), &crate::relays::ranges())
+        let house = only_reachable_addresses(house, real, &crate::relays::ranges())
             .into_iter()
             .filter(|u| {
                 station_url_parts(u).is_some_and(|(_, params)| {
@@ -1838,8 +1841,8 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                 })
             })
             .collect();
-        note_house_urls(user_id, crate::tunnel::source_ip(*ci.address()), house);
-        let urls = only_reachable_addresses(urls, ci.address().ip(), &crate::relays::ranges());
+        note_house_urls(user_id, real, house);
+        let urls = only_reachable_addresses(urls, real, &crate::relays::ranges());
         if urls != sent {
             info!(logger, "station urls {:?} -> {:?} (the address this client connected from)", sent, urls);
         }
