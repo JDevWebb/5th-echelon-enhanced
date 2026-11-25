@@ -39,6 +39,16 @@ pub const RELEASES: &[Release] = &[
         thanks: &["Tea_bag", "TrustInDemon", "Glacio1", "Cloud", "CoolPeaceMaker", "GhostReacher"],
         new: &[
             Item {
+                title: "Join without an invitation",
+                text: "Join on a friend in a public match, or on a match in the Matches tab, takes you straight in, even when its round is under way. The host no longer has to send you an invitation.",
+                community: false,
+            },
+            Item {
+                title: "Quick match fills matches first",
+                text: "Quick match offers matches under way with a free seat before lobbies still waiting for players, nearest first, so a short-handed match fills up. A match raised past its mode's size comes after the lobbies.",
+                community: false,
+            },
+            Item {
                 title: "Mute in-match chat",
                 text: "The overlay's Match tab mutes a player's in-match chat for the rest of the match, players you've blocked are never shown, and Settings › Game sets the chat to everyone, your team only, or off.",
                 community: false,
@@ -55,6 +65,18 @@ pub const RELEASES: &[Release] = &[
             },
         ],
         fixed: &[
+            Fix {
+                lead: "The intro videos",
+                rest: " are skipped on every start, not only with the quick start: some games stood still for 10 seconds or more while they played.",
+            },
+            Fix {
+                lead: "A Join that's refused",
+                rest: " (a full or private match) no longer starts the game for nothing: the launcher asks first.",
+            },
+            Fix {
+                lead: "Customize Gear after a match",
+                rest: " no longer crashes the game, and after a quick start it offers the Spy and Merc characters, not the campaign's loadout.",
+            },
             Fix {
                 lead: "In co-op with more than two players,",
                 rest: " a crash when a player joined, left or was removed (a character's ragdoll) is stopped.",
