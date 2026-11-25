@@ -12,12 +12,32 @@
 //!
 //! Runtime only; no file is changed. Found by signature (`hooks_addresses::quick_start`), or
 //! nothing is changed.
+//!
+//! **After the quick start:** its signatures include the gate's own bytes, so a gate already
+//! patched here wasn't found there and the whole quick start stood down ("VideoGate found 0
+//! times"; the gamebox, 25 Nov). The quick start installs first and says when it has skipped the
+//! videos itself ([`skipped_by_quick_start`]); then this does nothing.
+
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use tracing::info;
 use tracing::warn;
 
-/// Skips the boot videos (from `hooks::init`, in `DllMain`, before the game's code runs).
+/// The quick start's own patch skipped them.
+static SKIPPED: AtomicBool = AtomicBool::new(false);
+
+/// The quick start's patch took: the videos are skipped already.
+pub fn skipped_by_quick_start() {
+    SKIPPED.store(true, Ordering::Relaxed);
+}
+
+/// Skips the boot videos (from `hooks::init`, in `DllMain`, before the game's code runs), after
+/// the quick start has installed (or stood down).
 pub unsafe fn skip() {
+    if SKIPPED.load(Ordering::Relaxed) {
+        return;
+    }
     let Some(image) = crate::game_image() else {
         warn!("boot-videos: the game's sections weren't found -> the videos play");
         return;

@@ -348,6 +348,7 @@ pub unsafe fn install(lobby: QuickStartLobby) {
     let _ = crate::writemem(e.video_gate_jne as *mut u8, &patch);
     if bytes_at(e.video_gate_jne, &patch) {
         info!("quickstart: {}: boot videos skipped (video gate @ {:#x} -> {:#x})", e.name, e.video_gate_jne, e.video_skip);
+        crate::boot_videos::skipped_by_quick_start();
     } else {
         warn!("quickstart: the video gate patch didn't take");
     }
